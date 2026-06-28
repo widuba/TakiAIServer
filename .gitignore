@@ -1,0 +1,18 @@
+.DS_Store
+# Secrets — NEVER commit. On Render use env vars (APNS_KEY_P8, etc.).
+.env
+.env.*
+*.p8
+AuthKey_*.p8
+# Dependencies / build
+node_modules/
+dist/
+# Ephemeral runtime data
+push-tokens.json
+la-tokens.json
+# Old snapshots / backups
+backups/
+*.backup*
+*.before-*
+*.log
+.claude/

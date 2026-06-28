@@ -1,0 +1,365 @@
+/* ============================================================================
+ * Shared types for the Taki AI planner-first backend.
+ *
+ * Action-name contract (executed by app/src/App.tsx — do NOT rename without a
+ * coordinated frontend change):
+ *   compose_message, compose_email, call_phone, calendar_create,
+ *   calendar_search, reminder_create, reminder_search, open_app,
+ *   maps_search (field: mapsQuery), maps_directions (field: mapsDestination)
+ *
+ * NOTE: the product brief refers to "messages_compose" / "email_compose";
+ * the shipping frontend executes "compose_message" / "compose_email". We keep
+ * the executable names on the wire and the frontend now accepts both as
+ * aliases (see App.tsx normalizeActionType).
+ * ==========================================================================*/
+
+export type AssistantActionType =
+  | "answer_only"
+  | "compose_message"
+  | "call_phone"
+  | "calendar_search"
+  | "calendar_create"
+  | "calendar_update"
+  | "calendar_delete"
+  | "reminder_create"
+  | "reminder_search"
+  | "compose_email"
+  | "open_app"
+  | "maps_search"
+  | "maps_directions"
+  | "weather_answer"
+  | "live_activity"
+  | "alarm_set"
+  | "alarm_cancel"
+  | "timer_set"
+  | "timer_cancel"
+  | "stopwatch_start"
+  | "stopwatch_stop"
+  | "contact_create"
+  | "health_query"
+  | "home_control"
+  | "music_control"
+  | "photos_show"
+  | "day_plan";
+
+export type AssistantAction = {
+  type: AssistantActionType;
+  recipientPhone: string | null;
+  recipientName: string | null;
+  contactQuery: string | null;
+  body: string | null;
+  calendarQuery: string | null;
+  daysAhead: number | null;
+  title: string | null;
+  startDate: string | null;
+  endDate: string | null;
+  location: string | null;
+  notes: string | null;
+  reminderQuery: string | null;
+  dueDate: string | null;
+  emailAddress: string | null;
+  emailSubject: string | null;
+  appName: string | null;
+  appUrl: string | null;
+  fallbackUrl: string | null;
+  mapsQuery: string | null;
+  mapsDestination: string | null;
+  // live_activity: which flavor to start ("commute" | "countdown"). The event to
+  // track is identified by `calendarQuery` / `title`; the device resolves the
+  // destination + ETA and starts the activity.
+  liveActivityKind: string | null;
+  // commute transport mode: "driving" | "walking" | "bicycling" | "transit"
+  // ("" = unspecified, device defaults to driving).
+  liveActivityMode: string | null;
+  // recurrence for calendar_create / reminder_create: "daily" | "weekly" |
+  // "monthly" | "yearly" | "weekdays" | "" (none).
+  recurrence: string | null;
+  // location-based reminder: a place name; triggerOnArrival true = when you
+  // arrive, false = when you leave.
+  triggerLocation: string | null;
+  triggerOnArrival: boolean | null;
+  // health_query: "steps"|"distance"|"energy"|"exercise"|"heartrate"|"sleep".
+  metric: string | null;
+  // health_query day: how many days back from today (0 = today), + a label like
+  // "yesterday" / "on Friday" for the spoken reply.
+  healthDayOffset: number | null;
+  healthDayLabel: string | null;
+  // home_control: action ("lightsOn"|"lightsOff"|"lock"|"unlock"|"thermostat"),
+  // target room (lights), value (thermostat °F).
+  homeAction: string | null;
+  homeTarget: string | null;
+  homeValue: number | null;
+  // music_control: action ("play"|"pause"|"resume"|"next"|"previous"), query.
+  musicAction: string | null;
+  musicQuery: string | null;
+  // photos_show: how many days back (0 = just most recent).
+  photoDays: number | null;
+  // finance/sports Live Activity tracking. trackKind = "finance" | "sports";
+  // trackQuery is what the device re-polls (/api/quote or /api/score) to keep the
+  // activity live. The rest are the initial snapshot to display.
+  trackKind: string | null;
+  trackQuery: string | null;
+  liveTitle: string | null;    // "AAPL", "Lakers vs Celtics"
+  liveSymbol: string | null;   // "📈" / "🏀"
+  line1: string | null;        // primary value, e.g. "$195.20", "102 – 98"
+  line2: string | null;        // secondary, e.g. "Apple Inc.", "Lakers lead"
+  trend: string | null;        // "up" | "down" | "flat" (drives green/red tint)
+  statusText: string | null;   // "+1.24% today", "Q4 · 2:15"
+  // day_plan: the proposed schedule (the device confirms, then creates each).
+  planItems: { type: string; title: string; startDate: string; durationMin?: number }[] | null;
+};
+
+export type DeviceLocation = {
+  latitude?: number;
+  longitude?: number;
+  accuracy?: number;
+};
+
+// Re-export the message-style types so the rest of the backend imports them
+// from one place alongside the other shared types.
+export type {
+  MessageStyleVector,
+  IncomingStyleProfile,
+  MessageAnalysis
+} from "./messageStyle.js";
+
+/* ---- Structured conversational memory ----------------------------------- */
+
+// A real-world event the user discussed or that we scheduled. confidence helps
+// downstream decide how much to trust a transcript-extracted event vs a
+// grounded web event vs older saved memory.
+export type EventMemory = {
+  title: string;
+  startDate: string;
+  endDate: string;
+  location?: string;
+  notes?: string;
+  source?: string; // web | chat-transcript | message | calendar_create | saved-memory
+  confidence: number;
+};
+
+export type ContactMemory = {
+  name?: string;
+  phone?: string;
+  email?: string;
+  source?: string;
+  confidence?: number;
+};
+
+export type PlaceMemory = {
+  label: string;
+  query?: string;
+  address?: string;
+  source?: string;
+  confidence?: number;
+};
+
+// When the assistant has to ask for missing info, it parks the half-built
+// action here so the NEXT user message can complete it (test case F).
+export type PendingClarification = {
+  intent: string;
+  missing: string[];
+  draftAction: Partial<AssistantAction> | null;
+  question: string;
+  createdAt: string;
+};
+
+export type AssistantMemory = {
+  lastTopic?: string | null;
+  lastAnswer?: string | null;
+  lastIntent?: string | null;
+  lastMentionedEvent?: EventMemory | null;
+  lastMentionedContact?: ContactMemory | null;
+  lastMentionedPlace?: PlaceMemory | null;
+  pendingClarification?: PendingClarification | null;
+
+  // Legacy fields kept so older frontend builds keep working. lastEvent always
+  // mirrors lastMentionedEvent.
+  lastEvent?: EventMemory | null;
+  lastMessageDraft?: {
+    recipientName?: string | null;
+    contactQuery?: string | null;
+    body?: string | null;
+  } | null;
+  lastEmailDraft?: {
+    recipientName?: string | null;
+    contactQuery?: string | null;
+    emailAddress?: string | null;
+    subject?: string | null;
+    body?: string | null;
+  } | null;
+  lastLocation?: {
+    label?: string | null;
+    query?: string | null;
+  } | null;
+};
+
+// The wire response returned to the frontend.
+export type AssistantResponse = {
+  spokenText: string;
+  action: AssistantAction | null;
+  // Present (length > 1) when the request produced several actions to run.
+  actions?: AssistantAction[] | null;
+  memory?: AssistantMemory | null;
+  followUpEvent?: EventMemory | null; // legacy mirror of memory.lastMentionedEvent
+  // Style metadata for the just-composed message; the frontend renders feedback
+  // controls from it and learns the recipient's profile.
+  messageAnalysis?: import("./messageStyle.js").MessageAnalysis | null;
+  debug?: any;
+};
+
+/* ---- Conversation state (built per request) ----------------------------- */
+
+export type TranscriptTurn = {
+  role: "user" | "assistant";
+  text: string;
+};
+
+export type ConversationState = {
+  message: string;
+  transcript: TranscriptTurn[];
+  // Transcript text with assistant "Added .../I'll add ..." confirmation lines
+  // removed — used for event reasoning so we never re-schedule from them.
+  eventTranscriptText: string;
+  // Full transcript text — used for general Q&A about earlier statements.
+  fullTranscriptText: string;
+  nowIso: string;
+  timeZone: string;
+
+  // Saved-memory fallbacks (decoded from the round-tripped follow-up context).
+  // The current transcript always outranks these.
+  priorEvent: EventMemory | null;
+  priorContact: ContactMemory | null;
+  priorPlace: PlaceMemory | null;
+  pendingClarification: PendingClarification | null;
+  priorMemory: AssistantMemory;
+
+  deviceLocation?: DeviceLocation;
+
+  // Style vectors for recipients named in THIS message only (device-stored
+  // profiles, sent per-request). Empty when nothing has been learned yet.
+  styleProfiles: import("./messageStyle.js").IncomingStyleProfile[];
+
+  // Who the user is + how they want the assistant to talk (device-stored).
+  userProfile: import("./persona.js").UserPersona;
+};
+
+/* ---- Planner output ----------------------------------------------------- */
+
+export type PlannerIntent =
+  | "answer_only"
+  | "web_search"
+  | "event_lookup"
+  | "compose_message"
+  | "compose_email"
+  | "call_phone"
+  | "calendar_create"
+  | "calendar_create_from_context"
+  | "calendar_update"
+  | "calendar_delete"
+  | "reminder_create"
+  | "reminder_search"
+  | "calendar_search"
+  | "open_app"
+  | "maps_search"
+  | "maps_directions"
+  | "weather_answer"
+  | "location_answer"
+  | "contact_create"
+  | "health_query"
+  | "music_control"
+  | "home_control"
+  | "photos_show"
+  | "clarify";
+
+// Raw structured output from the planner model. Everything is best-effort and
+// gets cleaned by the deterministic validators before use.
+export type PlannerModelOutput = {
+  intent: PlannerIntent;
+  spokenText: string;
+  confidence: number;
+  needsClarification: boolean;
+  clarifyingQuestion: string | null;
+  missing: string[];
+  webQuery: string | null;
+  // For research-backed messages/emails: what to look up to fill the body
+  // (e.g. "next Atlanta Braves game date, time, venue"). null when not needed.
+  researchQuery: string | null;
+  wantsCalendar: boolean;
+  event: Partial<EventMemory> | null;
+  action: Partial<AssistantAction> | null;
+  contact: ContactMemory | null;
+  place: PlaceMemory | null;
+};
+
+// What planAssistantResponse returns. finalizeResponse turns this into the
+// AssistantResponse wire shape and enforces the spoken/action invariants.
+export type MemoryPatch = {
+  lastMentionedEvent?: EventMemory;
+  lastMentionedContact?: ContactMemory;
+  lastMentionedPlace?: PlaceMemory;
+  pendingClarification?: PendingClarification | null;
+  lastIntent?: string;
+};
+
+export type AssistantPlan = {
+  spokenText: string;
+  action: AssistantAction | null;
+  // When a single request maps to several actions (e.g. "add the next 3 games"),
+  // they go here. `action` mirrors actions[0] for back-compat.
+  actions?: AssistantAction[] | null;
+  memoryPatch: MemoryPatch;
+  needsExecution: boolean;
+  // Per-recipient style analysis, set only for compose_message plans.
+  messageAnalysis?: import("./messageStyle.js").MessageAnalysis | null;
+  debug?: any;
+};
+
+export function blankAction(type: AssistantActionType): AssistantAction {
+  return {
+    type,
+    recipientPhone: null,
+    recipientName: null,
+    contactQuery: null,
+    body: null,
+    calendarQuery: null,
+    daysAhead: null,
+    title: null,
+    startDate: null,
+    endDate: null,
+    location: null,
+    notes: null,
+    reminderQuery: null,
+    dueDate: null,
+    emailAddress: null,
+    emailSubject: null,
+    appName: null,
+    appUrl: null,
+    fallbackUrl: null,
+    mapsQuery: null,
+    mapsDestination: null,
+    liveActivityKind: null,
+    liveActivityMode: null,
+    recurrence: null,
+    triggerLocation: null,
+    triggerOnArrival: null,
+    metric: null,
+    homeAction: null,
+    homeTarget: null,
+    homeValue: null,
+    musicAction: null,
+    musicQuery: null,
+    healthDayOffset: null,
+    healthDayLabel: null,
+    photoDays: null,
+    trackKind: null,
+    trackQuery: null,
+    liveTitle: null,
+    liveSymbol: null,
+    line1: null,
+    line2: null,
+    trend: null,
+    statusText: null,
+    planItems: null
+  };
+}
