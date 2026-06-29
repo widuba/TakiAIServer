@@ -68,6 +68,7 @@ import { buildCalendarCreateAction } from "./validators.js";
 import { personaPromptBlock, GUARDRAILS } from "./persona.js";
 import { parseTrackCommand, fetchTrackerSnapshot } from "./tracker.js";
 import { looksLikePlanDay, generateDayPlan } from "./dayplan.js";
+import { looksLikeCookingRequest, generateRecipe } from "./cooking.js";
 import {
   NEUTRAL_VECTOR,
   STYLE_KEYS,
@@ -791,6 +792,24 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       return actionPlan(`${plan.summary}\n${lines}\n\nWant me to set all this up?`, action, { lastIntent: "day_plan" });
     }
     // Couldn't build a plan — fall through to a normal answer.
+  }
+
+  // "Cook me chicken parmesan" / "walk me through carbonara" -> a guided recipe
+  // the device walks through step by step (with per-step timers). Runs before the
+  // tracker/LLM so a cooking request is never mistaken for something else.
+  if (looksLikeCookingRequest(state.message)) {
+    const recipe = await generateRecipe(state.message);
+    if (recipe && recipe.title && recipe.steps.length) {
+      const action = blankAction("cooking_mode");
+      action.recipe = recipe;
+      const t = recipe.totalTime ? ` (about ${recipe.totalTime})` : "";
+      return actionPlan(
+        `Let's make ${recipe.title}${t} — I'll walk you through it step by step.`,
+        action,
+        { lastIntent: "cooking_mode" }
+      );
+    }
+    // Couldn't build a recipe — fall through to a normal answer.
   }
 
   // "Track AAPL" / "follow the Lakers game" -> a live finance/sports activity on

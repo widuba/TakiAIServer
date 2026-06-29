@@ -43,6 +43,7 @@ export type AssistantActionType =
   | "day_plan"
   | "automation_create"
   | "scheduled_message"
+  | "cooking_mode"
   | "memory_save";
 
 export type AssistantAction = {
@@ -119,6 +120,15 @@ export type AssistantAction = {
   // scheduled_message ("remind me to text Mom happy birthday at 9am") reuses
   // recipientName/contactQuery (who), body (the pre-written message), dueDate
   // (ISO fire time), and title (notification headline). No dedicated fields.
+  // cooking_mode: a guided recipe the device walks the user through step by step
+  // (each step can carry an optional timer in minutes).
+  recipe: {
+    title: string;
+    servings: string;
+    totalTime: string;
+    ingredients: string[];
+    steps: { instruction: string; timerMin?: number }[];
+  } | null;
 };
 
 export type DeviceLocation = {
@@ -376,6 +386,7 @@ export function blankAction(type: AssistantActionType): AssistantAction {
     automationTrigger: null,
     automationPlace: null,
     automationAction: null,
-    memoryFact: null
+    memoryFact: null,
+    recipe: null
   };
 }
