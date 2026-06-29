@@ -325,9 +325,32 @@ You MUST only report a status you can actually verify from the carrier's trackin
   }
 }
 
+// Package snapshot for the Live Activity. query = "carrier:number". Status is
+// best-effort (grounded search; carrier pages aren't always indexed) — falls back
+// to "Tracking…" so the card (with its Open-carrier button) is still useful.
+export async function fetchPackageSnapshot(query: string): Promise<TrackerSnapshot | null> {
+  const idx = query.indexOf(":");
+  const carrier = idx >= 0 ? query.slice(0, idx) : "";
+  const number = (idx >= 0 ? query.slice(idx + 1) : query).trim();
+  if (!number) return null;
+  let status: string | null = null;
+  try { status = await fetchPackageStatus(number, carrier); } catch { /* best effort */ }
+  const delivered = !!status && /deliver(ed)?/i.test(status);
+  const tail = number.length > 8 ? `#…${number.slice(-6)}` : `#${number}`;
+  return {
+    title: carrier || "Package",
+    symbol: delivered ? "✅" : "📦",
+    line1: status || "Tracking…",
+    line2: tail,
+    trend: delivered ? "up" : "flat",
+    status: ""
+  };
+}
+
 export async function fetchTrackerSnapshot(kind: string, query: string, timeZone: string = TIME_ZONE): Promise<TrackerSnapshot | null> {
   if (kind === "sports") return fetchSportsScore(query, timeZone);
   if (kind === "flight") return fetchFlightStatus(query, timeZone);
+  if (kind === "package") return fetchPackageSnapshot(query);
   // finance: crypto first (CoinGecko), then stocks (Yahoo).
   return (await fetchCryptoQuote(query)) || (await fetchStockQuote(query));
 }
@@ -340,7 +363,7 @@ const snapCache = new Map<string, { at: number; snap: TrackerSnapshot }>();
 // TTLs sized so a ~15s push loop carries fresh data: finance (free APIs) every
 // poll, sports each push during a game, flight a bit slower (status rarely
 // changes minute-to-minute, and each lookup is a grounded search).
-const SNAP_TTL: Record<string, number> = { finance: 8000, sports: 14000, flight: 30000 };
+const SNAP_TTL: Record<string, number> = { finance: 8000, sports: 14000, flight: 30000, package: 300000 };
 
 export async function cachedTrackerSnapshot(kind: string, query: string, timeZone?: string): Promise<TrackerSnapshot | null> {
   const key = `${kind}:${query.toLowerCase()}:${timeZone || ""}`;

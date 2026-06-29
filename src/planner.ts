@@ -71,7 +71,7 @@ import {
 } from "./tools.js";
 import { buildCalendarCreateAction } from "./validators.js";
 import { personaPromptBlock, GUARDRAILS } from "./persona.js";
-import { parseTrackCommand, fetchTrackerSnapshot, fetchAssetPrice, fetchPackageStatus, extractFlightCode } from "./tracker.js";
+import { parseTrackCommand, fetchTrackerSnapshot, fetchAssetPrice, extractFlightCode } from "./tracker.js";
 import { looksLikePlanDay, generateDayPlan } from "./dayplan.js";
 import { looksLikeCookingRequest, generateRecipe, parseRecipeImport, importRecipeFromUrl } from "./cooking.js";
 import {
@@ -871,19 +871,26 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
   {
     const pkg = parsePackageTracking(state.message);
     if (pkg) {
-      const action = blankAction("open_app");
-      action.appName = pkg.carrier ? `${pkg.carrier} tracking` : "package tracking";
+      const who = pkg.carrier ? `your ${pkg.carrier} package` : "your package";
+      const q = `${pkg.carrier || ""}:${pkg.number}`;
+      let snap = null;
+      try { snap = await fetchTrackerSnapshot("package", q, state.timeZone); } catch { /* best effort */ }
+      const action = blankAction("live_activity");
+      action.liveActivityKind = "package";
+      action.trackKind = "package";
+      action.trackQuery = q;
+      action.liveTitle = pkg.carrier || "Package";
+      action.liveSymbol = snap?.symbol || "📦";
+      action.line1 = snap?.line1 || "Tracking…";
+      action.line2 = snap?.line2 || `#…${pkg.number.slice(-6)}`;
+      action.trend = snap?.trend || "flat";
+      action.statusText = snap?.status || "";
+      // The carrier page — used for the "Open <carrier>" button on the activity.
+      action.appName = pkg.carrier || "carrier";
       action.appUrl = pkg.url;
       action.fallbackUrl = pkg.url;
-      const who = pkg.carrier ? `your ${pkg.carrier} package` : "your package";
-      // Bonus: try to surface the current status inline (best-effort, never blocks
-      // the deep link). Conservative — null when it can't be verified.
-      let statusLine = "";
-      try {
-        const st = await fetchPackageStatus(pkg.number, pkg.carrier);
-        if (st) statusLine = ` Latest: ${st}.`;
-      } catch { /* best effort */ }
-      return actionPlan(`${statusLine ? `${statusLine.trim()} ` : ""}Opening live tracking for ${who} (${pkg.number}).`, action, { lastIntent: "open_app" });
+      const note = snap?.line1 && snap.line1 !== "Tracking…" ? ` ${snap.line1}.` : "";
+      return actionPlan(`Tracking ${who} on your lock screen and Dynamic Island.${note}`, action, { lastIntent: "live_activity" });
     }
   }
 

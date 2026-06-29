@@ -155,15 +155,20 @@ setInterval(async () => {
       lastPushed.delete(reg.id);
       continue;
     }
-    if (reg.kind !== "finance" && reg.kind !== "sports" && reg.kind !== "flight") continue;
+    if (reg.kind !== "finance" && reg.kind !== "sports" && reg.kind !== "flight" && reg.kind !== "package") continue;
     try {
       const snap = await cachedTrackerSnapshot(reg.kind, String(reg.meta?.query || ""), reg.meta?.tz ? String(reg.meta.tz) : undefined);
       if (!snap) continue;
-      const content = {
+      const content: Record<string, unknown> = {
         line1: snap.line1, line2: snap.line2, trend: snap.trend,
         progress: -1, targetEpoch: 0, status: snap.status,
         depColor: snap.depColor, arrColor: snap.arrColor
       };
+      // Package activities keep their "Open <carrier>" button across pushes.
+      if (reg.kind === "package" && reg.meta?.url) {
+        content.actionLabel = `Open ${reg.meta?.carrier || "carrier"}`;
+        content.actionURL = String(reg.meta.url);
+      }
       const sig = JSON.stringify(content);
       if (lastPushed.get(reg.id) === sig) continue; // unchanged → don't spend a push
       const r = await sendLiveActivityUpdate(reg.token, content);
@@ -255,8 +260,8 @@ app.get("/api/track", async (req, res) => {
   const kind = typeof req.query.kind === "string" ? req.query.kind : "";
   const query = typeof req.query.q === "string" ? req.query.q : "";
   const tz = typeof req.query.tz === "string" ? req.query.tz : undefined;
-  if ((kind !== "finance" && kind !== "sports" && kind !== "flight") || !query) {
-    res.status(400).json({ error: "kind (finance|sports|flight) and q are required" });
+  if ((kind !== "finance" && kind !== "sports" && kind !== "flight" && kind !== "package") || !query) {
+    res.status(400).json({ error: "kind (finance|sports|flight|package) and q are required" });
     return;
   }
   try {
