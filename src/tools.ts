@@ -844,6 +844,21 @@ export function detectHealthDay(message: string, timeZone: string): { offset: nu
   return null;
 }
 
+// "Remember I'm vegetarian" / "note that my wife is Sarah" → a long-term fact to
+// store about the user (applied to every future reply). Returns the fact, or null.
+// "Remember TO …" is a reminder, not a fact, so it's excluded.
+export function parseRememberCommand(message: string): string | null {
+  const mm = message.trim().match(
+    /^(?:please\s+)?(?:remember|note|keep in mind|don'?t forget|for (?:future )?reference|just so you know|fyi|note to self)\b[:,]?\s+(?:that\s+)?(.+)/i
+  );
+  if (!mm) return null;
+  const fact = mm[1].trim().replace(/[.?!]+$/, "");
+  if (fact.length < 2) return null;
+  if (/^to\s+/i.test(fact)) return null;          // "remember to call mom" = reminder
+  if (/^\b(my )?(alarm|timer)\b/i.test(fact)) return null;
+  return fact;
+}
+
 // "When I get to the gym, start my playlist" → a location automation. The
 // `action` is run through the normal pipeline when the geofence fires, so it can
 // be anything (music, home, text). Defers "remind me…" to the location-reminder
@@ -868,6 +883,27 @@ export function parseLocationAutomation(message: string): { trigger: "arrive" | 
   else if (/get to work|leave work/.test(t)) p = "work";
   if (!p || !action) return null;
   return { trigger: isLeave ? "leave" : "arrive", place: p, action };
+}
+
+// Built-in home "scenes" — one phrase fires several HomeKit actions. Returns the
+// scene's steps (each a home_control spec), or null. Limited to on/off/lock/
+// thermostat since that's what HomeBridge supports.
+export function parseSceneCommand(message: string): { scene: string; steps: { action: string; target: string; value: number }[] } | null {
+  const m = message.toLowerCase().trim();
+  let key = "";
+  if (/\b(good ?night|night night)\b/.test(m)) key = "goodnight";
+  else if (/\b(movie (night|time|mode)|movie's? starting)\b/.test(m)) key = "movie night";
+  else if (/\b(i'?m leaving|heading out|leaving (the )?(house|home)|away mode|leaving now)\b/.test(m)) key = "leaving";
+  else if (/\b(i'?m home|i'?m back|arrived home)\b/.test(m)) key = "i'm home";
+  else return null;
+  const scenes: Record<string, { action: string; target?: string; value?: number }[]> = {
+    goodnight: [{ action: "lightsOff" }, { action: "lock" }],
+    "movie night": [{ action: "lightsOff" }],
+    leaving: [{ action: "lightsOff" }, { action: "lock" }],
+    "i'm home": [{ action: "unlock" }, { action: "lightsOn" }]
+  };
+  const steps = scenes[key].map((s) => ({ action: s.action, target: s.target || "", value: s.value || 0 }));
+  return { scene: key, steps };
 }
 
 // Parse a HomeKit command, else null.

@@ -57,6 +57,8 @@ import {
   detectHealthMetric,
   detectHealthDay,
   parseLocationAutomation,
+  parseRememberCommand,
+  parseSceneCommand,
   parseHomeCommand,
   parseMusicCommand,
   parsePhotosCommand
@@ -614,6 +616,32 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
   if (looksLikeMathQuestion(state.message)) {
     const res = await computeMath(state.message);
     if (res) return answerPlan(res, { lastIntent: "answer_only" });
+  }
+
+  // "Remember I'm vegetarian" -> store a long-term fact (device appends it to the
+  // user's profile, which is injected into every future prompt + iCloud-synced).
+  {
+    const fact = parseRememberCommand(state.message);
+    if (fact) {
+      const action = blankAction("memory_save");
+      action.memoryFact = fact;
+      return actionPlan(`Got it — I'll remember that.`, action, { lastIntent: "memory_save" });
+    }
+  }
+
+  // Home "scenes" — "goodnight" / "movie night" / "I'm leaving" fire several
+  // HomeKit actions at once.
+  {
+    const scene = parseSceneCommand(state.message);
+    if (scene) {
+      const actions = scene.steps.map((s) => {
+        const a = blankAction("home_control");
+        a.homeAction = s.action; a.homeTarget = s.target || null; a.homeValue = s.value || null;
+        return a;
+      });
+      const niceName = scene.scene === "goodnight" ? "Goodnight" : scene.scene === "i'm home" ? "Welcome home" : scene.scene === "movie night" ? "Movie night" : "Heading out";
+      return actionsPlan(`${niceName} — setting up your ${scene.scene === "goodnight" || scene.scene === "leaving" ? "place" : "scene"}.`, actions, { lastIntent: "home_control" });
+    }
   }
 
   // "When I get to the gym, start my playlist" -> a location automation. MUST run

@@ -41,7 +41,8 @@ export type AssistantActionType =
   | "music_control"
   | "photos_show"
   | "day_plan"
-  | "automation_create";
+  | "automation_create"
+  | "memory_save";
 
 export type AssistantAction = {
   type: AssistantActionType;
@@ -112,6 +113,8 @@ export type AssistantAction = {
   automationTrigger: string | null; // "arrive" | "leave"
   automationPlace: string | null;
   automationAction: string | null;
+  // memory_save: a long-term fact to append to the user's profile.
+  memoryFact: string | null;
 };
 
 export type DeviceLocation = {
@@ -368,6 +371,7 @@ export function blankAction(type: AssistantActionType): AssistantAction {
     planItems: null,
     automationTrigger: null,
     automationPlace: null,
-    automationAction: null
+    automationAction: null,
+    memoryFact: null
   };
 }
