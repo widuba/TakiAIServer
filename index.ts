@@ -138,29 +138,42 @@ const LA_MAX_MS = 6 * 60 * 60 * 1000;
 const deadToken = (r: { status: number; reason?: string }) =>
   r.status === 410 || r.reason === "BadDeviceToken" || r.reason === "Unregistered" || r.reason === "ExpiredProviderToken";
 
-// Finance/sports: re-fetch the numbers and push every minute.
+// Last content-state we pushed per activity — so we only push when something
+// actually changed (pushing identical frames every 15s wastes Apple's Live
+// Activity budget and invites throttling).
+const lastPushed = new Map<string, string>();
+
+// Data trackers (finance/sports/flight): re-fetch (cached) and push every 15s,
+// but only when the content changed. So the lock screen updates within ~15s of
+// any change, app open OR closed.
 setInterval(async () => {
   if (!isPushConfigured()) return;
   for (const reg of getLiveActivities()) {
     if (Date.now() - reg.startedAt > LA_MAX_MS) {
       await sendLiveActivityUpdate(reg.token, null, "end");
       unregisterLiveActivity(reg.id);
+      lastPushed.delete(reg.id);
       continue;
     }
-    if (reg.kind !== "finance" && reg.kind !== "sports") continue;
+    if (reg.kind !== "finance" && reg.kind !== "sports" && reg.kind !== "flight") continue;
     try {
       const snap = await cachedTrackerSnapshot(reg.kind, String(reg.meta?.query || ""), reg.meta?.tz ? String(reg.meta.tz) : undefined);
       if (!snap) continue;
-      const r = await sendLiveActivityUpdate(reg.token, {
+      const content = {
         line1: snap.line1, line2: snap.line2, trend: snap.trend,
-        progress: -1, targetEpoch: 0, status: snap.status
-      });
-      if (deadToken(r)) unregisterLiveActivity(reg.id);
+        progress: -1, targetEpoch: 0, status: snap.status,
+        depColor: snap.depColor, arrColor: snap.arrColor
+      };
+      const sig = JSON.stringify(content);
+      if (lastPushed.get(reg.id) === sig) continue; // unchanged → don't spend a push
+      const r = await sendLiveActivityUpdate(reg.token, content);
+      if (deadToken(r)) { unregisterLiveActivity(reg.id); lastPushed.delete(reg.id); }
+      else lastPushed.set(reg.id, sig);
     } catch (error) {
       console.error("Live Activity push error:", error);
     }
   }
-}, 60 * 1000);
+}, 15 * 1000);
 
 // Commute: re-check live traffic and push an updated departure time every 3 min
 // (slower than finance — traffic drifts gradually, and this hits the Directions
@@ -193,28 +206,6 @@ setInterval(async () => {
     }
   }
 }, 3 * 60 * 1000);
-
-// Flight: background-push every 60s, in line with finance/sports (foreground
-// polls every 10s; the cached snapshot keeps the grounded lookup from running
-// more than ~once/90s). Lifetime end is handled by the main loop's LA_MAX_MS.
-setInterval(async () => {
-  if (!isPushConfigured()) return;
-  for (const reg of getLiveActivities()) {
-    if (reg.kind !== "flight") continue;
-    try {
-      const snap = await cachedTrackerSnapshot("flight", String(reg.meta?.query || ""), reg.meta?.tz ? String(reg.meta.tz) : undefined);
-      if (!snap) continue;
-      const r = await sendLiveActivityUpdate(reg.token, {
-        line1: snap.line1, line2: snap.line2, trend: snap.trend,
-        progress: -1, targetEpoch: 0, status: snap.status,
-        depColor: snap.depColor, arrColor: snap.arrColor
-      });
-      if (deadToken(r)) unregisterLiveActivity(reg.id);
-    } catch (error) {
-      console.error("Flight push error:", error);
-    }
-  }
-}, 60 * 1000);
 
 /* ---- Batch B proactive alerts (price / score) -------------------------- */
 

@@ -337,7 +337,10 @@ export async function fetchTrackerSnapshot(kind: string, query: string, timeZone
 // APIs) gets a short TTL so it actually refreshes each poll; sports/flight get a
 // longer TTL (the data changes slowly) and serve cached snapshots in between.
 const snapCache = new Map<string, { at: number; snap: TrackerSnapshot }>();
-const SNAP_TTL: Record<string, number> = { finance: 8000, sports: 25000, flight: 90000 };
+// TTLs sized so a ~15s push loop carries fresh data: finance (free APIs) every
+// poll, sports each push during a game, flight a bit slower (status rarely
+// changes minute-to-minute, and each lookup is a grounded search).
+const SNAP_TTL: Record<string, number> = { finance: 8000, sports: 14000, flight: 30000 };
 
 export async function cachedTrackerSnapshot(kind: string, query: string, timeZone?: string): Promise<TrackerSnapshot | null> {
   const key = `${kind}:${query.toLowerCase()}:${timeZone || ""}`;
