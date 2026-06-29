@@ -243,3 +243,14 @@ export async function fetchTrackerSnapshot(kind: string, query: string, timeZone
   // finance: crypto first (CoinGecko), then stocks (Yahoo).
   return (await fetchCryptoQuote(query)) || (await fetchStockQuote(query));
 }
+
+// Numeric price for an asset (crypto or stock), reusing the same resolution as
+// the trackers. Used by the price-alert engine. Returns the displayed price (the
+// same value the user sees), its label, and 24h trend, or null.
+export async function fetchAssetPrice(query: string): Promise<{ price: number; label: string; trend: string } | null> {
+  const snap = await fetchTrackerSnapshot("finance", query);
+  if (!snap) return null;
+  const price = parseFloat(snap.line1.replace(/[^0-9.]/g, ""));
+  if (!Number.isFinite(price)) return null;
+  return { price, label: snap.title, trend: snap.trend };
+}

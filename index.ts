@@ -16,6 +16,8 @@ import {
   registerLiveActivity, unregisterLiveActivity, getLiveActivities, sendLiveActivityUpdate
 } from "./src/push.js";
 import { fetchTrackerSnapshot } from "./src/tracker.js";
+import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
+import { isDurable } from "./src/store.js";
 
 /* ============================================================================
  * Taki AI server — planner-first architecture (entrypoint).
@@ -191,6 +193,46 @@ setInterval(async () => {
     }
   }
 }, 3 * 60 * 1000);
+
+/* ---- Batch B proactive alerts (price / score) -------------------------- */
+
+// Register an alert the server will watch and push when it fires. The device
+// sends the alert spec it got back from the planner's alert_create action.
+app.post("/api/alerts", async (req, res) => {
+  const b = req.body || {};
+  const kind = b.kind === "price" || b.kind === "score" ? b.kind : "";
+  const query = typeof b.query === "string" ? b.query.trim() : "";
+  if (!kind || !query) { res.status(400).json({ error: "kind and query required" }); return; }
+  const base = { id: `alert-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, createdAt: Date.now(), query, label: typeof b.label === "string" && b.label ? b.label : query };
+  let alert: Alert;
+  if (kind === "price") {
+    const target = Number(b.target);
+    if (!Number.isFinite(target)) { res.status(400).json({ error: "target required" }); return; }
+    alert = { ...base, kind: "price", target, direction: b.direction === "below" ? "below" : "above" };
+  } else {
+    alert = { ...base, kind: "score", trigger: b.trigger === "final" ? "final" : "any" };
+  }
+  const result = await addAlert(alert);
+  res.json({ ...result, durable: isDurable() });
+});
+
+app.get("/api/alerts", async (_req, res) => {
+  res.json({ alerts: await listAlerts(), durable: isDurable() });
+});
+
+app.post("/api/alerts/cancel", async (req, res) => {
+  const b = req.body || {};
+  const filter = (b.kind || b.query) ? { kind: typeof b.kind === "string" ? b.kind : undefined, query: typeof b.query === "string" ? b.query : undefined } : undefined;
+  const removed = await cancelAlerts(filter);
+  res.json({ ok: true, removed });
+});
+
+// Background engine: sweep all alerts every 90s and push any that fire. Skips
+// entirely when push isn't configured (no APNs key) — alerts just sit until it is.
+setInterval(() => {
+  if (!isPushConfigured()) return;
+  void pollAlerts(process.env.ALERT_TZ || "America/New_York");
+}, 90 * 1000);
 
 // Live finance/sports snapshot for an active Live Activity. The device polls
 // this to keep the lock-screen / Dynamic Island tracker fresh.

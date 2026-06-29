@@ -940,6 +940,113 @@ export function parseScheduledMessage(
   return { recipient, body };
 }
 
+/* ============================================================================
+ * Batch B proactive-alert detectors. A PRICE alert ("alert me when bitcoin hits
+ * 70k") or a SCORE alert ("tell me when the Lakers game ends"). These are
+ * SERVER-WATCHED push subscriptions — distinct from "track/follow X" which starts
+ * a foreground Live Activity (parseTrackCommand). The alert verb ("alert me",
+ * "notify me", "let me know", "tell me when") is what disambiguates them.
+ * ==========================================================================*/
+
+const ALERT_VERB = /\b(alert|notify|ping|text|tell|let)\s+me\b|\bkeep me (?:posted|updated|in the loop)\b|\bnotify me\b/i;
+
+// Parse a numeric amount like "70k", "3,500", "$180.50", "1.2m".
+function parseAmount(raw: string): number | null {
+  const m = raw.replace(/[$,\s]/g, "").match(/^(\d+(?:\.\d+)?)([km])?$/i);
+  if (!m) return null;
+  let n = parseFloat(m[1]);
+  if (!Number.isFinite(n)) return null;
+  if (m[2]) n *= m[2].toLowerCase() === "k" ? 1_000 : 1_000_000;
+  return n;
+}
+
+// "alert me when bitcoin hits 70k" / "tell me if AAPL drops below 180" /
+// "let me know when tesla goes above 300". Returns the asset query + target +
+// direction, or null.
+export function parsePriceAlert(
+  message: string
+): { query: string; target: number; direction: "above" | "below"; label: string } | null {
+  const m = message.trim();
+  if (!ALERT_VERB.test(m)) return null;
+  // Needs a price-ish cue + a number.
+  const mm = m.match(
+    /\b(?:alert|notify|ping|text|tell|let)\s+me\s+(?:know\s+)?(?:when|if|once|as soon as)\s+(.+?)\s+(hits?|reaches?|gets? to|goes? (?:above|over|up to|below|under)|drops? (?:below|under|to)|falls? (?:below|under|to)|rises? (?:above|to)|crosses?|is (?:above|over|below|under|at)|hit|reach|above|over|below|under)\s+\$?([\d.,]+\s*[km]?)\b/i
+  );
+  if (!mm) return null;
+  let asset = mm[1].trim().replace(/^(the|a)\s+/i, "");
+  const verb = mm[2].toLowerCase();
+  const target = parseAmount(mm[3]);
+  if (target == null) return null;
+  // Strip price words from the asset ("bitcoin price"/"price of gold" → the
+  // bare asset) and any leftover leading "of"/"the".
+  asset = asset
+    .replace(/\b(price|stock|crypto|coin|shares?|value)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^(?:of|for|the|a)\s+/i, "")
+    .trim();
+  if (!asset) return null;
+  const direction: "above" | "below" =
+    /\b(below|under|drops?|falls?|down)\b/.test(verb) ? "below" : "above";
+  const label = asset.length <= 4 ? asset.toUpperCase() : asset.replace(/\b\w/g, (c) => c.toUpperCase());
+  return { query: asset, target, direction, label };
+}
+
+// "tell me when the Lakers game ends" / "let me know the final score of the
+// Lakers game" / "keep me posted on the Lakers". Returns the team + trigger, or
+// null. NOTE: must NOT swallow "track/follow the Lakers" (that's a Live Activity).
+export function parseScoreAlert(
+  message: string
+): { query: string; trigger: "final" | "any"; label: string } | null {
+  const m = message.trim();
+  if (!ALERT_VERB.test(m)) return null;
+  if (/\b(price|stock|crypto|\$|hits?|reaches?)\b/i.test(m)) return null; // that's a price alert
+
+  let team = "";
+  let trigger: "final" | "any" = "any";
+
+  // "keep me posted/updated on the Lakers" → ongoing ("any").
+  let mm = m.match(/\bkeep me (?:posted|updated|in the loop)\s+(?:on|about|with)\s+(?:the\s+)?(.+?)(?:\s+game)?[.?!]*$/i);
+  if (mm) { team = mm[1]; trigger = "any"; }
+
+  // "tell me when the Lakers game ends / is final / finishes" → final.
+  if (!team) {
+    mm = m.match(/\b(?:alert|notify|ping|text|tell|let)\s+me\s+(?:know\s+)?(?:when|if|once)\s+(?:the\s+)?(.+?)\s+game\s+(?:ends?|is over|finishes?|is final|wraps up)\b/i);
+    if (mm) { team = mm[1]; trigger = "final"; }
+  }
+  // "let me know the final score of the Lakers (game)" → final.
+  if (!team) {
+    mm = m.match(/\b(?:alert|notify|tell|let)\s+me\s+(?:know\s+)?(?:the\s+)?final(?:\s+score)?\s+(?:of|for)\s+(?:the\s+)?(.+?)(?:\s+game)?[.?!]*$/i);
+    if (mm) { team = mm[1]; trigger = "final"; }
+  }
+  // "tell me when the Lakers score / when the Lakers are winning" → any.
+  if (!team) {
+    mm = m.match(/\b(?:alert|notify|ping|tell|let)\s+me\s+(?:know\s+)?(?:when|if)\s+(?:the\s+)?(.+?)\s+(?:score|scores|are (?:winning|losing)|take the lead)\b/i);
+    if (mm) { team = mm[1]; trigger = "any"; }
+  }
+
+  team = (team || "").trim().replace(/^(the)\s+/i, "").replace(/\s+game$/i, "").replace(/[.?!]+$/, "").trim();
+  if (!team || team.length < 2) return null;
+  // Sanity: a team name, not a leftover price/other phrase.
+  if (/\b(text|email|call|remind)\b/i.test(team)) return null;
+  const label = team.replace(/\b\w/g, (c) => c.toUpperCase());
+  return { query: team, trigger, label };
+}
+
+// "cancel my alerts" / "stop alerting me about bitcoin" / "remove my price
+// alerts". Returns a filter (kind/query) or {} for "all", or null if not a cancel.
+export function parseAlertCancel(message: string): { kind?: string; query?: string } | null {
+  const m = message.toLowerCase().trim();
+  if (!/\b(cancel|stop|remove|delete|clear|turn off|unsubscribe)\b/.test(m)) return null;
+  if (!/\balert/.test(m) && !/\bnotif/.test(m)) return null;
+  const filter: { kind?: string; query?: string } = {};
+  if (/\bprice\b/.test(m)) filter.kind = "price";
+  else if (/\b(score|game|sports?)\b/.test(m)) filter.kind = "score";
+  const about = m.match(/\b(?:about|for|on)\s+(?:the\s+)?([a-z0-9 .'-]+?)(?:\s+(?:alert|alerts|notification|notifications))?[.?!]*$/i);
+  if (about && about[1] && !/^(my|all|the)$/i.test(about[1].trim())) filter.query = about[1].trim();
+  return filter;
+}
+
 // "When I get to the gym, start my playlist" → a location automation. The
 // `action` is run through the normal pipeline when the geofence fires, so it can
 // be anything (music, home, text). Defers "remind me…" to the location-reminder

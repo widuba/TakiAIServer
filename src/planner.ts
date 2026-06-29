@@ -58,6 +58,9 @@ import {
   detectHealthDay,
   parseLocationAutomation,
   parseScheduledMessage,
+  parsePriceAlert,
+  parseScoreAlert,
+  parseAlertCancel,
   parseRememberCommand,
   parseSceneCommand,
   parseHomeCommand,
@@ -792,6 +795,45 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       return actionPlan(`${plan.summary}\n${lines}\n\nWant me to set all this up?`, action, { lastIntent: "day_plan" });
     }
     // Couldn't build a plan — fall through to a normal answer.
+  }
+
+  // Proactive ALERTS (batch B). "Alert me when bitcoin hits 70k" / "tell me when
+  // the Lakers game ends" -> a server-watched push subscription. MUST run before
+  // the cooking/track/crypto-question detectors so an alert verb isn't grabbed as
+  // an immediate quote or a Live Activity.
+  {
+    const cancel = parseAlertCancel(state.message);
+    if (cancel) {
+      const action = blankAction("alert_cancel");
+      action.alertKind = cancel.kind || null;
+      action.alertQuery = cancel.query || null;
+      return actionPlan(`Done — I've turned off those alerts.`, action, { lastIntent: "alert_cancel" });
+    }
+    const price = parsePriceAlert(state.message);
+    if (price) {
+      const action = blankAction("alert_create");
+      action.alertKind = "price";
+      action.alertQuery = price.query;
+      action.alertTarget = price.target;
+      action.alertDirection = price.direction;
+      action.title = price.label;
+      const dir = price.direction === "above" ? "rises above" : "drops below";
+      return actionPlan(
+        `Got it — I'll alert you when ${price.label} ${dir} $${price.target.toLocaleString("en-US")}.`,
+        action,
+        { lastIntent: "alert_create" }
+      );
+    }
+    const score = parseScoreAlert(state.message);
+    if (score) {
+      const action = blankAction("alert_create");
+      action.alertKind = "score";
+      action.alertQuery = score.query;
+      action.alertTrigger = score.trigger;
+      action.title = score.label;
+      const what = score.trigger === "final" ? `when the ${score.label} game is final` : `with ${score.label} score updates`;
+      return actionPlan(`You got it — I'll keep you posted ${what}.`, action, { lastIntent: "alert_create" });
+    }
   }
 
   // "Cook me chicken parmesan" / "walk me through carbonara" -> a guided recipe

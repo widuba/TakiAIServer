@@ -44,6 +44,8 @@ export type AssistantActionType =
   | "automation_create"
   | "scheduled_message"
   | "cooking_mode"
+  | "alert_create"
+  | "alert_cancel"
   | "memory_save";
 
 export type AssistantAction = {
@@ -129,6 +131,14 @@ export type AssistantAction = {
     ingredients: string[];
     steps: { instruction: string; timerMin?: number }[];
   } | null;
+  // alert_create / alert_cancel: a proactive server-watched alert. alertKind
+  // "price" (alertQuery + alertTarget + alertDirection) or "score" (alertQuery +
+  // alertTrigger "final"|"any"). The device registers/cancels it via /api/alerts.
+  alertKind: string | null;
+  alertQuery: string | null;
+  alertTarget: number | null;
+  alertDirection: string | null;
+  alertTrigger: string | null;
 };
 
 export type DeviceLocation = {
@@ -387,6 +397,11 @@ export function blankAction(type: AssistantActionType): AssistantAction {
     automationPlace: null,
     automationAction: null,
     memoryFact: null,
-    recipe: null
+    recipe: null,
+    alertKind: null,
+    alertQuery: null,
+    alertTarget: null,
+    alertDirection: null,
+    alertTrigger: null
   };
 }
