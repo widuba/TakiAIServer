@@ -267,14 +267,14 @@ Report the CURRENT status of airline flight "${flight}" for today (or its most r
 Respond with ONLY compact JSON (no markdown, no code fences):
 {
  "title":"<flight code · route, e.g. 'UA328 · DEN→HNL'>",
- "dep":"<scheduled departure → actual-or-expected departure, local times, e.g. '6:00→6:25p'; if it already departed use the actual time; if no delay info, just the scheduled time>",
- "arr":"<scheduled arrival → actual-or-expected arrival, e.g. '9:45→10:10p'; if it landed use the actual time>",
- "depColor":"<'green' if departed/leaving on time or early, 'yellow' if <30 min late or only estimated, 'red' if 30+ min late or cancelled>",
+ "dep":"<the single live DEPARTURE clock time, SHORT, e.g. '6:25p'; the actual time if it departed, otherwise the expected/scheduled time>",
+ "arr":"<the single live ARRIVAL clock time, SHORT, e.g. '10:10p'; the actual time if it landed, otherwise the expected/scheduled time>",
+ "depColor":"<'green' if departing/departed on time or early, 'yellow' if <30 min late or only estimated, 'red' if 30+ min late or cancelled>",
  "arrColor":"<same rule for arrival>",
- "status":"<SHORT overall + a useful detail: 'On time · Gate B22' | 'Delayed 25 min' | 'Boarding · T2' | 'In air' | 'Landed · Bag 5' | 'Cancelled'>",
+ "status":"<SHORT overall + ONE useful detail: 'On time · Gate B22' | 'Delayed 25 min' | 'Boarding · T2' | 'In air' | 'Landed · Bag 5' | 'Cancelled'>",
  "trend":"<'up' if on time or landed on time, 'down' if delayed/cancelled, else 'flat'>"
 }
-Use the user's local timezone (${timeZone}). Use a short 'a'/'p' am-pm suffix on the SECOND time of each pair only (e.g. '6:00→6:25p'). If you cannot identify this flight, respond with exactly: null`;
+Use the user's local timezone (${timeZone}). Keep dep/arr to ONE short time each (e.g. '6:25p', '10:10p') — the color shows whether it's delayed. If you cannot identify this flight, respond with exactly: null`;
   try {
     const res: any = await withTimeout(
       ai.models.generateContent({ model: RESEARCH_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }] } } as any),
