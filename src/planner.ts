@@ -898,9 +898,9 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
     if (code) {
       const snap = await fetchTrackerSnapshot("flight", code, state.timeZone);
       if (snap) {
-        const route = snap.line2 ? ` (${snap.line2})` : "";
-        const extra = snap.status ? `, ${snap.status}` : "";
-        return answerPlan(`${code}${route} — ${snap.line1}${extra}.`, { lastIntent: "web_search" });
+        const dep = snap.line1 ? ` Departs ${snap.line1}.` : "";
+        const arr = snap.line2 ? ` Arrives ${snap.line2}.` : "";
+        return answerPlan(`${snap.title} — ${snap.status}.${dep}${arr}`.trim(), { lastIntent: "web_search" });
       }
     }
     const res = await getStrictWebAnswer(state.message, { persona: state.userProfile, timeZone: state.timeZone });
@@ -932,9 +932,8 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
     if (track) {
       const snap = await fetchTrackerSnapshot(track.kind, track.query, state.timeZone);
       if (snap) {
-        // For flights, title the activity with the flight CODE the user typed
-        // ("DL100"), not the airline name the model returns ("Delta 100").
-        const title = track.kind === "flight" ? track.query : snap.title;
+        // Flight title already carries the code + route ("UA328 · DEN→HNL").
+        const title = snap.title;
         const action = blankAction("live_activity");
         action.liveActivityKind = track.kind; // "finance" | "sports" | "flight"
         action.trackKind = track.kind;
@@ -945,11 +944,13 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         action.line2 = snap.line2;
         action.trend = snap.trend;
         action.statusText = snap.status;
+        action.depColor = snap.depColor ?? null;
+        action.arrColor = snap.arrColor ?? null;
         const spoken =
           track.kind === "finance"
             ? `Tracking ${title} — ${snap.line1}${snap.status ? `, ${snap.status}` : ""}. It'll stay live on your lock screen.`
             : track.kind === "flight"
-            ? `Tracking ${title} — ${snap.line1}${snap.line2 ? ` (${snap.line2})` : ""}. I'll keep it live on your lock screen and Dynamic Island.`
+            ? `Tracking ${title} — ${snap.status}. Departure and arrival times are live on your lock screen and Dynamic Island.`
             : `Tracking ${title}. I'll keep the score live on your lock screen and Dynamic Island.`;
         return actionPlan(spoken, action, { lastIntent: "live_activity" });
       }

@@ -206,7 +206,8 @@ setInterval(async () => {
       if (!snap) continue;
       const r = await sendLiveActivityUpdate(reg.token, {
         line1: snap.line1, line2: snap.line2, trend: snap.trend,
-        progress: -1, targetEpoch: 0, status: snap.status
+        progress: -1, targetEpoch: 0, status: snap.status,
+        depColor: snap.depColor, arrColor: snap.arrColor
       });
       if (deadToken(r)) unregisterLiveActivity(reg.id);
     } catch (error) {
@@ -263,8 +264,8 @@ app.get("/api/track", async (req, res) => {
   const kind = typeof req.query.kind === "string" ? req.query.kind : "";
   const query = typeof req.query.q === "string" ? req.query.q : "";
   const tz = typeof req.query.tz === "string" ? req.query.tz : undefined;
-  if ((kind !== "finance" && kind !== "sports") || !query) {
-    res.status(400).json({ error: "kind (finance|sports) and q are required" });
+  if ((kind !== "finance" && kind !== "sports" && kind !== "flight") || !query) {
+    res.status(400).json({ error: "kind (finance|sports|flight) and q are required" });
     return;
   }
   try {

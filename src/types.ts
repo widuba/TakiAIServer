@@ -111,6 +111,10 @@ export type AssistantAction = {
   line2: string | null;        // secondary, e.g. "Apple Inc.", "Lakers lead"
   trend: string | null;        // "up" | "down" | "flat" (drives green/red tint)
   statusText: string | null;   // "+1.24% today", "Q4 · 2:15"
+  // flight tracker: per-leg color ("green"|"yellow"|"red") for the departure
+  // (line1) and arrival (line2) times.
+  depColor: string | null;
+  arrColor: string | null;
   // day_plan: the proposed schedule (the device confirms, then creates each).
   planItems: { type: string; title: string; startDate: string; durationMin?: number }[] | null;
   // automation_create: run `automationAction` when arriving at / leaving a place.
@@ -392,6 +396,8 @@ export function blankAction(type: AssistantActionType): AssistantAction {
     line2: null,
     trend: null,
     statusText: null,
+    depColor: null,
+    arrColor: null,
     planItems: null,
     automationTrigger: null,
     automationPlace: null,

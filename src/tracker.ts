@@ -17,6 +17,10 @@ export interface TrackerSnapshot {
   line2: string;   // "Apple Inc.", "Lakers lead"
   trend: string;   // "up" | "down" | "flat"
   status: string;  // "+1.24% today", "Q4 · 2:15"
+  // Flight only: per-leg color "green" | "yellow" | "red" for the dep/arr times
+  // (line1 = departure, line2 = arrival on a flight snapshot).
+  depColor?: string;
+  arrColor?: string;
 }
 
 const PRICE_HEADERS = { "User-Agent": "Mozilla/5.0 (compatible; TakiAI/1.0)" };
@@ -261,8 +265,16 @@ async function fetchFlightStatus(query: string, timeZone: string = TIME_ZONE): P
   const prompt = `Right now it is ${nowLocal}.
 Report the CURRENT status of airline flight "${flight}" for today (or its most recent/next occurrence if it operates daily).
 Respond with ONLY compact JSON (no markdown, no code fences):
-{"title":"<airline + number, e.g. 'United 123'>","line1":"<SHORT status: 'On time' | 'Delayed 25 min' | 'Boarding' | 'Departed' | 'In air' | 'Landed' | 'Cancelled'>","line2":"<ORIGIN → DEST airport codes, e.g. 'DEN → HNL'>","status":"<the most useful operational detail, SHORT: before departure → 'Gate B22 · T2 · dep 6:00 PM'; in air → 'lands 9:45 PM'; after landing → 'Landed · Bag claim 5'>","trend":"<'up' if on time or landed, 'down' if delayed or cancelled, else 'flat'>"}
-Include gate and terminal when known (before departure) and baggage claim when known (after landing). Use the user's local timezone (${timeZone}) for any times. If you cannot identify this flight, respond with exactly: null`;
+{
+ "title":"<flight code · route, e.g. 'UA328 · DEN→HNL'>",
+ "dep":"<scheduled departure → actual-or-expected departure, local times, e.g. '6:00→6:25p'; if it already departed use the actual time; if no delay info, just the scheduled time>",
+ "arr":"<scheduled arrival → actual-or-expected arrival, e.g. '9:45→10:10p'; if it landed use the actual time>",
+ "depColor":"<'green' if departed/leaving on time or early, 'yellow' if <30 min late or only estimated, 'red' if 30+ min late or cancelled>",
+ "arrColor":"<same rule for arrival>",
+ "status":"<SHORT overall + a useful detail: 'On time · Gate B22' | 'Delayed 25 min' | 'Boarding · T2' | 'In air' | 'Landed · Bag 5' | 'Cancelled'>",
+ "trend":"<'up' if on time or landed on time, 'down' if delayed/cancelled, else 'flat'>"
+}
+Use the user's local timezone (${timeZone}). Use a short 'a'/'p' am-pm suffix on the SECOND time of each pair only (e.g. '6:00→6:25p'). If you cannot identify this flight, respond with exactly: null`;
   try {
     const res: any = await withTimeout(
       ai.models.generateContent({ model: RESEARCH_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }] } } as any),
@@ -271,15 +283,18 @@ Include gate and terminal when known (before departure) and baggage claim when k
     let text = (res.text || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
     if (/^null$/i.test(text)) return null;
     const obj = JSON.parse(text);
-    if (!obj || typeof obj.line1 !== "string") return null;
+    if (!obj || (typeof obj.dep !== "string" && typeof obj.status !== "string")) return null;
     const trend = obj.trend === "up" || obj.trend === "down" ? obj.trend : "flat";
+    const color = (c: any) => (c === "green" || c === "yellow" || c === "red" ? c : "green");
     return {
-      title: String(obj.title || flight).slice(0, 28),
+      title: String(obj.title || flight).slice(0, 30),
       symbol: "✈️",
-      line1: String(obj.line1 || "").slice(0, 24),
-      line2: String(obj.line2 || "").slice(0, 30),
+      line1: String(obj.dep || "").slice(0, 22),  // departure (scheduled → actual)
+      line2: String(obj.arr || "").slice(0, 22),  // arrival (scheduled → actual)
       trend,
-      status: String(obj.status || "").slice(0, 44)
+      status: String(obj.status || "").slice(0, 44),
+      depColor: color(obj.depColor),
+      arrColor: color(obj.arrColor)
     };
   } catch (error) {
     console.error("Flight status error:", error);
