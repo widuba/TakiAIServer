@@ -42,6 +42,7 @@ export type AssistantActionType =
   | "photos_show"
   | "day_plan"
   | "automation_create"
+  | "scheduled_message"
   | "memory_save";
 
 export type AssistantAction = {
@@ -115,6 +116,9 @@ export type AssistantAction = {
   automationAction: string | null;
   // memory_save: a long-term fact to append to the user's profile.
   memoryFact: string | null;
+  // scheduled_message ("remind me to text Mom happy birthday at 9am") reuses
+  // recipientName/contactQuery (who), body (the pre-written message), dueDate
+  // (ISO fire time), and title (notification headline). No dedicated fields.
 };
 
 export type DeviceLocation = {

@@ -859,6 +859,87 @@ export function parseRememberCommand(message: string): string | null {
   return fact;
 }
 
+// "Remind me to text Mom happy birthday at 9am" → a draft-and-send-later: at the
+// given time the device fires a notification with the message pre-written;
+// tapping it opens the Messages composer pre-filled (via the same pending-command
+// path Siri/location-automations use). Returns the recipient + body + the raw
+// message (which the caller resolves to a fire time via parseAlarmTime), or null.
+//
+// Deliberately conservative — it ONLY fires on the explicit "remind me to
+// text/message …" (or "schedule a text …") framing so it never hijacks an
+// immediate "text Mom I'm here" (which should send right now via compose_message).
+export function parseScheduledMessage(
+  message: string
+): { recipient: string; body: string } | null {
+  let m = message.trim();
+
+  // Require the scheduling cue, then strip it.
+  const remind = /^(?:please\s+)?(?:can you|could you)?\s*remind me(?:\s+to)?\s+/i;
+  const sched = /^(?:please\s+)?schedule\s+(?:a\s+)?(?:text|message|imessage)\s+(?:to\s+)?/i;
+  if (remind.test(m)) m = m.replace(remind, "");
+  else if (sched.test(m)) {
+    // "schedule a text to Mom saying happy birthday at 9am" → reshape to
+    // "text Mom saying …" so the same head parser below works.
+    m = "text " + m.replace(sched, "");
+  } else {
+    return null;
+  }
+
+  // Must be a text/message command. Strip the verb (+ optional "a text to"
+  // wrapper) and capture the rest. Each optional carries its own leading space so
+  // the bare "send Mom …" form doesn't pre-consume the recipient's separator.
+  const head = m.match(
+    /^(?:text|message|imessage|send|shoot)(?:\s+(?:a|an)\b)?(?:\s+(?:text|message|imessage))?(?:\s+to)?\s+(.+)/i
+  );
+  if (!head) return null;
+
+  // There must be a parseable future time somewhere ("at 9am", "tomorrow at 8",
+  // "tonight", "in 2 hours") — otherwise it's a plain reminder, not a draft.
+  const TIME_TAIL =
+    /\s+(?:(?:at|by|around|@)\s+)?(?:\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)|tomorrow(?:\s+(?:morning|afternoon|evening|night|at\s+[^,]+))?|tonight(?:\s+at\s+[^,]+)?|this\s+(?:morning|afternoon|evening)|in\s+(?:a|an|\d+)\s*(?:minutes?|mins?|hours?|hrs?)|noon|midnight)\.?$/i;
+  const timeMatch = head[1].match(TIME_TAIL);
+  if (!timeMatch) return null;
+
+  // Everything before the time tail is "<recipient> [connector] <body>".
+  const rest = head[1].slice(0, timeMatch.index).trim().replace(/[,;:]+$/, "").trim();
+  if (!rest) return null;
+
+  // Pull the recipient: a leading run of name-like / relationship tokens.
+  const rel = /^(mom|mum|mommy|mama|dad|daddy|papa|mother|father|grandma|grandpa|granny|nana|wife|husband|hubby|fiance|fiancee|boyfriend|girlfriend|partner|sister|sis|brother|bro|son|daughter|boss|landlord|doctor|dentist)$/i;
+  const tokens = rest.split(/\s+/);
+  const recip: string[] = [];
+  let i = 0;
+  for (; i < tokens.length; i++) {
+    const t = tokens[i].replace(/[.,!?]+$/, "");
+    const isName = /^[A-Z][a-zA-Z'’.\-]*$/.test(t);
+    const isRel = rel.test(t);
+    if (recip.length === 0) {
+      if (isName || isRel) { recip.push(t); continue; }
+      return null; // first token isn't a plausible recipient
+    }
+    // Allow multi-word names ("Aunt Sue"), but stop at the body / connectors.
+    if (recip.length < 3 && isName && !/^(saying|that|and|to|telling)$/i.test(t)) {
+      recip.push(t); continue;
+    }
+    break;
+  }
+  const recipient = recip.join(" ").trim();
+  if (!recipient) return null;
+
+  // The rest is the message body; trim leading connectors ("saying", "that", …)
+  // and a leading "a … text/message" wrapper, plus a trailing "text"/"message".
+  let body = tokens.slice(i).join(" ").trim();
+  body = body
+    .replace(/^(?:saying|that|to\s+say|to\s+tell\s+(?:him|her|them)(?:\s+that)?|and\s+say|and\s+tell\s+(?:him|her|them)(?:\s+that)?|telling\s+(?:him|her|them)(?:\s+that)?|tell\s+(?:him|her|them)(?:\s+that)?)\s+/i, "")
+    .replace(/^(?:a|an)\s+/i, "")
+    .replace(/\s+(?:text|message)\.?$/i, "")
+    .replace(/[.]+$/, "")
+    .trim();
+  if (body.length < 1) return null;
+
+  return { recipient, body };
+}
+
 // "When I get to the gym, start my playlist" → a location automation. The
 // `action` is run through the normal pipeline when the geofence fires, so it can
 // be anything (music, home, text). Defers "remind me…" to the location-reminder

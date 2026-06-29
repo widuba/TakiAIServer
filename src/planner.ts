@@ -57,6 +57,7 @@ import {
   detectHealthMetric,
   detectHealthDay,
   parseLocationAutomation,
+  parseScheduledMessage,
   parseRememberCommand,
   parseSceneCommand,
   parseHomeCommand,
@@ -659,6 +660,32 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         ? (p === "home" ? "leave home" : p === "work" ? "leave work" : `leave ${p}`)
         : (p === "home" ? "get home" : p === "work" ? "get to work" : `get to ${p}`);
       return actionPlan(`Done — when you ${when}, I'll ${auto.action}.`, action, { lastIntent: "automation_create" });
+    }
+  }
+
+  // "Remind me to text Mom happy birthday at 9am" -> draft-and-send-later. At the
+  // given time the device fires a notification carrying the pre-written message;
+  // tapping it opens the Messages composer pre-filled. MUST run before the
+  // music/home detectors and before the LLM (which would mis-route it to a plain
+  // reminder_create that loses the message body).
+  {
+    const sm = parseScheduledMessage(state.message);
+    if (sm) {
+      const when = await parseAlarmTime(state.message, state.nowIso, state.timeZone);
+      if (when) {
+        const action = blankAction("scheduled_message");
+        action.recipientName = sm.recipient;
+        action.contactQuery = sm.recipient;
+        action.body = sm.body;
+        action.dueDate = when.iso;
+        action.title = `Text ${sm.recipient}`;
+        const whenLocal = formatEventDateTime(when.iso, state.timeZone);
+        return actionPlan(
+          `Got it — I'll remind you to text ${sm.recipient} ${whenLocal}, with the message ready to send.`,
+          action,
+          { lastIntent: "scheduled_message" }
+        );
+      }
     }
   }
 
