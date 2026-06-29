@@ -44,6 +44,7 @@ export type AssistantActionType =
   | "automation_create"
   | "scheduled_message"
   | "cooking_mode"
+  | "cooking_schedule"
   | "alert_create"
   | "alert_cancel"
   | "memory_save";

@@ -73,7 +73,7 @@ import { buildCalendarCreateAction } from "./validators.js";
 import { personaPromptBlock, GUARDRAILS } from "./persona.js";
 import { parseTrackCommand, fetchTrackerSnapshot, fetchAssetPrice, fetchPackageStatus, extractFlightCode } from "./tracker.js";
 import { looksLikePlanDay, generateDayPlan } from "./dayplan.js";
-import { looksLikeCookingRequest, generateRecipe } from "./cooking.js";
+import { looksLikeCookingRequest, generateRecipe, parseRecipeImport, importRecipeFromUrl } from "./cooking.js";
 import {
   NEUTRAL_VECTOR,
   STYLE_KEYS,
@@ -905,6 +905,36 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
     }
     const res = await getStrictWebAnswer(state.message, { persona: state.userProfile, timeZone: state.timeZone });
     return answerPlan(res.spokenText, { lastIntent: "web_search" });
+  }
+
+  // "Make this at 1pm: <recipe link>" -> import the user's OWN recipe from the
+  // URL, then either open cooking mode now, or (if they gave a time) schedule a
+  // "time to cook" alert that opens cooking mode for THAT recipe on tap. Runs
+  // before the generated-recipe path so a link always wins.
+  {
+    const imp = parseRecipeImport(state.message);
+    if (imp) {
+      const recipe = await importRecipeFromUrl(imp.url);
+      if (recipe && recipe.steps.length) {
+        const when = await parseAlarmTime(state.message, state.nowIso, state.timeZone);
+        if (when) {
+          const action = blankAction("cooking_schedule");
+          action.recipe = recipe;
+          action.dueDate = when.iso;
+          action.title = recipe.title;
+          const whenLocal = formatEventDateTime(when.iso, state.timeZone);
+          return actionPlan(
+            `Got it — I pulled up ${recipe.title} from that link. I'll alert you ${whenLocal} to start, then walk you through it step by step.`,
+            action,
+            { lastIntent: "cooking_schedule" }
+          );
+        }
+        const action = blankAction("cooking_mode");
+        action.recipe = recipe;
+        return actionPlan(`Got it — I pulled up ${recipe.title} from that link. Let's cook!`, action, { lastIntent: "cooking_mode" });
+      }
+      // Couldn't read a recipe from the link — fall through to a normal answer.
+    }
   }
 
   // "Cook me chicken parmesan" / "walk me through carbonara" -> a guided recipe

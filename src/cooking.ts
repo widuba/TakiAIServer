@@ -109,3 +109,206 @@ Rules:
     return null;
   }
 }
+
+/* ============================================================================
+ * Recipe IMPORT from a URL — "I want to make this at 1pm: <link>". Lets the user
+ * use ANY recipe they find online, not just ones the model knows. Extracts the
+ * schema.org Recipe JSON-LD that almost every recipe site embeds; falls back to
+ * reading the page text with the model.
+ * ==========================================================================*/
+
+// Detect "make/cook this … <url>" → the recipe URL, or null.
+export function parseRecipeImport(message: string): { url: string } | null {
+  const um = message.match(/https?:\/\/[^\s<>"')]+/i);
+  if (!um) return null;
+  let url = um[0].replace(/[)\].,!?]+$/, "");
+  const hasCookCue = /\b(make|cook|bake|recipe|prepare|whip up|fix|dinner|lunch|breakfast|this)\b/i.test(message);
+  const looksFoody = /(recipe|food|cook|kitchen|allrecipes|bonappetit|seriouseats|foodnetwork|epicurious|nytimes\.com\/cooking|delish|tasty|eat)/i.test(url);
+  if (!hasCookCue && !looksFoody) return null;
+  return { url };
+}
+
+function iso8601ToHuman(d: string): string {
+  const m = String(d || "").match(/^P(?:T)?(?:(\d+)H)?(?:(\d+)M)?/i);
+  if (!m) return "";
+  const h = parseInt(m[1] || "0", 10);
+  const min = parseInt(m[2] || "0", 10);
+  if (!h && !min) return "";
+  return [h ? `${h} hr` : "", min ? `${min} min` : ""].filter(Boolean).join(" ");
+}
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&#?\w+;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// A hands-off wait in a step ("bake 20 minutes", "simmer for 10 min") → timerMin.
+function deriveTimer(text: string): number | undefined {
+  const wait = /\b(bake|roast|simmer|boil|cook|rest|chill|refrigerate|marinate|fry|grill|steam|braise|proof|rise|let it sit|set aside)\b/i;
+  if (!wait.test(text)) return undefined;
+  const m = text.match(/\b(\d{1,3})(?:\s*(?:to|-)\s*\d{1,3})?\s*(hour|hr|minute|min)/i);
+  if (!m) return undefined;
+  let n = parseInt(m[1], 10);
+  if (/^h/i.test(m[2])) n *= 60;
+  return n > 0 && n <= 600 ? n : undefined;
+}
+
+function cleanStep(s: string): string {
+  return s.replace(/^\s*(?:step\s*)?\d+[.)]\s*/i, "").replace(/\s+/g, " ").trim().slice(0, 280);
+}
+
+// Walk an arbitrary JSON-LD value to find a node typed "Recipe".
+function findRecipeNode(data: any): any | null {
+  if (!data || typeof data !== "object") return null;
+  const isRecipe = (t: any) => (Array.isArray(t) ? t.includes("Recipe") : t === "Recipe");
+  if (isRecipe(data["@type"])) return data;
+  if (Array.isArray(data)) {
+    for (const el of data) { const f = findRecipeNode(el); if (f) return f; }
+  }
+  if (Array.isArray(data["@graph"])) {
+    for (const el of data["@graph"]) { const f = findRecipeNode(el); if (f) return f; }
+  }
+  return null;
+}
+
+function flattenInstructions(ri: any): string[] {
+  const out: string[] = [];
+  const push = (t: any) => { const s = typeof t === "string" ? t : (t && typeof t.text === "string" ? t.text : ""); const c = cleanStep(stripHtml(String(s))); if (c) out.push(c); };
+  if (typeof ri === "string") return stripHtml(ri).split(/\r?\n|(?<=[.!?])\s+(?=[A-Z])/).map(cleanStep).filter(Boolean).slice(0, 30);
+  if (Array.isArray(ri)) {
+    for (const el of ri) {
+      if (el && Array.isArray(el.itemListElement)) el.itemListElement.forEach(push); // HowToSection
+      else push(el);
+    }
+  }
+  return out.slice(0, 30);
+}
+
+function mapJsonLdRecipe(node: any): Recipe | null {
+  const title = cleanStep(stripHtml(String(node.name || ""))) || "Recipe";
+  const yieldRaw = Array.isArray(node.recipeYield) ? node.recipeYield[0] : node.recipeYield;
+  let servings = "";
+  if (yieldRaw != null) servings = /^\d+$/.test(String(yieldRaw)) ? `${yieldRaw} servings` : String(yieldRaw).slice(0, 30);
+  const totalTime = iso8601ToHuman(node.totalTime || node.cookTime || node.prepTime || "");
+  const ingredients = Array.isArray(node.recipeIngredient)
+    ? node.recipeIngredient.map((x: any) => cleanStep(stripHtml(String(x)))).filter(Boolean).slice(0, 40)
+    : [];
+  const stepTexts = flattenInstructions(node.recipeInstructions);
+  const steps: RecipeStep[] = stepTexts.map((t) => { const tm = deriveTimer(t); return tm ? { instruction: t, timerMin: tm } : { instruction: t }; });
+  if (steps.length < 2) return null;
+  return { title, servings, totalTime, ingredients, steps };
+}
+
+function extractJsonLdRecipe(html: string): Recipe | null {
+  const blocks = [...html.matchAll(/<script[^>]+application\/ld\+json[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1]);
+  for (const b of blocks) {
+    let data: any;
+    try { data = JSON.parse(b.trim().replace(/^﻿/, "")); } catch { continue; }
+    const node = findRecipeNode(data);
+    if (node) { const r = mapJsonLdRecipe(node); if (r) return r; }
+  }
+  return null;
+}
+
+// Map a parsed {title,servings,totalTime,ingredients,steps} object → Recipe.
+function recipeFromObject(obj: any): Recipe | null {
+  if (!obj || !obj.title || !Array.isArray(obj.steps)) return null;
+  const steps: RecipeStep[] = obj.steps
+    .filter((s: any) => s && typeof s.instruction === "string" && s.instruction.trim())
+    .map((s: any) => { const step: RecipeStep = { instruction: String(s.instruction).trim().slice(0, 280) }; const t = Number(s.timerMin); if (Number.isFinite(t) && t > 0 && t <= 600) step.timerMin = Math.round(t); else { const d = deriveTimer(step.instruction); if (d) step.timerMin = d; } return step; })
+    .slice(0, 24);
+  if (steps.length < 2) return null;
+  const ingredients = Array.isArray(obj.ingredients) ? obj.ingredients.filter((x: any) => typeof x === "string" && x.trim()).map((x: any) => String(x).trim().slice(0, 120)).slice(0, 40) : [];
+  return { title: String(obj.title).slice(0, 90), servings: String(obj.servings || "").slice(0, 30), totalTime: String(obj.totalTime || "").slice(0, 30), ingredients, steps };
+}
+
+// Focus a long page on the recipe itself — anchor on the "Ingredients" heading so
+// the model's window contains the ingredients + directions, not nav/ads/related.
+function focusRecipeText(text: string): string {
+  const i = text.search(/\bingredients?\b/i);
+  const start = i > 1200 ? i - 500 : 0;
+  return text.slice(start, start + 18000);
+}
+
+// Model fallback: read the page text and extract a structured recipe.
+async function extractRecipeFromText(text: string, url: string): Promise<Recipe | null> {
+  if (text.length < 80) return null;
+  const prompt = `${GUARDRAILS}
+
+Extract the cooking recipe from this web page into JSON. Use ONLY what's on the page; do not invent steps.
+PAGE (${url}):
+"""${focusRecipeText(text)}"""
+
+Return ONLY compact JSON:
+{"title":"<dish name>","servings":"<e.g. 4 servings>","totalTime":"<e.g. 35 min>","ingredients":["<qty + item>", ...],"steps":[{"instruction":"<one clear action>","timerMin":<minutes ONLY for a hands-off wait, else omit>}]}
+If the page has no real recipe, return {"title":""}.`;
+  try {
+    const res: any = await withTimeout(
+      ai.models.generateContent({ model: MAIN_MODEL, contents: prompt, config: { temperature: 0.2, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 } } } as any),
+      22000, "Recipe extract"
+    );
+    return recipeFromObject(JSON.parse((res.text || "{}").trim()));
+  } catch (error) {
+    console.error("Recipe extract error:", error);
+    return null;
+  }
+}
+
+// Grounded fallback for when the raw fetch is blocked (big recipe sites 403 a
+// datacenter request). The model retrieves the page via Google's infrastructure.
+// Fetch readable page text via the free Jina reader proxy, which renders the
+// page and bypasses the bot-blocking (Cloudflare 403s) that stops a direct
+// datacenter fetch of big recipe sites. No API key.
+async function fetchViaReader(url: string): Promise<string> {
+  try {
+    const r: any = await withTimeout(
+      fetch(`https://r.jina.ai/${url}`, { headers: { "Accept": "text/plain", "User-Agent": "TakiAI/1.0" } }),
+      18000, "Recipe reader"
+    );
+    if (!r.ok) return "";
+    return (await r.text()).slice(0, 60000);
+  } catch (error) {
+    console.error("Recipe reader error:", error);
+    return "";
+  }
+}
+
+// Fetch a recipe URL and return a structured Recipe. Tries, in order:
+//   1. direct fetch → schema.org JSON-LD (instant + exact; works for most blogs),
+//   2. the model reading the directly-fetched page text,
+//   3. the Jina reader proxy → model extraction (for sites that 403 a direct
+//      datacenter request, e.g. AllRecipes/Cloudflare).
+// Returns null if none yield a real recipe.
+export async function importRecipeFromUrl(url: string): Promise<Recipe | null> {
+  if (!/^https?:\/\//i.test(url)) return null;
+  let html = "";
+  try {
+    const r: any = await withTimeout(
+      fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9"
+        },
+        redirect: "follow"
+      }),
+      12000, "Recipe fetch"
+    );
+    if (r.ok) html = (await r.text()).slice(0, 2_000_000);
+  } catch (error) {
+    console.error("Recipe fetch error:", error);
+  }
+  if (html) {
+    const direct = extractJsonLdRecipe(html) || (await extractRecipeFromText(stripHtml(html), url));
+    if (direct) return direct;
+  }
+  // Blocked or unparseable → render it through the reader proxy, then extract.
+  const readable = await fetchViaReader(url);
+  if (readable) return await extractRecipeFromText(readable, url);
+  return null;
+}
