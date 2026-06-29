@@ -80,11 +80,12 @@ export async function addAlert(a: Alert): Promise<{ ok: boolean; reason?: string
   return { ok: true };
 }
 
-export async function cancelAlerts(filter?: { kind?: string; query?: string }): Promise<number> {
+export async function cancelAlerts(filter?: { id?: string; kind?: string; query?: string }): Promise<number> {
   await load();
   const before = alerts.length;
   alerts = alerts.filter((a) => {
     if (!filter) return false; // no filter = cancel all
+    if (filter.id) return a.id !== filter.id; // exact id → remove just that one
     if (filter.kind && a.kind !== filter.kind) return true;
     if (filter.query && !a.query.toLowerCase().includes(filter.query.toLowerCase())) return true;
     return false; // matches the filter → remove

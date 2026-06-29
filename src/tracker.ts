@@ -261,8 +261,8 @@ async function fetchFlightStatus(query: string, timeZone: string = TIME_ZONE): P
   const prompt = `Right now it is ${nowLocal}.
 Report the CURRENT status of airline flight "${flight}" for today (or its most recent/next occurrence if it operates daily).
 Respond with ONLY compact JSON (no markdown, no code fences):
-{"title":"<airline + number, e.g. 'United 123'>","line1":"<SHORT status: 'On time' | 'Delayed 25 min' | 'Boarding' | 'Departed' | 'In air' | 'Landed' | 'Cancelled'>","line2":"<ORIGIN → DEST airport codes, e.g. 'DEN → HNL'>","status":"<gate + local departure or arrival time / ETA, e.g. 'Gate B22 · dep 6:00 PM'>","trend":"<'up' if on time or landed, 'down' if delayed or cancelled, else 'flat'>"}
-Use the user's local timezone (${timeZone}) for any times. If you cannot identify this flight, respond with exactly: null`;
+{"title":"<airline + number, e.g. 'United 123'>","line1":"<SHORT status: 'On time' | 'Delayed 25 min' | 'Boarding' | 'Departed' | 'In air' | 'Landed' | 'Cancelled'>","line2":"<ORIGIN → DEST airport codes, e.g. 'DEN → HNL'>","status":"<the most useful operational detail, SHORT: before departure → 'Gate B22 · T2 · dep 6:00 PM'; in air → 'lands 9:45 PM'; after landing → 'Landed · Bag claim 5'>","trend":"<'up' if on time or landed, 'down' if delayed or cancelled, else 'flat'>"}
+Include gate and terminal when known (before departure) and baggage claim when known (after landing). Use the user's local timezone (${timeZone}) for any times. If you cannot identify this flight, respond with exactly: null`;
   try {
     const res: any = await withTimeout(
       ai.models.generateContent({ model: RESEARCH_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }] } } as any),
@@ -279,10 +279,33 @@ Use the user's local timezone (${timeZone}) for any times. If you cannot identif
       line1: String(obj.line1 || "").slice(0, 24),
       line2: String(obj.line2 || "").slice(0, 30),
       trend,
-      status: String(obj.status || "").slice(0, 30)
+      status: String(obj.status || "").slice(0, 44)
     };
   } catch (error) {
     console.error("Flight status error:", error);
+    return null;
+  }
+}
+
+// Best-effort grounded package status ("Out for delivery", "Delivered Tue") for a
+// tracking number. Returns a SHORT status string, or null when it can't be
+// verified (carrier tracking pages are often not indexed — so this is a bonus on
+// top of the deep link, never a replacement). Conservative to avoid fabrication.
+export async function fetchPackageStatus(number: string, carrier: string): Promise<string | null> {
+  const who = carrier ? `${carrier} ` : "";
+  const prompt = `Find the CURRENT shipment status for ${who}tracking number "${number}".
+Respond with ONLY a short status phrase of at most 6 words (e.g. "Out for delivery", "Delivered Monday", "In transit — Memphis, TN", "Label created").
+You MUST only report a status you can actually verify from the carrier's tracking for THIS exact number. If you cannot find it, respond with exactly: null`;
+  try {
+    const res: any = await withTimeout(
+      ai.models.generateContent({ model: RESEARCH_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }] } } as any),
+      RESEARCH_TIMEOUT_MS, "Package status"
+    );
+    const text = (res.text || "").trim().replace(/^```.*$/gm, "").replace(/^["']|["']$/g, "").trim();
+    if (!text || /^null$/i.test(text) || text.length > 60) return null;
+    return text;
+  } catch (error) {
+    console.error("Package status error:", error);
     return null;
   }
 }

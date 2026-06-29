@@ -243,7 +243,9 @@ app.get("/api/alerts", async (_req, res) => {
 
 app.post("/api/alerts/cancel", async (req, res) => {
   const b = req.body || {};
-  const filter = (b.kind || b.query) ? { kind: typeof b.kind === "string" ? b.kind : undefined, query: typeof b.query === "string" ? b.query : undefined } : undefined;
+  const filter = (b.id || b.kind || b.query)
+    ? { id: typeof b.id === "string" ? b.id : undefined, kind: typeof b.kind === "string" ? b.kind : undefined, query: typeof b.query === "string" ? b.query : undefined }
+    : undefined;
   const removed = await cancelAlerts(filter);
   res.json({ ok: true, removed });
 });

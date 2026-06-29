@@ -71,7 +71,7 @@ import {
 } from "./tools.js";
 import { buildCalendarCreateAction } from "./validators.js";
 import { personaPromptBlock, GUARDRAILS } from "./persona.js";
-import { parseTrackCommand, fetchTrackerSnapshot, extractFlightCode } from "./tracker.js";
+import { parseTrackCommand, fetchTrackerSnapshot, fetchAssetPrice, fetchPackageStatus, extractFlightCode } from "./tracker.js";
 import { looksLikePlanDay, generateDayPlan } from "./dayplan.js";
 import { looksLikeCookingRequest, generateRecipe } from "./cooking.js";
 import {
@@ -820,8 +820,20 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       action.alertDirection = price.direction;
       action.title = price.label;
       const dir = price.direction === "above" ? "rises above" : "drops below";
+      const tgt = `$${price.target.toLocaleString("en-US")}`;
+      // Look up the CURRENT price so the confirmation is glanceable: how far the
+      // asset is from the target right now.
+      let nowLine = "";
+      try {
+        const cur = await fetchAssetPrice(price.query);
+        if (cur) {
+          const pct = price.target > 0 ? Math.round(Math.abs((price.target - cur.price) / price.target) * 100) : 0;
+          const curStr = `$${cur.price.toLocaleString("en-US", { maximumFractionDigits: cur.price < 1 ? 6 : 2 })}`;
+          nowLine = ` It's ${curStr} now — about ${pct}% ${price.direction === "above" ? "to go" : "above"}.`;
+        }
+      } catch { /* best effort */ }
       return actionPlan(
-        `Got it — I'll alert you when ${price.label} ${dir} $${price.target.toLocaleString("en-US")}.`,
+        `Got it — I'll alert you when ${price.label} ${dir} ${tgt}.${nowLine}`,
         action,
         { lastIntent: "alert_create" }
       );
@@ -834,6 +846,22 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       action.alertTrigger = score.trigger;
       action.title = score.label;
       const what = score.trigger === "final" ? `when the ${score.label} game is final` : `with ${score.label} score updates`;
+      // If a game is LIVE right now, also put it on the lock screen immediately
+      // (a Live Activity), alongside the push alert.
+      let snap = null;
+      try { snap = await fetchTrackerSnapshot("sports", score.query, state.timeZone); } catch { /* ignore */ }
+      const live = snap && /\d/.test(snap.line1) && /\b(q[1-4]|quarter|half|period|inning|top|bot|end|\d{1,2}:\d{2}|final|live|ot)\b/i.test(snap.status || snap.line2 || "");
+      if (live && snap) {
+        const la = blankAction("live_activity");
+        la.liveActivityKind = "sports"; la.trackKind = "sports"; la.trackQuery = score.query;
+        la.liveTitle = snap.title; la.liveSymbol = snap.symbol;
+        la.line1 = snap.line1; la.line2 = snap.line2; la.trend = snap.trend; la.statusText = snap.status;
+        return actionsPlan(
+          `It's live now (${snap.line1}) — I've put the ${score.label} on your lock screen and I'll keep you posted ${what}.`,
+          [la, action],
+          { lastIntent: "alert_create" }
+        );
+      }
       return actionPlan(`You got it — I'll keep you posted ${what}.`, action, { lastIntent: "alert_create" });
     }
   }
@@ -848,7 +876,14 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       action.appUrl = pkg.url;
       action.fallbackUrl = pkg.url;
       const who = pkg.carrier ? `your ${pkg.carrier} package` : "your package";
-      return actionPlan(`Opening live tracking for ${who} (${pkg.number}).`, action, { lastIntent: "open_app" });
+      // Bonus: try to surface the current status inline (best-effort, never blocks
+      // the deep link). Conservative — null when it can't be verified.
+      let statusLine = "";
+      try {
+        const st = await fetchPackageStatus(pkg.number, pkg.carrier);
+        if (st) statusLine = ` Latest: ${st}.`;
+      } catch { /* best effort */ }
+      return actionPlan(`${statusLine ? `${statusLine.trim()} ` : ""}Opening live tracking for ${who} (${pkg.number}).`, action, { lastIntent: "open_app" });
     }
   }
 
