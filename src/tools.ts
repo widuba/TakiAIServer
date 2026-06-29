@@ -1519,6 +1519,13 @@ export function looksLikeLiveInfoQuestion(message: string) {
   // Open / closed / status right now.
   if (/\b(open|closed)\b/.test(m) && /\b(right now|now|currently|today|at the moment|still)\b/.test(m)) return true;
 
+  // Upcoming PUBLIC event schedule ("when's the next world cup game", "when does
+  // the super bowl start"). Routes to web — and crucially keeps it OUT of the LLM
+  // planner, which sometimes fabricates a calendar event instead. Excludes "my …"
+  // so personal-calendar questions ("when's my next meeting") aren't hijacked.
+  const publicEvent = /\b(game|match|fixture|kickoff|tip ?off|fight|bout|race|grand prix|tournament|finals?|playoffs?|series|olympics|world cup|super ?bowl|world series|championship|election|debate|concert|tour|premiere|episode|eclipse|launch|release)\b/;
+  if (/\bwhen(?:'?s| is| are| does| do| will)\b/.test(m) && publicEvent.test(m) && !/\bmy\b/.test(m)) return true;
+
   return false;
 }
 

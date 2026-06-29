@@ -423,7 +423,7 @@ Return exactly:
       // Disable "thinking": this is structured extraction from a very explicit
       // prompt, so the model's internal reasoning mostly adds latency (and was
       // the main cause of planner timeouts). This ~halves the response time.
-      config: { temperature: 0.1, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 }, ...safetyConfig(state.userProfile?.teen) }
+      config: { temperature: 0, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 }, ...safetyConfig(state.userProfile?.teen) }
     } as any),
     PLANNER_TIMEOUT_MS,
     "Planner"
