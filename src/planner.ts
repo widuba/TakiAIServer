@@ -623,8 +623,11 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       action.automationTrigger = auto.trigger;
       action.automationPlace = auto.place;
       action.automationAction = auto.action;
-      const verb = auto.trigger === "leave" ? "leave" : "get to";
-      return actionPlan(`Done — when you ${verb} ${auto.place}, I'll ${auto.action}.`, action, { lastIntent: "automation_create" });
+      const p = auto.place;
+      const when = auto.trigger === "leave"
+        ? (p === "home" ? "leave home" : p === "work" ? "leave work" : `leave ${p}`)
+        : (p === "home" ? "get home" : p === "work" ? "get to work" : `get to ${p}`);
+      return actionPlan(`Done — when you ${when}, I'll ${auto.action}.`, action, { lastIntent: "automation_create" });
     }
   }
 
