@@ -1190,8 +1190,19 @@ export function parseMusicCommand(message: string): { action: string; query: str
   if (/\b(skip|next|forward)\b[^.?!]*\b(song|track|tune|this|one)\b/.test(m) || /^(skip|next|next song|next track|skip this|skip it)$/.test(m) || /\b(skip|next) (this|it|song|track)\b/.test(m)) {
     return { action: "next", query: "" };
   }
-  if (/\b(previous|last|prior|go back|back a)\b[^.?!]*\b(song|track|tune|one)\b/.test(m) || /^(previous|previous track|previous song|go back|last song)$/.test(m)) {
+  if (/\b(previous|last|prior|go back|back a|rewind)\b[^.?!]*\b(song|track|tune|one)\b/.test(m) || /^(previous|previous track|previous song|go back|last song|rewind|rewind it|go back a song)$/.test(m)) {
     return { action: "previous", query: "" };
+  }
+  // Shuffle on/off (default = on, since "shuffle" usually means enable it).
+  if (/\bshuffl(?:e|ing)\b/.test(m) && (/\b(music|songs?|playlist|tracks?|tunes?|queue|it|them|my|everything|on|off|mode)\b/.test(m) || m.split(/\s+/).length <= 2)) {
+    if (/\b(off|stop|disable|turn off|no)\b/.test(m) || /\bunshuffle\b/.test(m)) return { action: "shuffleoff", query: "" };
+    return { action: "shuffleon", query: "" };
+  }
+  // Restart / start the current track over.
+  if (/^(restart|start over|start it over|from the (start|beginning)|play it again|play it from the (start|beginning))$/.test(m) ||
+      /\b(restart|from the beginning|from the start)\b[^.?!]*\b(song|track|tune|it|this)\b/.test(m) ||
+      /\bstart\b[^.?!]*\bover\b/.test(m)) {
+    return { action: "restart", query: "" };
   }
   if (/\b(resume|unpause|keep playing|continue|play again|start again)\b/.test(m) && /\b(music|song|playing|playback|track|it)\b/.test(m) || /^(resume|unpause|keep playing|continue)$/.test(m)) {
     return { action: "resume", query: "" };
