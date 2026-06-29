@@ -56,6 +56,7 @@ import {
   computeMath,
   detectHealthMetric,
   detectHealthDay,
+  parseLocationAutomation,
   parseHomeCommand,
   parseMusicCommand,
   parsePhotosCommand
@@ -685,6 +686,20 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
     action.startDate = new Date(endMs).toISOString();
     action.title = parsed.label || "Timer";
     return actionPlan("On it — starting your timer.", action, { lastIntent: "timer_set" });
+  }
+
+  // "When I get to the gym, start my playlist" -> a location automation the
+  // device sets up as a geofence (runs the action when you arrive/leave).
+  {
+    const auto = parseLocationAutomation(state.message);
+    if (auto) {
+      const action = blankAction("automation_create");
+      action.automationTrigger = auto.trigger;
+      action.automationPlace = auto.place;
+      action.automationAction = auto.action;
+      const verb = auto.trigger === "leave" ? "leave" : "get to";
+      return actionPlan(`Done — when you ${verb} ${auto.place}, I'll ${auto.action}.`, action, { lastIntent: "automation_create" });
+    }
   }
 
   // "Plan my day" -> propose a full schedule (alarms + calendar blocks). The

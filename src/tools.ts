@@ -844,6 +844,32 @@ export function detectHealthDay(message: string, timeZone: string): { offset: nu
   return null;
 }
 
+// "When I get to the gym, start my playlist" → a location automation. The
+// `action` is run through the normal pipeline when the geofence fires, so it can
+// be anything (music, home, text). Defers "remind me…" to the location-reminder
+// path. Returns null if it's not an automation.
+export function parseLocationAutomation(message: string): { trigger: "arrive" | "leave"; place: string; action: string } | null {
+  const trig = "(get to|getting to|arrive at|arriving at|arrive in|reach|get home|head home|get to work|leave the house|leave work|leave|exit|get out of)";
+  let trigger = "", place = "", action = "";
+  let mm = message.match(new RegExp(`\\bwhen(?:ever)? (?:i|we)\\s+${trig}\\s*(.*?)\\s*[,;]\\s*(.+)$`, "i"));
+  if (mm) { trigger = mm[1]; place = mm[2]; action = mm[3]; }
+  else {
+    mm = message.match(new RegExp(`^(.+?)\\s+(?:when|whenever|as soon as) (?:i|we)\\s+${trig}\\s*(.*)$`, "i"));
+    if (mm) { action = mm[1]; trigger = mm[2]; place = mm[3]; }
+  }
+  if (!mm) return null;
+  action = action.trim().replace(/[.?!]+$/, "");
+  // "remind me …" belongs to the location-reminder path, not automations.
+  if (/^remind me\b/i.test(action)) return null;
+  const t = trigger.toLowerCase();
+  const isLeave = /\b(leave|exit|get out)\b/.test(t);
+  let p = place.trim().replace(/^(the|my|a)\s+/i, "").replace(/[.?!]+$/, "").trim();
+  if (/get home|head home|leave the house/.test(t)) p = "home";
+  else if (/get to work|leave work/.test(t)) p = "work";
+  if (!p || !action) return null;
+  return { trigger: isLeave ? "leave" : "arrive", place: p, action };
+}
+
 // Parse a HomeKit command, else null.
 export function parseHomeCommand(message: string): { action: string; target: string; value: number } | null {
   const m = message.toLowerCase().trim();

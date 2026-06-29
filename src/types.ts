@@ -40,7 +40,8 @@ export type AssistantActionType =
   | "home_control"
   | "music_control"
   | "photos_show"
-  | "day_plan";
+  | "day_plan"
+  | "automation_create";
 
 export type AssistantAction = {
   type: AssistantActionType;
@@ -107,6 +108,10 @@ export type AssistantAction = {
   statusText: string | null;   // "+1.24% today", "Q4 · 2:15"
   // day_plan: the proposed schedule (the device confirms, then creates each).
   planItems: { type: string; title: string; startDate: string; durationMin?: number }[] | null;
+  // automation_create: run `automationAction` when arriving at / leaving a place.
+  automationTrigger: string | null; // "arrive" | "leave"
+  automationPlace: string | null;
+  automationAction: string | null;
 };
 
 export type DeviceLocation = {
@@ -360,6 +365,9 @@ export function blankAction(type: AssistantActionType): AssistantAction {
     line2: null,
     trend: null,
     statusText: null,
-    planItems: null
+    planItems: null,
+    automationTrigger: null,
+    automationPlace: null,
+    automationAction: null
   };
 }
