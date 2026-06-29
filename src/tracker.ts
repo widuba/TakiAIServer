@@ -267,14 +267,14 @@ Report the CURRENT status of airline flight "${flight}" for today (or its most r
 Respond with ONLY compact JSON (no markdown, no code fences):
 {
  "title":"<flight code · route, e.g. 'UA328 · DEN→HNL'>",
- "dep":"<the single live DEPARTURE clock time, SHORT, e.g. '6:25p'; the actual time if it departed, otherwise the expected/scheduled time>",
- "arr":"<the single live ARRIVAL clock time, SHORT, e.g. '10:10p'; the actual time if it landed, otherwise the expected/scheduled time>",
+ "dep":"<departure as 'SCHEDULED|note': the scheduled clock time, a pipe, then a SHORT note — 'on time', or 'exp 6:25p' if delayed/estimated, or 'departed 6:05p' if it already left. e.g. '6:00p|on time' or '6:00p|exp 6:25p'>",
+ "arr":"<arrival as 'SCHEDULED|note', same rule with 'arrived 9:50p'/'landed 9:50p' for the past. e.g. '9:45p|on time' or '9:45p|exp 10:10p'>",
  "depColor":"<'green' if departing/departed on time or early, 'yellow' if <30 min late or only estimated, 'red' if 30+ min late or cancelled>",
  "arrColor":"<same rule for arrival>",
  "status":"<SHORT overall + ONE useful detail: 'On time · Gate B22' | 'Delayed 25 min' | 'Boarding · T2' | 'In air' | 'Landed · Bag 5' | 'Cancelled'>",
  "trend":"<'up' if on time or landed on time, 'down' if delayed/cancelled, else 'flat'>"
 }
-Use the user's local timezone (${timeZone}). Keep dep/arr to ONE short time each (e.g. '6:25p', '10:10p') — the color shows whether it's delayed. If you cannot identify this flight, respond with exactly: null`;
+Use the user's local timezone (${timeZone}). Always include the '|note' part. If you cannot identify this flight, respond with exactly: null`;
   try {
     const res: any = await withTimeout(
       ai.models.generateContent({ model: RESEARCH_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }] } } as any),
@@ -289,8 +289,8 @@ Use the user's local timezone (${timeZone}). Keep dep/arr to ONE short time each
     return {
       title: String(obj.title || flight).slice(0, 30),
       symbol: "✈️",
-      line1: String(obj.dep || "").slice(0, 22),  // departure (scheduled → actual)
-      line2: String(obj.arr || "").slice(0, 22),  // arrival (scheduled → actual)
+      line1: String(obj.dep || "").slice(0, 30),  // departure "SCHEDULED|note"
+      line2: String(obj.arr || "").slice(0, 30),  // arrival "SCHEDULED|note"
       trend,
       status: String(obj.status || "").slice(0, 44),
       depColor: color(obj.depColor),

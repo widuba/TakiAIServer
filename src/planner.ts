@@ -898,8 +898,9 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
     if (code) {
       const snap = await fetchTrackerSnapshot("flight", code, state.timeZone);
       if (snap) {
-        const dep = snap.line1 ? ` Departs ${snap.line1}.` : "";
-        const arr = snap.line2 ? ` Arrives ${snap.line2}.` : "";
+        const leg = (s: string) => s.replace("|", ", "); // "6:00p|exp 6:25p" -> "6:00p, exp 6:25p"
+        const dep = snap.line1 ? ` Departs ${leg(snap.line1)}.` : "";
+        const arr = snap.line2 ? ` Arrives ${leg(snap.line2)}.` : "";
         return answerPlan(`${snap.title} — ${snap.status}.${dep}${arr}`.trim(), { lastIntent: "web_search" });
       }
     }
