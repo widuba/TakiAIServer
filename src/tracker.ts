@@ -54,7 +54,7 @@ const FINANCE_CUE =
 
 // Detect a "track X" command and classify it. Returns null for everything else
 // (including "track my steps", which has no finance/sports cue).
-export function parseTrackCommand(message: string): { kind: "finance" | "sports"; query: string } | null {
+export function parseTrackCommand(message: string): { kind: "finance" | "sports" | "flight"; query: string } | null {
   if (!TRACK_VERB.test(message)) return null;
   const m = message.toLowerCase();
 
@@ -63,6 +63,15 @@ export function parseTrackCommand(message: string): { kind: "finance" | "sports"
     .replace(/\b(the|a|an|please|for me|my|on|stock|price|of|live)\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
+
+  // Flight: "track flight UA123" / "follow flight DL 456". Needs the word
+  // "flight" AND an airline-code+number, so it never grabs a stock ticker.
+  if (/\bflight\b/i.test(message)) {
+    // Airline code (2-char IATA — incl. digit codes like B6/F9 — or 3-letter
+    // ICAO) + 1-4 digit flight number, optional space: "UA123", "DL 456", "B6 12".
+    const code = message.match(/\b([A-Z][A-Z0-9]|[A-Z]{3})\s?(\d{1,4})\b/i);
+    if (code) return { kind: "flight", query: (code[1] + code[2]).toUpperCase() };
+  }
 
   if (SPORTS_CUE.test(message)) return { kind: "sports", query: query || message };
   if (CRYPTO_WORD.test(m) || FINANCE_CUE.test(m) || /\$[A-Za-z]{1,5}\b/.test(message) || /\b[A-Z]{2,5}\b/.test(message)) {
@@ -238,8 +247,43 @@ If it hasn't started yet, set line1 to the matchup abbreviations with no scores 
 
 // Pull the current snapshot for a tracker. Used both when starting the activity
 // and by the device's refresh loop (/api/quote, /api/score).
+// Live flight status via grounded search (same free, no-key path as sports
+// scores). Returns a snapshot the Live Activity renders, or null if not found.
+async function fetchFlightStatus(query: string, timeZone: string = TIME_ZONE): Promise<TrackerSnapshot | null> {
+  const flight = query.toUpperCase().replace(/\s+/g, "");
+  const nowLocal = new Date().toLocaleString("en-US", { timeZone, dateStyle: "full", timeStyle: "short" });
+  const prompt = `Right now it is ${nowLocal}.
+Report the CURRENT status of airline flight "${flight}" for today (or its most recent/next occurrence if it operates daily).
+Respond with ONLY compact JSON (no markdown, no code fences):
+{"title":"<airline + number, e.g. 'United 123'>","line1":"<SHORT status: 'On time' | 'Delayed 25 min' | 'Boarding' | 'Departed' | 'In air' | 'Landed' | 'Cancelled'>","line2":"<ORIGIN → DEST airport codes, e.g. 'DEN → HNL'>","status":"<gate + local departure or arrival time / ETA, e.g. 'Gate B22 · dep 6:00 PM'>","trend":"<'up' if on time or landed, 'down' if delayed or cancelled, else 'flat'>"}
+Use the user's local timezone (${timeZone}) for any times. If you cannot identify this flight, respond with exactly: null`;
+  try {
+    const res: any = await withTimeout(
+      ai.models.generateContent({ model: RESEARCH_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }] } } as any),
+      RESEARCH_TIMEOUT_MS, "Flight status"
+    );
+    let text = (res.text || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+    if (/^null$/i.test(text)) return null;
+    const obj = JSON.parse(text);
+    if (!obj || typeof obj.line1 !== "string") return null;
+    const trend = obj.trend === "up" || obj.trend === "down" ? obj.trend : "flat";
+    return {
+      title: String(obj.title || flight).slice(0, 28),
+      symbol: "✈️",
+      line1: String(obj.line1 || "").slice(0, 24),
+      line2: String(obj.line2 || "").slice(0, 30),
+      trend,
+      status: String(obj.status || "").slice(0, 30)
+    };
+  } catch (error) {
+    console.error("Flight status error:", error);
+    return null;
+  }
+}
+
 export async function fetchTrackerSnapshot(kind: string, query: string, timeZone: string = TIME_ZONE): Promise<TrackerSnapshot | null> {
   if (kind === "sports") return fetchSportsScore(query, timeZone);
+  if (kind === "flight") return fetchFlightStatus(query, timeZone);
   // finance: crypto first (CoinGecko), then stocks (Yahoo).
   return (await fetchCryptoQuote(query)) || (await fetchStockQuote(query));
 }

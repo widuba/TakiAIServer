@@ -895,9 +895,12 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         action.line2 = snap.line2;
         action.trend = snap.trend;
         action.statusText = snap.status;
-        const spoken = track.kind === "finance"
-          ? `Tracking ${snap.title} — ${snap.line1}${snap.status ? `, ${snap.status}` : ""}. It'll stay live on your lock screen.`
-          : `Tracking ${snap.title}. I'll keep the score live on your lock screen and Dynamic Island.`;
+        const spoken =
+          track.kind === "finance"
+            ? `Tracking ${snap.title} — ${snap.line1}${snap.status ? `, ${snap.status}` : ""}. It'll stay live on your lock screen.`
+            : track.kind === "flight"
+            ? `Tracking ${snap.title} — ${snap.line1}${snap.line2 ? ` (${snap.line2})` : ""}. I'll keep it live on your lock screen and Dynamic Island.`
+            : `Tracking ${snap.title}. I'll keep the score live on your lock screen and Dynamic Island.`;
         return actionPlan(spoken, action, { lastIntent: "live_activity" });
       }
       // Couldn't fetch the data — fall through to a normal answer.

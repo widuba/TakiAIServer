@@ -194,6 +194,27 @@ setInterval(async () => {
   }
 }, 3 * 60 * 1000);
 
+// Flight: re-check status and push every 4 min (flights change slowly, and each
+// poll is a grounded search — same path as sports). Lifetime end is handled by
+// the main 60s loop's LA_MAX_MS check above (it runs for every kind).
+setInterval(async () => {
+  if (!isPushConfigured()) return;
+  for (const reg of getLiveActivities()) {
+    if (reg.kind !== "flight") continue;
+    try {
+      const snap = await fetchTrackerSnapshot("flight", String(reg.meta?.query || ""), reg.meta?.tz ? String(reg.meta.tz) : undefined);
+      if (!snap) continue;
+      const r = await sendLiveActivityUpdate(reg.token, {
+        line1: snap.line1, line2: snap.line2, trend: snap.trend,
+        progress: -1, targetEpoch: 0, status: snap.status
+      });
+      if (deadToken(r)) unregisterLiveActivity(reg.id);
+    } catch (error) {
+      console.error("Flight push error:", error);
+    }
+  }
+}, 4 * 60 * 1000);
+
 /* ---- Batch B proactive alerts (price / score) -------------------------- */
 
 // Register an alert the server will watch and push when it fires. The device

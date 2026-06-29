@@ -1045,6 +1045,9 @@ export function parseScoreAlert(
 // "flight status of AA100", "track my flight". Tight enough not to grab chatter.
 export function looksLikeFlightQuestion(message: string): boolean {
   const m = message.toLowerCase();
+  // "track/follow/watch flight X" is a Live Activity tracker, not a one-shot
+  // answer — let it fall through to parseTrackCommand.
+  if (/\b(track|follow|watch|monitor|pin|keep (?:an )?eye on|keep tabs on)\b/i.test(m)) return false;
   const code = /\b[a-z]{2}\s?\d{1,4}\b/i.test(message); // "UA123", "DL 456"
   const statusCue = /\b(on time|delayed|delay|status|land(?:ing|s|ed)?|arriv(?:e|es|al|ing)|depart(?:s|ure|ing)?|gate|board(?:ing)?|cancel(?:led|ed)?|where('?s| is)|track)\b/.test(m);
   if (/\bflight\b/.test(m) && (statusCue || /\bmy flight\b/.test(m) || code)) return true;
