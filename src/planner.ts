@@ -71,7 +71,7 @@ import {
 } from "./tools.js";
 import { buildCalendarCreateAction } from "./validators.js";
 import { personaPromptBlock, GUARDRAILS } from "./persona.js";
-import { parseTrackCommand, fetchTrackerSnapshot } from "./tracker.js";
+import { parseTrackCommand, fetchTrackerSnapshot, extractFlightCode } from "./tracker.js";
 import { looksLikePlanDay, generateDayPlan } from "./dayplan.js";
 import { looksLikeCookingRequest, generateRecipe } from "./cooking.js";
 import {
@@ -852,10 +852,22 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
     }
   }
 
-  // Flight status (#12) -> grounded web answer (same path as sports scores).
-  // FREE (no API key) — Google surfaces live flight status. Deterministic so it
-  // never reaches the LLM planner (which can fabricate a flight).
+  // Flight status (#12) -> a direct, grounded answer (FREE, no API key). When the
+  // message has a flight code we pull the STRUCTURED snapshot and format a clean
+  // one-liner (no "according to real-time data…" preamble, and it uses the code,
+  // e.g. "DL100", not the airline name). Falls back to a grounded web answer when
+  // there's no code ("is my flight on time"). Deterministic so the LLM can't
+  // fabricate a flight.
   if (looksLikeFlightQuestion(state.message)) {
+    const code = extractFlightCode(state.message);
+    if (code) {
+      const snap = await fetchTrackerSnapshot("flight", code, state.timeZone);
+      if (snap) {
+        const route = snap.line2 ? ` (${snap.line2})` : "";
+        const extra = snap.status ? `, ${snap.status}` : "";
+        return answerPlan(`${code}${route} — ${snap.line1}${extra}.`, { lastIntent: "web_search" });
+      }
+    }
     const res = await getStrictWebAnswer(state.message, { persona: state.userProfile, timeZone: state.timeZone });
     return answerPlan(res.spokenText, { lastIntent: "web_search" });
   }
@@ -885,11 +897,14 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
     if (track) {
       const snap = await fetchTrackerSnapshot(track.kind, track.query, state.timeZone);
       if (snap) {
+        // For flights, title the activity with the flight CODE the user typed
+        // ("DL100"), not the airline name the model returns ("Delta 100").
+        const title = track.kind === "flight" ? track.query : snap.title;
         const action = blankAction("live_activity");
-        action.liveActivityKind = track.kind; // "finance" | "sports"
+        action.liveActivityKind = track.kind; // "finance" | "sports" | "flight"
         action.trackKind = track.kind;
         action.trackQuery = track.query;
-        action.liveTitle = snap.title;
+        action.liveTitle = title;
         action.liveSymbol = snap.symbol;
         action.line1 = snap.line1;
         action.line2 = snap.line2;
@@ -897,10 +912,10 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         action.statusText = snap.status;
         const spoken =
           track.kind === "finance"
-            ? `Tracking ${snap.title} — ${snap.line1}${snap.status ? `, ${snap.status}` : ""}. It'll stay live on your lock screen.`
+            ? `Tracking ${title} — ${snap.line1}${snap.status ? `, ${snap.status}` : ""}. It'll stay live on your lock screen.`
             : track.kind === "flight"
-            ? `Tracking ${snap.title} — ${snap.line1}${snap.line2 ? ` (${snap.line2})` : ""}. I'll keep it live on your lock screen and Dynamic Island.`
-            : `Tracking ${snap.title}. I'll keep the score live on your lock screen and Dynamic Island.`;
+            ? `Tracking ${title} — ${snap.line1}${snap.line2 ? ` (${snap.line2})` : ""}. I'll keep it live on your lock screen and Dynamic Island.`
+            : `Tracking ${title}. I'll keep the score live on your lock screen and Dynamic Island.`;
         return actionPlan(spoken, action, { lastIntent: "live_activity" });
       }
       // Couldn't fetch the data — fall through to a normal answer.

@@ -52,6 +52,14 @@ const SPORTS_CUE =
 const FINANCE_CUE =
   /\b(stock|shares?|ticker|price|nasdaq|nyse|crypto|coin)\b/i;
 
+// Extract a flight code ("UA123", "DL 456", "B6 12") → "UA123"/"DL456"/"B612".
+// Airline code = 2-char IATA (incl. digit codes B6/F9) or 3-letter ICAO, + a
+// 1-4 digit flight number. Returns null if none found.
+export function extractFlightCode(message: string): string | null {
+  const code = message.match(/\b([A-Z][A-Z0-9]|[A-Z]{3})\s?(\d{1,4})\b/i);
+  return code ? (code[1] + code[2]).toUpperCase() : null;
+}
+
 // Detect a "track X" command and classify it. Returns null for everything else
 // (including "track my steps", which has no finance/sports cue).
 export function parseTrackCommand(message: string): { kind: "finance" | "sports" | "flight"; query: string } | null {
@@ -67,10 +75,8 @@ export function parseTrackCommand(message: string): { kind: "finance" | "sports"
   // Flight: "track flight UA123" / "follow flight DL 456". Needs the word
   // "flight" AND an airline-code+number, so it never grabs a stock ticker.
   if (/\bflight\b/i.test(message)) {
-    // Airline code (2-char IATA — incl. digit codes like B6/F9 — or 3-letter
-    // ICAO) + 1-4 digit flight number, optional space: "UA123", "DL 456", "B6 12".
-    const code = message.match(/\b([A-Z][A-Z0-9]|[A-Z]{3})\s?(\d{1,4})\b/i);
-    if (code) return { kind: "flight", query: (code[1] + code[2]).toUpperCase() };
+    const code = extractFlightCode(message);
+    if (code) return { kind: "flight", query: code };
   }
 
   if (SPORTS_CUE.test(message)) return { kind: "sports", query: query || message };
