@@ -61,6 +61,8 @@ import {
   parsePriceAlert,
   parseScoreAlert,
   parseAlertCancel,
+  looksLikeFlightQuestion,
+  parsePackageTracking,
   parseRememberCommand,
   parseSceneCommand,
   parseHomeCommand,
@@ -834,6 +836,28 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       const what = score.trigger === "final" ? `when the ${score.label} game is final` : `with ${score.label} score updates`;
       return actionPlan(`You got it — I'll keep you posted ${what}.`, action, { lastIntent: "alert_create" });
     }
+  }
+
+  // Package tracking (#13) -> open the live carrier/universal tracking page.
+  // Runs before flight/web detectors. FREE (no API key) — just a deep link.
+  {
+    const pkg = parsePackageTracking(state.message);
+    if (pkg) {
+      const action = blankAction("open_app");
+      action.appName = pkg.carrier ? `${pkg.carrier} tracking` : "package tracking";
+      action.appUrl = pkg.url;
+      action.fallbackUrl = pkg.url;
+      const who = pkg.carrier ? `your ${pkg.carrier} package` : "your package";
+      return actionPlan(`Opening live tracking for ${who} (${pkg.number}).`, action, { lastIntent: "open_app" });
+    }
+  }
+
+  // Flight status (#12) -> grounded web answer (same path as sports scores).
+  // FREE (no API key) — Google surfaces live flight status. Deterministic so it
+  // never reaches the LLM planner (which can fabricate a flight).
+  if (looksLikeFlightQuestion(state.message)) {
+    const res = await getStrictWebAnswer(state.message, { persona: state.userProfile, timeZone: state.timeZone });
+    return answerPlan(res.spokenText, { lastIntent: "web_search" });
   }
 
   // "Cook me chicken parmesan" / "walk me through carbonara" -> a guided recipe

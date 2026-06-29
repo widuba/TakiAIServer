@@ -1033,6 +1033,62 @@ export function parseScoreAlert(
   return { query: team, trigger, label };
 }
 
+/* ============================================================================
+ * Flight (#12) + package (#13) tracking — both FREE, no API key.
+ *   - Flight: answered inline via the grounded-search path (getStrictWebAnswer,
+ *     same as sports scores) — Google surfaces live flight status.
+ *   - Package: deep-link to the live carrier page (or a universal tracker when
+ *     the carrier is unknown), opened via an open_app action.
+ * ==========================================================================*/
+
+// A flight-status question: "is flight UA123 on time", "when does DL456 land",
+// "flight status of AA100", "track my flight". Tight enough not to grab chatter.
+export function looksLikeFlightQuestion(message: string): boolean {
+  const m = message.toLowerCase();
+  const code = /\b[a-z]{2}\s?\d{1,4}\b/i.test(message); // "UA123", "DL 456"
+  const statusCue = /\b(on time|delayed|delay|status|land(?:ing|s|ed)?|arriv(?:e|es|al|ing)|depart(?:s|ure|ing)?|gate|board(?:ing)?|cancel(?:led|ed)?|where('?s| is)|track)\b/.test(m);
+  if (/\bflight\b/.test(m) && (statusCue || /\bmy flight\b/.test(m) || code)) return true;
+  if (code && statusCue && /\bflight\b/.test(m)) return true;
+  return false;
+}
+
+// A package-tracking request that includes a tracking number. Returns the number,
+// carrier (best-effort), and the URL to open. Requires a track intent AND a
+// tracking-number-shaped token so it never fires on a bare phone number.
+export function parsePackageTracking(message: string): { number: string; carrier: string; url: string } | null {
+  const lower = message.toLowerCase();
+  // Tracking-number shapes: UPS 1Z…, USPS intl (2 letters + 9 digits + 2 letters),
+  // or a long all-digit label (USPS/FedEx/DHL). Phone numbers are exactly 10
+  // digits, so we gate this on a track intent below.
+  const numMatch = message.match(/\b(1Z[0-9A-Z]{14,18}|[A-Z]{2}\d{9}[A-Z]{2}|\d{10,22})\b/i);
+  if (!numMatch) return null;
+  const number = numMatch[1].toUpperCase();
+  const unambiguous = /^(1Z|[A-Z]{2}\d{9}[A-Z]{2}$)/i.test(number); // a clear carrier format
+
+  const trackVerb = /\b(track|trace|locate|where('?s| is)|status of)\b/.test(lower);
+  const packageWord = /\b(package|parcel|order|delivery|shipment|shipped|tracking|mail)\b/.test(lower);
+  const carrierWord = /\b(ups|usps|fedex|fed ?ex|dhl)\b/.test(lower);
+  const explicit = /\btracking (?:number|#|no\.?|num)\b/.test(lower);
+  const wants = explicit || (trackVerb && (packageWord || carrierWord || unambiguous));
+  if (!wants) return null;
+
+  let carrier = "";
+  if (/\bups\b/.test(lower) || /^1Z/i.test(number)) carrier = "UPS";
+  else if (/\busps\b/.test(lower) || /^[A-Z]{2}\d{9}US$/i.test(number) || /^9[1-5]\d{18,20}$/.test(number)) carrier = "USPS";
+  else if (/\bfed ?ex\b/.test(lower)) carrier = "FedEx";
+  else if (/\bdhl\b/.test(lower)) carrier = "DHL";
+
+  const carrierUrls: Record<string, string> = {
+    UPS: `https://www.ups.com/track?tracknum=${encodeURIComponent(number)}`,
+    USPS: `https://tools.usps.com/go/TrackConfirmAction?tLabels=${encodeURIComponent(number)}`,
+    FedEx: `https://www.fedex.com/fedextrack/?trknbr=${encodeURIComponent(number)}`,
+    DHL: `https://www.dhl.com/us-en/home/tracking.html?tracking-id=${encodeURIComponent(number)}`
+  };
+  // Unknown carrier → a universal tracker that auto-detects from the number.
+  const url = carrier ? carrierUrls[carrier] : `https://t.17track.net/en#nums=${encodeURIComponent(number)}`;
+  return { number, carrier, url };
+}
+
 // "cancel my alerts" / "stop alerting me about bitcoin" / "remove my price
 // alerts". Returns a filter (kind/query) or {} for "all", or null if not a cancel.
 export function parseAlertCancel(message: string): { kind?: string; query?: string } | null {
