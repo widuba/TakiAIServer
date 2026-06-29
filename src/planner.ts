@@ -379,6 +379,14 @@ If a local action is missing required info (recipient, body, title, date/time):
 - intent = "clarify", set needsClarification = true, a specific clarifyingQuestion,
   "missing" = the missing field names, and put what you DO know in "action" (draft).
 
+CRITICAL — NEVER FABRICATE. Do not invent names, dates, times, companies, places,
+events, or any detail the user did not actually say (e.g. never produce a
+calendar_create for "Q4 Project Review with Dr. Aris Thorne" out of nowhere). If
+you don't have a real value, use intent="clarify" and ask. The spokenText must
+describe ONLY the actual action/answer for THIS message — never an unrelated or
+example action. If you're unsure what the user wants, intent="answer_only" or
+"clarify", never a made-up action.
+
 Otherwise plain conversation / answerable from transcript -> "answer_only".
 
 ACTION FIELD SCHEMA (include only what applies):
