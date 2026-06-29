@@ -1,5 +1,5 @@
 import { ai, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, LIST_RESEARCH_TIMEOUT_MS, TIME_ZONE, safetyConfig } from "./ai.js";
-import { personaPromptBlock, characterDirective } from "./persona.js";
+import { personaPromptBlock, characterDirective, GUARDRAILS } from "./persona.js";
 import type { UserPersona } from "./persona.js";
 import { isoFromYmdTime, addMinutesToIsoLocal, addDaysToYmd, ymdInTimeZone } from "./util.js";
 
@@ -1540,7 +1540,7 @@ export async function getStrictWebAnswer(
     ? `\n- The user is in timezone ${tz}. If your answer includes any date or clock time (e.g. a game start time), convert it to the user's LOCAL time in ${tz} and state that (you may add the timezone abbreviation).`
     : "";
 
-  const factPrompt = `
+  const factPrompt = `${GUARDRAILS}
 You are Taki AI, a daily-life phone assistant. Answer like a Google AI Overview:
 direct, current, and concise.
 
@@ -1984,7 +1984,7 @@ Rules for conversation history:
 - If the user corrected you earlier, respect the correction.`
     : "";
 
-  const prompt = `
+  const prompt = `${GUARDRAILS}
 You are Taki AI, a sharp, genuinely helpful daily-life iPhone assistant talking to one person.
 ${personaPromptBlock(state.userProfile)}
 Current date & time (the user's LOCAL time — use THIS for "today"/"tomorrow"/day-of-week): ${nowInTimeZone(state.timeZone)}.
@@ -2043,7 +2043,7 @@ export async function answerAboutImage(
 ): Promise<string> {
   const q = (question || "").trim() || "What is in this image?";
   const tz = timeZone && isValidTimeZone(timeZone) ? timeZone : "";
-  const prompt = `${personaPromptBlock(persona)}
+  const prompt = `${GUARDRAILS}${personaPromptBlock(persona)}
 You are Taki AI looking at a photo the user just took or picked. Answer their question about it.
 ${tz ? `The user's local time is ${nowInTimeZone(tz)}.\n` : ""}Question: "${q}"
 
