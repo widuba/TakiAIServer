@@ -105,6 +105,61 @@ async function fetchCryptoQuote(query: string): Promise<TrackerSnapshot | null> 
   }
 }
 
+// Well-known company names → ticker, so resolution NEVER depends on Yahoo's
+// search ranking (which differs by requesting IP — from a datacenter "goldman
+// sachs" can surface a same-named ETF instead of GS).
+const COMPANY_TICKERS: Record<string, string> = {
+  "goldman sachs": "GS", "apple": "AAPL", "microsoft": "MSFT", "amazon": "AMZN",
+  "google": "GOOGL", "alphabet": "GOOGL", "meta": "META", "facebook": "META",
+  "tesla": "TSLA", "nvidia": "NVDA", "netflix": "NFLX", "disney": "DIS",
+  "walmart": "WMT", "ford": "F", "general motors": "GM", "coca cola": "KO",
+  "coca-cola": "KO", "pepsi": "PEP", "mcdonalds": "MCD", "mcdonald's": "MCD",
+  "starbucks": "SBUX", "nike": "NKE", "boeing": "BA", "intel": "INTC", "amd": "AMD",
+  "jpmorgan": "JPM", "jp morgan": "JPM", "bank of america": "BAC", "wells fargo": "WFC",
+  "morgan stanley": "MS", "visa": "V", "mastercard": "MA", "paypal": "PYPL",
+  "exxon": "XOM", "chevron": "CVX", "pfizer": "PFE", "johnson and johnson": "JNJ",
+  "at&t": "T", "verizon": "VZ", "uber": "UBER", "lyft": "LYFT", "airbnb": "ABNB",
+  "spotify": "SPOT", "palantir": "PLTR", "coinbase": "COIN", "robinhood": "HOOD",
+  "gamestop": "GME", "berkshire": "BRK-B", "berkshire hathaway": "BRK-B",
+  "costco": "COST", "target": "TGT", "home depot": "HD", "oracle": "ORCL",
+  "salesforce": "CRM", "adobe": "ADBE", "ibm": "IBM", "qualcomm": "QCOM",
+  "broadcom": "AVGO", "shopify": "SHOP", "block": "SQ", "square": "SQ", "snap": "SNAP",
+  "reddit": "RDDT", "delta": "DAL", "american airlines": "AAL", "united airlines": "UAL"
+};
+
+const titleCase = (s: string) => s.replace(/\b\w/g, (c) => c.toUpperCase());
+
+// Resolve a query to { symbol, name } without trusting Yahoo search ranking when
+// we don't have to: explicit TICKER → company MAP → finally Yahoo search.
+async function resolveStockSymbol(query: string, entity: string): Promise<{ symbol: string; name: string } | null> {
+  // 1) Explicit uppercase ticker in the original text ("track GS", "AAPL").
+  const tick = query.match(/\b[A-Z]{1,5}\b/);
+  if (tick) return { symbol: tick[0], name: tick[0] };
+  // 2) Known company name.
+  if (COMPANY_TICKERS[entity]) return { symbol: COMPANY_TICKERS[entity], name: titleCase(entity) };
+  // 3) Yahoo search — prefer a US-listed common stock that is NOT a fund/ETF.
+  try {
+    const s: any = await withTimeout(
+      fetch(`https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(entity)}&quotesCount=10&newsCount=0`, { headers: PRICE_HEADERS }),
+      6000, "Stock search"
+    );
+    const quotes: any[] = ((await s.json())?.quotes || []).filter((x: any) => x?.symbol);
+    const US = new Set(["NYQ", "NMS", "NGM", "NCM", "ASE", "PCX", "BATS"]);
+    const fundish = (x: any) => /\b(etf|fund|trust|index|portfolio|etn)\b/i.test(`${x.shortname || ""} ${x.longname || ""}`);
+    const q =
+      quotes.find((x) => x.quoteType === "EQUITY" && US.has(x.exchange) && !fundish(x)) ||
+      quotes.find((x) => x.quoteType === "EQUITY" && !fundish(x)) ||
+      quotes.find((x) => x.quoteType === "EQUITY" && US.has(x.exchange)) ||
+      quotes.find((x) => US.has(x.exchange)) ||
+      quotes[0];
+    if (!q?.symbol) return null;
+    return { symbol: q.symbol, name: q.shortname || q.longname || q.symbol };
+  } catch (error) {
+    console.error("Stock search error:", error);
+    return null;
+  }
+}
+
 async function fetchStockQuote(query: string): Promise<TrackerSnapshot | null> {
   const entity = query
     .toLowerCase()
@@ -114,24 +169,10 @@ async function fetchStockQuote(query: string): Promise<TrackerSnapshot | null> {
     .trim();
   if (!entity) return null;
   try {
-    const s: any = await withTimeout(
-      fetch(`https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(entity)}&quotesCount=3&newsCount=0`, { headers: PRICE_HEADERS }),
-      6000, "Stock search"
-    );
-    const sd = await s.json();
-    // Yahoo returns results sorted by relevance (score). Prefer a primary US-listed
-    // common stock so "goldman sachs" → GS (NYSE), not a same-named ETF/mutual
-    // fund or a tiny foreign/secondary listing.
-    const quotes: any[] = (sd?.quotes || []).filter((x: any) => x?.symbol);
-    const US = new Set(["NYQ", "NMS", "NGM", "NCM", "ASE", "PCX", "BATS"]);
-    const q =
-      quotes.find((x) => x.quoteType === "EQUITY" && US.has(x.exchange)) ||
-      quotes.find((x) => x.quoteType === "ETF" && US.has(x.exchange)) ||
-      quotes.find((x) => x.quoteType === "EQUITY") ||
-      quotes[0];
-    if (!q?.symbol) return null;
-    const symbol = q.symbol;
-    const name = q.shortname || q.longname || symbol;
+    const resolved = await resolveStockSymbol(query, entity);
+    if (!resolved) return null;
+    const symbol = resolved.symbol;
+    const name = resolved.name;
     const r: any = await withTimeout(
       fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1m&range=1d&includePrePost=true`, { headers: PRICE_HEADERS }),
       6000, "Stock price"
