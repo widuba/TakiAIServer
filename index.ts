@@ -15,7 +15,7 @@ import {
   registerToken, forgetToken, broadcast, getTokens, isPushConfigured,
   registerLiveActivity, unregisterLiveActivity, getLiveActivities, sendLiveActivityUpdate
 } from "./src/push.js";
-import { fetchTrackerSnapshot } from "./src/tracker.js";
+import { cachedTrackerSnapshot } from "./src/tracker.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
 import { isDurable } from "./src/store.js";
 
@@ -149,7 +149,7 @@ setInterval(async () => {
     }
     if (reg.kind !== "finance" && reg.kind !== "sports") continue;
     try {
-      const snap = await fetchTrackerSnapshot(reg.kind, String(reg.meta?.query || ""), reg.meta?.tz ? String(reg.meta.tz) : undefined);
+      const snap = await cachedTrackerSnapshot(reg.kind, String(reg.meta?.query || ""), reg.meta?.tz ? String(reg.meta.tz) : undefined);
       if (!snap) continue;
       const r = await sendLiveActivityUpdate(reg.token, {
         line1: snap.line1, line2: snap.line2, trend: snap.trend,
@@ -194,15 +194,15 @@ setInterval(async () => {
   }
 }, 3 * 60 * 1000);
 
-// Flight: re-check status and push every 4 min (flights change slowly, and each
-// poll is a grounded search — same path as sports). Lifetime end is handled by
-// the main 60s loop's LA_MAX_MS check above (it runs for every kind).
+// Flight: background-push every 60s, in line with finance/sports (foreground
+// polls every 10s; the cached snapshot keeps the grounded lookup from running
+// more than ~once/90s). Lifetime end is handled by the main loop's LA_MAX_MS.
 setInterval(async () => {
   if (!isPushConfigured()) return;
   for (const reg of getLiveActivities()) {
     if (reg.kind !== "flight") continue;
     try {
-      const snap = await fetchTrackerSnapshot("flight", String(reg.meta?.query || ""), reg.meta?.tz ? String(reg.meta.tz) : undefined);
+      const snap = await cachedTrackerSnapshot("flight", String(reg.meta?.query || ""), reg.meta?.tz ? String(reg.meta.tz) : undefined);
       if (!snap) continue;
       const r = await sendLiveActivityUpdate(reg.token, {
         line1: snap.line1, line2: snap.line2, trend: snap.trend,
@@ -214,7 +214,7 @@ setInterval(async () => {
       console.error("Flight push error:", error);
     }
   }
-}, 4 * 60 * 1000);
+}, 60 * 1000);
 
 /* ---- Batch B proactive alerts (price / score) -------------------------- */
 
@@ -269,7 +269,7 @@ app.get("/api/track", async (req, res) => {
     return;
   }
   try {
-    const snap = await withTimeout(fetchTrackerSnapshot(kind, query, tz), 25000, "Track snapshot");
+    const snap = await withTimeout(cachedTrackerSnapshot(kind, query, tz), 25000, "Track snapshot");
     if (!snap) {
       res.status(502).json({ error: "tracker unavailable" });
       return;

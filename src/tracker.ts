@@ -332,6 +332,23 @@ export async function fetchTrackerSnapshot(kind: string, query: string, timeZone
   return (await fetchCryptoQuote(query)) || (await fetchStockQuote(query));
 }
 
+// The device polls every ~10s for a smooth, live feel — but the grounded
+// sports/flight lookups are slow + costly, so we cache per kind. Finance (free
+// APIs) gets a short TTL so it actually refreshes each poll; sports/flight get a
+// longer TTL (the data changes slowly) and serve cached snapshots in between.
+const snapCache = new Map<string, { at: number; snap: TrackerSnapshot }>();
+const SNAP_TTL: Record<string, number> = { finance: 8000, sports: 25000, flight: 90000 };
+
+export async function cachedTrackerSnapshot(kind: string, query: string, timeZone?: string): Promise<TrackerSnapshot | null> {
+  const key = `${kind}:${query.toLowerCase()}:${timeZone || ""}`;
+  const ttl = SNAP_TTL[kind] ?? 10000;
+  const cached = snapCache.get(key);
+  if (cached && Date.now() - cached.at < ttl) return cached.snap;
+  const snap = await fetchTrackerSnapshot(kind, query, timeZone);
+  if (snap) { snapCache.set(key, { at: Date.now(), snap }); return snap; }
+  return cached?.snap ?? null; // serve a stale snapshot rather than nothing on a transient failure
+}
+
 // Numeric price for an asset (crypto or stock), reusing the same resolution as
 // the trackers. Used by the price-alert engine. Returns the displayed price (the
 // same value the user sees), its label, and 24h trend, or null.
