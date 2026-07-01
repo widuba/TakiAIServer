@@ -17,7 +17,7 @@ import {
 } from "./src/push.js";
 import { cachedTrackerSnapshot } from "./src/tracker.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
-import { isDurable } from "./src/store.js";
+import { isDurable, storeGet, storeSet } from "./src/store.js";
 import { summary as creditSummary, grantTier, spend, reset as resetCredits, costForRequest, tierCatalog, type Tier } from "./src/credits.js";
 
 // Dev-only shared secret guarding the credit-grant endpoints (which simulate a
@@ -421,6 +421,29 @@ app.post("/api/credits/grant", async (req, res) => {
   const tier = typeof b.tier === "string" && VALID_TIERS.has(b.tier) ? (b.tier as Tier) : null;
   if (!deviceId || !tier) { res.status(400).json({ error: "deviceId and valid tier required" }); return; }
   res.json(await grantTier(deviceId, tier));
+});
+
+// User feedback on an answer / composed message / the app. Stored durably so the
+// owner can review what people flag. kind = "answer" | "message" | "app".
+app.post("/api/feedback", async (req, res) => {
+  const b = req.body || {};
+  const entry = {
+    at: Date.now(),
+    deviceId: typeof b.deviceId === "string" ? b.deviceId.slice(0, 64) : "",
+    kind: typeof b.kind === "string" ? b.kind.slice(0, 20) : "answer",
+    rating: b.rating === "up" || b.rating === "down" ? b.rating : null,
+    note: typeof b.note === "string" ? b.note.slice(0, 1000) : "",
+    message: typeof b.message === "string" ? b.message.slice(0, 500) : "",
+    answer: typeof b.answer === "string" ? b.answer.slice(0, 1000) : ""
+  };
+  try {
+    const list = await storeGet<any[]>("feedback", []);
+    list.push(entry);
+    await storeSet("feedback", list.slice(-500)); // keep the most recent 500
+  } catch (e) {
+    console.error("Feedback store error:", e);
+  }
+  res.json({ ok: true });
 });
 
 // Dev: reset a device's credits.
