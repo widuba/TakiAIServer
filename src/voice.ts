@@ -45,12 +45,32 @@ export async function transcribe(audioBase64: string, mime = "audio/m4a"): Promi
   }
 }
 
-// Synthesize text → base64 mp3. Returns "" on failure (caller falls back to text).
-export async function synthesize(text: string): Promise<string> {
-  if (!ELEVEN_KEY || !text.trim()) return "";
+// The available voices for the account, for the app's voice picker.
+export async function listVoices(): Promise<{ id: string; name: string }[]> {
+  if (!ELEVEN_KEY) return [];
   try {
     const res: any = await withTimeout(
-      fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(VOICE_ID)}`, {
+      fetch("https://api.elevenlabs.io/v1/voices", { headers: { "xi-api-key": ELEVEN_KEY } }),
+      12000, "Voices"
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (Array.isArray(data?.voices) ? data.voices : [])
+      .map((v: any) => ({ id: String(v.voice_id || ""), name: String(v.name || "Voice") }))
+      .filter((v: { id: string }) => v.id);
+  } catch (error) {
+    console.error("List voices error:", error);
+    return [];
+  }
+}
+
+// Synthesize text → base64 mp3. Returns "" on failure (caller falls back to text).
+export async function synthesize(text: string, voiceId?: string): Promise<string> {
+  if (!ELEVEN_KEY || !text.trim()) return "";
+  const vid = voiceId && voiceId.trim() ? voiceId.trim() : VOICE_ID;
+  try {
+    const res: any = await withTimeout(
+      fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(vid)}`, {
         method: "POST",
         headers: { "xi-api-key": ELEVEN_KEY, "Content-Type": "application/json", Accept: "audio/mpeg" },
         body: JSON.stringify({

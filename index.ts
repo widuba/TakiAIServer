@@ -19,7 +19,7 @@ import { cachedTrackerSnapshot } from "./src/tracker.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
 import { isDurable, storeGet, storeSet } from "./src/store.js";
 import { summary as creditSummary, grantTier, spend, reset as resetCredits, costForRequest, tierCatalog, type Tier } from "./src/credits.js";
-import { transcribe, synthesize, isVoiceConfigured } from "./src/voice.js";
+import { transcribe, synthesize, listVoices, isVoiceConfigured } from "./src/voice.js";
 
 // Dev-only shared secret guarding the credit-grant endpoints (which simulate a
 // purchase until real Apple IAP lands). Set ADMIN_SECRET on Render to lock it
@@ -565,6 +565,7 @@ app.post("/api/voice", async (req, res) => {
   const timeZone: string | undefined = typeof req.body?.timeZone === "string" ? req.body.timeZone : undefined;
   const deviceLocation: DeviceLocation | undefined = req.body?.deviceLocation;
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
+  const voiceId = typeof req.body?.voiceId === "string" ? req.body.voiceId : undefined;
   const styleProfiles = parseIncomingStyleProfiles(req.body?.styleProfiles);
   const userProfile = parseUserPersona(req.body?.profile, req.body?.addressUser);
   if (!audioBase64) { res.status(400).json({ error: "audioBase64 required" }); return; }
@@ -578,12 +579,17 @@ app.post("/api/voice", async (req, res) => {
     }
     const state = buildConversationState(transcript, rawContext, deviceLocation, timeZone, styleProfiles, userProfile);
     const result = await runAssistant(state, deviceId, true); // voice → surcharge applies
-    const audio = await synthesize(result.spokenText || "");
+    const audio = await synthesize(result.spokenText || "", voiceId);
     res.json({ ...result, transcript, audioBase64: audio, mime: "audio/mpeg" });
   } catch (error) {
     console.error("Voice route error:", error);
     res.status(502).json({ error: "voice unavailable" });
   }
+});
+
+// The account's available voices, for the app's voice picker.
+app.get("/api/voices", async (_req, res) => {
+  res.json({ voices: await listVoices() });
 });
 
 app.listen(PORT, "0.0.0.0", () => {
