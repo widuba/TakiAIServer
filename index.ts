@@ -393,7 +393,7 @@ app.post("/api/vision", async (req, res) => {
     const spokenText = await withTimeout(answerAboutImage(image, mime, question, userProfile, timeZone), 28000, "Vision");
     if (deviceId) {
       const s = await spend(deviceId, costForRequest("vision", voiceMode, tier));
-      res.json({ spokenText, credits: { balance: s.balance, cost: s.spent, tier } });
+      res.json({ spokenText, credits: { balance: s.balance, cost: s.spent, tier, nextExpiry: s.nextExpiry } });
     } else {
       res.json({ spokenText });
     }
@@ -506,7 +506,7 @@ app.post("/api/assistant", async (req, res) => {
     if (deviceId) {
       const cost = costForRequest(finalized.memory?.lastIntent, voiceMode, tier);
       const s = await spend(deviceId, cost);
-      res.json({ ...finalized, credits: { balance: s.balance, cost: s.spent, tier } });
+      res.json({ ...finalized, credits: { balance: s.balance, cost: s.spent, tier, nextExpiry: s.nextExpiry } });
     } else {
       res.json(finalized);
     }

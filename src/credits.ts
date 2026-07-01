@@ -96,6 +96,8 @@ export interface CreditSummary {
   tier: Tier;
   balance: number;
   nextExpiry: number | null; // epoch ms of the soonest-expiring grant
+  // Per-grant breakdown so the UI can show "1,000 credits expire Sep 27".
+  expiring: { credits: number; expiresAt: number }[];
   durable: boolean;
 }
 
@@ -154,10 +156,16 @@ function ensureStarter(acct: CreditAccount): boolean {
 
 function summarize(acct: CreditAccount): CreditSummary {
   const now = Date.now();
-  const next = acct.grants
+  const live = acct.grants
     .filter((g) => g.expiresAt > now && g.remaining > 0)
-    .sort((a, b) => a.expiresAt - b.expiresAt)[0];
-  return { tier: acct.tier, balance: balanceOf(acct), nextExpiry: next?.expiresAt ?? null, durable: isDurable() };
+    .sort((a, b) => a.expiresAt - b.expiresAt);
+  return {
+    tier: acct.tier,
+    balance: balanceOf(acct),
+    nextExpiry: live[0]?.expiresAt ?? null,
+    expiring: live.map((g) => ({ credits: g.remaining, expiresAt: g.expiresAt })),
+    durable: isDurable()
+  };
 }
 
 // First-touch starter grant + current summary.
@@ -185,7 +193,7 @@ export async function grantTier(deviceId: string, tier: Tier): Promise<CreditSum
 
 // Spend `cost` credits, consuming the SOONEST-expiring grants first. Clamps at 0
 // (a last question may slightly overspend rather than be blocked mid-answer).
-export async function spend(deviceId: string, cost: number): Promise<{ spent: number; balance: number }> {
+export async function spend(deviceId: string, cost: number): Promise<{ spent: number; balance: number; nextExpiry: number | null }> {
   return withLock(deviceId, async () => {
     const acct = await load(deviceId);
     ensureStarter(acct);
@@ -202,7 +210,8 @@ export async function spend(deviceId: string, cost: number): Promise<{ spent: nu
     }
     acct.grants = acct.grants.filter((g) => g.expiresAt > now && g.remaining > 0);
     await save(acct);
-    return { spent: Math.round(cost) - need, balance: balanceOf(acct) };
+    const next = acct.grants.sort((a, b) => a.expiresAt - b.expiresAt)[0];
+    return { spent: Math.round(cost) - need, balance: balanceOf(acct), nextExpiry: next?.expiresAt ?? null };
   });
 }
 
