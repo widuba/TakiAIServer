@@ -20,7 +20,7 @@ export function isVoiceConfigured(): boolean {
 export async function transcribe(audioBase64: string, mime = "audio/m4a"): Promise<string> {
   if (!ELEVEN_KEY || !audioBase64) return "";
   try {
-    const bytes = Buffer.from(audioBase64, "base64");
+    const bytes = new Uint8Array(Buffer.from(audioBase64, "base64"));
     const form = new FormData();
     const ext = mime.includes("mp") || mime.includes("m4a") || mime.includes("aac") ? "m4a" : mime.includes("wav") ? "wav" : "audio";
     form.append("file", new Blob([bytes], { type: mime }), `clip.${ext}`);

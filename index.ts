@@ -609,7 +609,7 @@ app.get("/api/voice/selftest", async (_req, res) => {
   if (mp3) {
     try {
       const form = new FormData();
-      form.append("file", new Blob([mp3], { type: "audio/mpeg" }), "clip.mp3");
+      form.append("file", new Blob([new Uint8Array(mp3)], { type: "audio/mpeg" }), "clip.mp3");
       form.append("model_id", sttModel);
       const r: any = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
         method: "POST", headers: { "xi-api-key": key }, body: form as any
