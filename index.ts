@@ -586,6 +586,18 @@ app.post("/api/voice", async (req, res) => {
   }
 });
 
+// Diagnostic: TTS a phrase, then STT it back — isolates whether the key/TTS/STT
+// each work. (Safe to leave; remove after voice is verified.)
+app.get("/api/voice/selftest", async (_req, res) => {
+  try {
+    const audio = await synthesize("Hello, testing one two three.");
+    const back = audio ? await transcribe(audio, "audio/mpeg") : "";
+    res.json({ configured: isVoiceConfigured(), ttsBytes: audio ? Math.round((audio.length * 3) / 4) : 0, sttText: back });
+  } catch (e) {
+    res.json({ error: String(e) });
+  }
+});
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Taki AI server (planner-first, modular) listening on http://0.0.0.0:${PORT}`);
 });
