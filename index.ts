@@ -19,6 +19,7 @@ import { cachedTrackerSnapshot } from "./src/tracker.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
 import { isDurable, storeGet, storeSet } from "./src/store.js";
 import { summary as creditSummary, grantTier, spend, reset as resetCredits, costForRequest, tierCatalog, type Tier } from "./src/credits.js";
+import { transcribe, synthesize, isVoiceConfigured } from "./src/voice.js";
 
 // Dev-only shared secret guarding the credit-grant endpoints (which simulate a
 // purchase until real Apple IAP lands). Set ADMIN_SECRET on Render to lock it
@@ -482,6 +483,34 @@ app.post("/api/travel-time", async (req, res) => {
   }
 });
 
+// The shared assistant core: credit gate → plan → finalize → style → meter.
+// Returns the JSON payload (finalized response + credits). Used by both
+// /api/assistant and /api/voice (which passes voiceMode=true).
+async function runAssistant(state: ReturnType<typeof buildConversationState>, deviceId: string, voiceMode: boolean): Promise<any> {
+  let tier: Tier = "free";
+  if (deviceId) {
+    const sum = await creditSummary(deviceId);
+    tier = sum.tier;
+    if (sum.balance <= 0) {
+      return {
+        ...finalizeResponse({ spokenText: OUT_OF_CREDITS_MSG, action: null, memoryPatch: { pendingClarification: null }, needsExecution: false }, state),
+        credits: { ...sum, cost: 0, outOfCredits: true }
+      };
+    }
+  }
+  const plan = await withTimeout(planAssistantResponse(state), 45000, "Assistant plan");
+  const finalized = finalizeResponse(plan, state);
+  if (finalized.spokenText && (finalized.action || finalized.memory?.pendingClarification)) {
+    finalized.spokenText = await styleInCharacter(finalized.spokenText, state.userProfile);
+  }
+  if (deviceId) {
+    const cost = costForRequest(finalized.memory?.lastIntent, voiceMode, tier);
+    const s = await spend(deviceId, cost);
+    return { ...finalized, credits: { balance: s.balance, cost: s.spent, tier, nextExpiry: s.nextExpiry } };
+  }
+  return finalized;
+}
+
 app.post("/api/assistant", async (req, res) => {
   const userMessage = String(req.body?.message || "");
   const rawContext = typeof req.body?.context === "string" ? req.body.context : "";
@@ -501,38 +530,7 @@ app.post("/api/assistant", async (req, res) => {
   const state = buildConversationState(userMessage, rawContext, deviceLocation, timeZone, styleProfiles, userProfile);
 
   try {
-    // Gate on credits before spending any AI: out of credits → an upsell reply,
-    // no model call.
-    let tier: Tier = "free";
-    if (deviceId) {
-      const sum = await creditSummary(deviceId);
-      tier = sum.tier;
-      if (sum.balance <= 0) {
-        res.json({
-          ...finalizeResponse({ spokenText: OUT_OF_CREDITS_MSG, action: null, memoryPatch: { pendingClarification: null }, needsExecution: false }, state),
-          credits: { ...sum, cost: 0, outOfCredits: true }
-        });
-        return;
-      }
-    }
-    // Allow headroom for grounded web research on event lookups, including the
-    // multi-event "add the next N games" path (research + extraction).
-    const plan = await withTimeout(planAssistantResponse(state), 45000, "Assistant plan");
-    const finalized = finalizeResponse(plan, state);
-    // Preset/deterministic confirmations + clarifications bypass the personality,
-    // so rephrase them in character here (facts preserved). No-op for "plain".
-    if (finalized.spokenText && (finalized.action || finalized.memory?.pendingClarification)) {
-      finalized.spokenText = await styleInCharacter(finalized.spokenText, state.userProfile);
-    }
-    // Meter: charge for the question (cost scales with the model that ran it) and
-    // report the new balance back to the app.
-    if (deviceId) {
-      const cost = costForRequest(finalized.memory?.lastIntent, voiceMode, tier);
-      const s = await spend(deviceId, cost);
-      res.json({ ...finalized, credits: { balance: s.balance, cost: s.spent, tier, nextExpiry: s.nextExpiry } });
-    } else {
-      res.json(finalized);
-    }
+    res.json(await runAssistant(state, deviceId, voiceMode));
   } catch (error) {
     console.error("Assistant route error:", error);
     // Last resort: a plain answer that still respects the wire shape.
@@ -552,6 +550,39 @@ app.post("/api/assistant", async (req, res) => {
         followUpEvent: state.priorMemory.lastMentionedEvent || null
       });
     }
+  }
+});
+
+// Voice mode: a recorded clip in, the spoken answer (audio) out. Transcribe via
+// ElevenLabs → the normal assistant brain (voiceMode=true so the credits voice
+// surcharge applies) → synthesize the reply. The device still executes the
+// returned action; only the extra STT/TTS is voice-specific.
+app.post("/api/voice", async (req, res) => {
+  if (!isVoiceConfigured()) { res.status(503).json({ error: "voice not configured (set ELEVENLABS_API_KEY)" }); return; }
+  const audioBase64 = typeof req.body?.audioBase64 === "string" ? req.body.audioBase64 : "";
+  const mime = typeof req.body?.mime === "string" ? req.body.mime : "audio/m4a";
+  const rawContext = typeof req.body?.context === "string" ? req.body.context : "";
+  const timeZone: string | undefined = typeof req.body?.timeZone === "string" ? req.body.timeZone : undefined;
+  const deviceLocation: DeviceLocation | undefined = req.body?.deviceLocation;
+  const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
+  const styleProfiles = parseIncomingStyleProfiles(req.body?.styleProfiles);
+  const userProfile = parseUserPersona(req.body?.profile, req.body?.addressUser);
+  if (!audioBase64) { res.status(400).json({ error: "audioBase64 required" }); return; }
+
+  try {
+    const transcript = await transcribe(audioBase64, mime);
+    if (!transcript) {
+      // Nothing intelligible (silence) — let the device re-listen or end.
+      res.json({ transcript: "", spokenText: "", action: null, actions: null, empty: true });
+      return;
+    }
+    const state = buildConversationState(transcript, rawContext, deviceLocation, timeZone, styleProfiles, userProfile);
+    const result = await runAssistant(state, deviceId, true); // voice → surcharge applies
+    const audio = await synthesize(result.spokenText || "");
+    res.json({ ...result, transcript, audioBase64: audio, mime: "audio/mpeg" });
+  } catch (error) {
+    console.error("Voice route error:", error);
+    res.status(502).json({ error: "voice unavailable" });
   }
 });
 
