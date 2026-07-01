@@ -592,18 +592,31 @@ app.get("/api/voice/selftest", async (_req, res) => {
   const key = process.env.ELEVENLABS_API_KEY || "";
   const voiceId = process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM";
   const ttsModel = process.env.ELEVENLABS_TTS_MODEL || "eleven_flash_v2_5";
-  const out: any = { keyPresent: !!key, keyLen: key.length, voiceId, ttsModel };
+  const sttModel = process.env.ELEVENLABS_STT_MODEL || "scribe_v1";
+  const out: any = { keyPresent: !!key, voiceId, ttsModel, sttModel };
+  let mp3: Buffer | null = null;
   try {
     const r: any = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
       method: "POST",
       headers: { "xi-api-key": key, "Content-Type": "application/json", Accept: "audio/mpeg" },
-      body: JSON.stringify({ text: "Hello test", model_id: ttsModel })
+      body: JSON.stringify({ text: "The capital of France is Paris.", model_id: ttsModel })
     });
     out.ttsStatus = r.status;
-    if (!r.ok) out.ttsErr = (await r.text()).slice(0, 400);
-    else out.ttsBytes = (await r.arrayBuffer()).byteLength;
-  } catch (e: any) {
-    out.ttsException = String(e).slice(0, 300);
+    if (r.ok) { mp3 = Buffer.from(await r.arrayBuffer()); out.ttsBytes = mp3.length; }
+    else out.ttsErr = (await r.text()).slice(0, 300);
+  } catch (e: any) { out.ttsException = String(e).slice(0, 200); }
+  // Feed the TTS mp3 back through STT to isolate STT from the audio format.
+  if (mp3) {
+    try {
+      const form = new FormData();
+      form.append("file", new Blob([mp3], { type: "audio/mpeg" }), "clip.mp3");
+      form.append("model_id", sttModel);
+      const r: any = await fetch("https://api.elevenlabs.io/v1/speech-to-text", {
+        method: "POST", headers: { "xi-api-key": key }, body: form as any
+      });
+      out.sttStatus = r.status;
+      out.sttRaw = (await r.text()).slice(0, 300);
+    } catch (e: any) { out.sttException = String(e).slice(0, 200); }
   }
   res.json(out);
 });
