@@ -18,6 +18,14 @@ import {
 import { cachedTrackerSnapshot } from "./src/tracker.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
 import { isDurable } from "./src/store.js";
+import { summary as creditSummary, grantTier, spend, reset as resetCredits, costForRequest, tierCatalog, type Tier } from "./src/credits.js";
+
+// Dev-only shared secret guarding the credit-grant endpoints (which simulate a
+// purchase until real Apple IAP lands). Set ADMIN_SECRET on Render to lock it
+// down; the app sends the matching value. TODO: remove when StoreKit IAP ships.
+const ADMIN_SECRET = process.env.ADMIN_SECRET || "taki-dev-grant-2026";
+const VALID_TIERS = new Set(["free", "plus", "plus_voice", "pro"]);
+const OUT_OF_CREDITS_MSG = "You're out of credits — top up or upgrade in Membership to keep asking.";
 
 /* ============================================================================
  * Taki AI server — planner-first architecture (entrypoint).
@@ -366,17 +374,63 @@ app.post("/api/vision", async (req, res) => {
   const question = typeof req.body?.question === "string" ? req.body.question : "";
   const timeZone = typeof req.body?.timeZone === "string" ? req.body.timeZone : undefined;
   const userProfile = parseUserPersona(req.body?.profile, req.body?.addressUser);
+  const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
+  const voiceMode = req.body?.voiceMode === true;
   if (!image) {
     res.status(400).json({ error: "image is required" });
     return;
   }
+  let tier: Tier = "free";
+  if (deviceId) {
+    const sum = await creditSummary(deviceId);
+    tier = sum.tier;
+    if (sum.balance <= 0) {
+      res.json({ spokenText: OUT_OF_CREDITS_MSG, credits: { ...sum, cost: 0, outOfCredits: true } });
+      return;
+    }
+  }
   try {
     const spokenText = await withTimeout(answerAboutImage(image, mime, question, userProfile, timeZone), 28000, "Vision");
-    res.json({ spokenText });
+    if (deviceId) {
+      const s = await spend(deviceId, costForRequest("vision", voiceMode, tier));
+      res.json({ spokenText, credits: { balance: s.balance, cost: s.spent, tier } });
+    } else {
+      res.json({ spokenText });
+    }
   } catch (error) {
     console.error("Vision error:", error);
     res.status(502).json({ error: "vision unavailable" });
   }
+});
+
+/* ---- Credits / subscriptions ------------------------------------------- */
+
+// Current balance + tier for a device (also gives a fresh device its starter grant).
+app.get("/api/credits", async (req, res) => {
+  const deviceId = typeof req.query.deviceId === "string" ? req.query.deviceId.trim() : "";
+  if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
+  res.json({ ...(await creditSummary(deviceId)), tiers: tierCatalog() });
+});
+
+// Grant a tier's credits — simulates a purchase/renewal until Apple IAP. Guarded
+// by ADMIN_SECRET. TODO: replace with StoreKit receipt validation.
+app.post("/api/credits/grant", async (req, res) => {
+  const b = req.body || {};
+  if (b.secret !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return; }
+  const deviceId = typeof b.deviceId === "string" ? b.deviceId.trim() : "";
+  const tier = typeof b.tier === "string" && VALID_TIERS.has(b.tier) ? (b.tier as Tier) : null;
+  if (!deviceId || !tier) { res.status(400).json({ error: "deviceId and valid tier required" }); return; }
+  res.json(await grantTier(deviceId, tier));
+});
+
+// Dev: reset a device's credits.
+app.post("/api/credits/reset", async (req, res) => {
+  const b = req.body || {};
+  if (b.secret !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return; }
+  const deviceId = typeof b.deviceId === "string" ? b.deviceId.trim() : "";
+  if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
+  await resetCredits(deviceId);
+  res.json({ ok: true });
 });
 
 // Travel time for the commute Live Activity, by mode (driving w/ traffic,
@@ -410,6 +464,10 @@ app.post("/api/assistant", async (req, res) => {
   const rawContext = typeof req.body?.context === "string" ? req.body.context : "";
   const deviceLocation: DeviceLocation | undefined = req.body?.deviceLocation;
   const timeZone: string | undefined = typeof req.body?.timeZone === "string" ? req.body.timeZone : undefined;
+  // Credits metering: only when the app identifies itself (older builds without a
+  // deviceId are unmetered so they keep working).
+  const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
+  const voiceMode = req.body?.voiceMode === true;
   // Privacy: only the style vectors for recipients named in this message arrive
   // here — never a contact list or message history.
   const styleProfiles = parseIncomingStyleProfiles(req.body?.styleProfiles);
@@ -420,6 +478,20 @@ app.post("/api/assistant", async (req, res) => {
   const state = buildConversationState(userMessage, rawContext, deviceLocation, timeZone, styleProfiles, userProfile);
 
   try {
+    // Gate on credits before spending any AI: out of credits → an upsell reply,
+    // no model call.
+    let tier: Tier = "free";
+    if (deviceId) {
+      const sum = await creditSummary(deviceId);
+      tier = sum.tier;
+      if (sum.balance <= 0) {
+        res.json({
+          ...finalizeResponse({ spokenText: OUT_OF_CREDITS_MSG, action: null, memoryPatch: { pendingClarification: null }, needsExecution: false }, state),
+          credits: { ...sum, cost: 0, outOfCredits: true }
+        });
+        return;
+      }
+    }
     // Allow headroom for grounded web research on event lookups, including the
     // multi-event "add the next N games" path (research + extraction).
     const plan = await withTimeout(planAssistantResponse(state), 45000, "Assistant plan");
@@ -429,7 +501,15 @@ app.post("/api/assistant", async (req, res) => {
     if (finalized.spokenText && (finalized.action || finalized.memory?.pendingClarification)) {
       finalized.spokenText = await styleInCharacter(finalized.spokenText, state.userProfile);
     }
-    res.json(finalized);
+    // Meter: charge for the question (cost scales with the model that ran it) and
+    // report the new balance back to the app.
+    if (deviceId) {
+      const cost = costForRequest(finalized.memory?.lastIntent, voiceMode, tier);
+      const s = await spend(deviceId, cost);
+      res.json({ ...finalized, credits: { balance: s.balance, cost: s.spent, tier } });
+    } else {
+      res.json(finalized);
+    }
   } catch (error) {
     console.error("Assistant route error:", error);
     // Last resort: a plain answer that still respects the wire shape.
