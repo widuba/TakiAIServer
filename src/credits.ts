@@ -40,11 +40,14 @@ export interface TierConfig {
   extraCreditDiscount: number; // discount on extra credit packs (used when IAP lands)
 }
 
+// Credits are set to ~3× the break-even (a tier's credits cost us ~1/3 of its
+// price to run), passing profit back to the user. e.g. Plus Voice = 4500 credits
+// ≈ $4.50 of usage on a $14.99 plan.
 export const TIERS: Record<Tier, TierConfig> = {
-  free:       { label: "Free",       creditsPerCycle: 0,    priceUsd: 0,     voiceIncluded: false, extraCreditDiscount: 0 },
-  plus:       { label: "Plus",       creditsPerCycle: 1000, priceUsd: 9.99,  voiceIncluded: false, extraCreditDiscount: 0 },
-  plus_voice: { label: "Plus Voice", creditsPerCycle: 1500, priceUsd: 14.99, voiceIncluded: true,  extraCreditDiscount: 0 },
-  pro:        { label: "Pro",        creditsPerCycle: 5000, priceUsd: 29.99, voiceIncluded: false, extraCreditDiscount: 0.2 }
+  free:       { label: "Free",       creditsPerCycle: 0,     priceUsd: 0,     voiceIncluded: false, extraCreditDiscount: 0 },
+  plus:       { label: "Plus",       creditsPerCycle: 3000,  priceUsd: 9.99,  voiceIncluded: false, extraCreditDiscount: 0 },
+  plus_voice: { label: "Plus Voice", creditsPerCycle: 4500,  priceUsd: 14.99, voiceIncluded: true,  extraCreditDiscount: 0 },
+  pro:        { label: "Pro",        creditsPerCycle: 15000, priceUsd: 29.99, voiceIncluded: false, extraCreditDiscount: 0.2 }
 };
 
 // Map a planner intent → a brainpower cost tier. HEAVY = grounded/pro model
