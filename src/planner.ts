@@ -911,7 +911,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         return answerPlan(`${snap.title} — ${snap.status}.${dep}${arr}`.trim(), { lastIntent: "web_search" });
       }
     }
-    const res = await getStrictWebAnswer(state.message, { persona: state.userProfile, timeZone: state.timeZone });
+    const res = await getStrictWebAnswer(state.message, { persona: state.userProfile, timeZone: state.timeZone, voiceMode: state.voiceMode });
     return answerPlan(res.spokenText, { lastIntent: "web_search" });
   }
 
@@ -1024,7 +1024,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
   // analysts). Route them straight to a grounded prediction answer so they are
   // never refused as "unverifiable."
   if (looksLikePredictionQuestion(state.message)) {
-    const res = await getStrictWebAnswer(state.message, { allowPrediction: true, persona: state.userProfile, timeZone: state.timeZone });
+    const res = await getStrictWebAnswer(state.message, { allowPrediction: true, persona: state.userProfile, timeZone: state.timeZone, voiceMode: state.voiceMode });
     return answerPlan(res.spokenText, { lastIntent: "web_search" });
   }
 
@@ -1049,7 +1049,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
   }
 
   if (!isActionCommand && (looksLikeFreshFactQuestion(state.message) || looksLikeLiveInfoQuestion(state.message))) {
-    const res = await getStrictWebAnswer(state.message, { persona: state.userProfile, timeZone: state.timeZone });
+    const res = await getStrictWebAnswer(state.message, { persona: state.userProfile, timeZone: state.timeZone, voiceMode: state.voiceMode });
     return answerPlan(res.spokenText, { lastIntent: "web_search" });
   }
 
@@ -1206,7 +1206,8 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       const res = await getStrictWebAnswer(plan.webQuery || state.message, {
         allowPrediction: looksLikePredictionQuestion(state.message),
         persona: state.userProfile,
-        timeZone: state.timeZone
+        timeZone: state.timeZone,
+        voiceMode: state.voiceMode
       });
       return answerPlan(res.spokenText, { lastIntent: "web_search" });
     }

@@ -1834,7 +1834,7 @@ export function looksLikeLiveInfoQuestion(message: string) {
 
 export async function getStrictWebAnswer(
   message: string,
-  opts: { allowPrediction?: boolean; persona?: UserPersona; timeZone?: string } = {}
+  opts: { allowPrediction?: boolean; persona?: UserPersona; timeZone?: string; voiceMode?: boolean } = {}
 ): Promise<AssistantResponse> {
   const allowPrediction = Boolean(opts.allowPrediction);
   const persona = personaPromptBlock(opts.persona);
@@ -1888,11 +1888,17 @@ ${message}
 `;
 
   try {
+    // Voice mode uses flash (faster + cheaper) for live/web answers too; grounding
+    // stays on since these questions genuinely need current data.
     const response: any = await withTimeout(
       ai.models.generateContent({
-        model: RESEARCH_MODEL,
+        model: opts.voiceMode ? MAIN_MODEL : RESEARCH_MODEL,
         contents: allowPrediction ? predictionPrompt : factPrompt,
-        config: { tools: [{ googleSearch: {} }], ...safetyConfig(opts.persona?.teen) }
+        config: {
+          tools: [{ googleSearch: {} }],
+          ...(opts.voiceMode ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+          ...safetyConfig(opts.persona?.teen)
+        }
       } as any),
       RESEARCH_TIMEOUT_MS,
       "Web answer"

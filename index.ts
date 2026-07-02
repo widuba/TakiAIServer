@@ -8,7 +8,7 @@ import { planAssistantResponse } from "./src/planner.js";
 import { finalizeResponse } from "./src/validators.js";
 import { getGeneralAnswer, styleInCharacter, getWeatherSnapshot, inferEventDestination, matchEventToQuery, getTravelTime, answerAboutImage } from "./src/tools.js";
 // getTravelTime (above) also powers the background commute push loop.
-import { withTimeout } from "./src/util.js";
+import { withTimeout, briefForVoice } from "./src/util.js";
 import { parseIncomingStyleProfiles } from "./src/messageStyle.js";
 import { parseUserPersona } from "./src/persona.js";
 import {
@@ -502,6 +502,11 @@ async function runAssistant(state: ReturnType<typeof buildConversationState>, de
   const finalized = finalizeResponse(plan, state);
   if (finalized.spokenText && (finalized.action || finalized.memory?.pendingClarification)) {
     finalized.spokenText = await styleInCharacter(finalized.spokenText, state.userProfile, voiceMode);
+  }
+  // Voice replies must be SUPER short — clamp here so it applies to every answer
+  // path (general, live/web, lottery, inline), not just getGeneralAnswer.
+  if (voiceMode && finalized.spokenText) {
+    finalized.spokenText = briefForVoice(finalized.spokenText);
   }
   if (deviceId) {
     const cost = costForRequest(finalized.memory?.lastIntent, voiceMode, tier);

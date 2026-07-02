@@ -371,3 +371,19 @@ export function extractReminderTitle(message: string) {
   if (!title) title = "Reminder";
   return titleCaseTask(title);
 }
+
+// Hard-clamp a spoken reply to be SUPER short for voice mode. Voice replies are
+// read aloud, so length = TTS cost + latency + a rambling assistant. We keep at
+// most the first 1–2 sentences and ~180 chars. Applied at the single choke point
+// (runAssistant) so it catches EVERY answer path (general, live/web, lottery,
+// inline planner text, action confirmations) — not just one generator.
+export function briefForVoice(text: string): string {
+  const t = String(text || "").trim();
+  if (!t) return t;
+  const sentences = t.match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g) || [t];
+  // One sentence if it already covers the gist; a second only if the first is short.
+  let out = sentences[0]?.trim() || t;
+  if (out.length < 90 && sentences[1]) out = (out + " " + sentences[1].trim()).trim();
+  if (out.length > 180) out = out.slice(0, 180).replace(/\s+\S*$/, "").trim() + "…";
+  return out || t;
+}
