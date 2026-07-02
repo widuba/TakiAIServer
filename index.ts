@@ -18,8 +18,8 @@ import {
 import { cachedTrackerSnapshot } from "./src/tracker.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
 import { isDurable, storeGet, storeSet } from "./src/store.js";
-import { summary as creditSummary, grantTier, spend, reset as resetCredits, costForRequest, tierCatalog, grantForTransaction, mergeCredits, type Tier } from "./src/credits.js";
-import { verifyTransaction } from "./src/iap.js";
+import { summary as creditSummary, grantTier, spend, reset as resetCredits, costForRequest, tierCatalog, grantForTransaction, mergeCredits, downgradeToFree, revokeSubscription, type Tier } from "./src/credits.js";
+import { verifyTransaction, linkTransactionIdentity, getTransactionIdentity, verifyNotification } from "./src/iap.js";
 import { verifyAppleIdentityToken, appleIdentity } from "./src/appleauth.js";
 import { transcribe, synthesize, listVoices, isVoiceConfigured } from "./src/voice.js";
 
@@ -445,6 +445,9 @@ app.post("/api/iap/verify", async (req, res) => {
   for (const jws of jwsList) {
     const info = await verifyTransaction(jws);
     if (!info) continue;
+    // Remember who owns this subscription so server notifications (renewals,
+    // refunds) can find the right ledger later.
+    await linkTransactionIdentity(info.originalTransactionId, identity);
     // Skip clearly-expired auto-renewables (a stale entitlement).
     if (info.expiresDate && info.expiresDate < Date.now()) continue;
     const r = await grantForTransaction(identity, info.tier, info.periodKey);
@@ -468,6 +471,41 @@ app.post("/api/account/apple", async (req, res) => {
   const accountId = appleIdentity(identdata.sub);
   const summary = deviceId ? await mergeCredits(deviceId, accountId) : await creditSummary(accountId);
   res.json({ accountId, email: identdata.email, ...summary, tiers: tierCatalog() });
+});
+
+// App Store Server Notifications V2 — Apple POSTs {signedPayload} on renewals,
+// refunds, cancellations, expirations, etc. We verify it, find the owning
+// identity (by originalTransactionId), and update credits/tier automatically.
+// Set this URL in App Store Connect (Production + Sandbox). Always 200 on a
+// verified notification so Apple doesn't retry a handled one.
+app.post("/api/iap/notifications", async (req, res) => {
+  const signedPayload = typeof req.body?.signedPayload === "string" ? req.body.signedPayload : "";
+  if (!signedPayload) { res.status(400).json({ error: "signedPayload required" }); return; }
+  const note = await verifyNotification(signedPayload);
+  if (!note) { res.status(400).json({ error: "invalid notification" }); return; }
+  try {
+    const tx = note.tx;
+    if (tx) {
+      const identity = await getTransactionIdentity(tx.originalTransactionId);
+      if (identity) {
+        const t = note.notificationType;
+        if (t === "SUBSCRIBED" || t === "DID_RENEW" || t === "OFFER_REDEEMED") {
+          await grantForTransaction(identity, tx.tier, tx.periodKey);
+        } else if (t === "REFUND" || t === "REVOKE") {
+          await revokeSubscription(identity);
+        } else if (t === "EXPIRED" || t === "GRACE_PERIOD_EXPIRED") {
+          await downgradeToFree(identity);
+        }
+        // Other types (DID_CHANGE_RENEWAL_STATUS, DID_FAIL_TO_RENEW grace, TEST,
+        // etc.) need no ledger change.
+      } else {
+        console.warn("IAP notification: no identity mapped for", tx.originalTransactionId, note.notificationType);
+      }
+    }
+  } catch (e) {
+    console.error("IAP notification handling error:", e);
+  }
+  res.status(200).json({ ok: true });
 });
 
 // User feedback on an answer / composed message / the app. Stored durably so the

@@ -275,6 +275,31 @@ export async function mergeCredits(fromId: string, toId: string): Promise<Credit
   });
 }
 
+// Subscription lapsed naturally (EXPIRED / grace period over): drop to free but
+// keep any credits already granted (the user paid for them; 90-day expiry still
+// applies).
+export async function downgradeToFree(identity: string): Promise<void> {
+  return withLock(identity, async () => {
+    const acct = await load(identity);
+    acct.tier = "free";
+    await save(acct);
+  });
+}
+
+// Refund / revoke: drop to free AND claw back unused subscription-granted credits.
+export async function revokeSubscription(identity: string): Promise<void> {
+  return withLock(identity, async () => {
+    const acct = await load(identity);
+    acct.tier = "free";
+    for (const g of acct.grants) {
+      if (g.source.startsWith("subscription:")) g.remaining = 0;
+    }
+    const now = Date.now();
+    acct.grants = acct.grants.filter((g) => g.remaining > 0 && g.expiresAt > now);
+    await save(acct);
+  });
+}
+
 // Dev: wipe a device's credits.
 export async function reset(deviceId: string): Promise<void> {
   return withLock(deviceId, async () => {

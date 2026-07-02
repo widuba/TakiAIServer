@@ -2,6 +2,7 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { SignedDataVerifier, Environment } from "@apple/app-store-server-library";
 import type { Tier } from "./credits.js";
+import { storeGet, storeSet } from "./store.js";
 
 /* ============================================================================
  * Apple In-App Purchase (StoreKit 2) — verify + map the signed transaction.
@@ -131,4 +132,53 @@ export async function verifyTransaction(jws: string): Promise<TxInfo | null> {
     console.error("IAP: transaction verification failed:", (e as Error)?.message);
     return null;
   }
+}
+
+/* ---- Ownership map + App Store Server Notifications --------------------- */
+// Apple's notifications identify a subscription by its originalTransactionId, not
+// by our app identity — so at purchase time we remember which identity owns each
+// subscription, and look it up when a renewal/refund notification arrives.
+export async function linkTransactionIdentity(originalTransactionId: string, identity: string): Promise<void> {
+  if (!originalTransactionId || !identity) return;
+  await storeSet(`iapmap:${originalTransactionId}`, { identity });
+}
+
+export async function getTransactionIdentity(originalTransactionId: string): Promise<string> {
+  const v = await storeGet<{ identity: string }>(`iapmap:${originalTransactionId}`, { identity: "" });
+  return v?.identity || "";
+}
+
+export interface NotificationInfo {
+  notificationType: string;
+  subtype?: string;
+  tx: TxInfo | null;
+}
+
+// Verify + decode an App Store Server Notification V2 (signedPayload).
+export async function verifyNotification(signedPayload: string): Promise<NotificationInfo | null> {
+  const peek = decodePayload(signedPayload);
+  if (!peek) return null;
+  const env = String(peek?.data?.environment || "");
+  let decoded: any;
+  if (env === "Xcode" || env === "LocalTesting" || ALLOW_UNVERIFIED) {
+    decoded = peek;
+  } else {
+    const environment = env === "Production" ? Environment.PRODUCTION : env === "Sandbox" ? Environment.SANDBOX : null;
+    if (!environment) return null;
+    const verifier = verifierFor(environment);
+    if (!verifier) return null;
+    try {
+      decoded = await verifier.verifyAndDecodeNotification(signedPayload);
+    } catch (e) {
+      console.error("IAP: notification verification failed:", (e as Error)?.message);
+      return null;
+    }
+  }
+  const signedTx = decoded?.data?.signedTransactionInfo;
+  const tx = typeof signedTx === "string" ? await verifyTransaction(signedTx) : null;
+  return {
+    notificationType: String(decoded.notificationType || ""),
+    subtype: decoded.subtype ? String(decoded.subtype) : undefined,
+    tx
+  };
 }
