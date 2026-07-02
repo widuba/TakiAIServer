@@ -92,6 +92,8 @@ export interface CreditAccount {
   tier: Tier;
   grants: CreditGrant[];
   starterGiven?: boolean;
+  // Billing-period keys already granted (StoreKit), so a renewal grants once.
+  processedTx?: string[];
   updatedAt: number;
 }
 
@@ -215,6 +217,61 @@ export async function spend(deviceId: string, cost: number): Promise<{ spent: nu
     await save(acct);
     const next = acct.grants.sort((a, b) => a.expiresAt - b.expiresAt)[0];
     return { spent: Math.round(cost) - need, balance: balanceOf(acct), nextExpiry: next?.expiresAt ?? null };
+  });
+}
+
+// Rank tiers so a merge keeps the strongest one.
+const TIER_RANK: Record<Tier, number> = { free: 0, plus: 1, plus_voice: 2, pro: 3 };
+function higherTier(a: Tier, b: Tier): Tier {
+  return (TIER_RANK[a] ?? 0) >= (TIER_RANK[b] ?? 0) ? a : b;
+}
+
+// Grant a subscription's credits for a REAL verified StoreKit transaction. Keyed
+// by billing period so re-sending the same period (app relaunch, restore) grants
+// once. Returns whether it actually granted + the fresh summary.
+export async function grantForTransaction(
+  identity: string, tier: Tier, periodKey: string
+): Promise<{ granted: boolean; summary: CreditSummary }> {
+  return withLock(identity, async () => {
+    const acct = await load(identity);
+    acct.processedTx = acct.processedTx || [];
+    if (periodKey && acct.processedTx.includes(periodKey)) {
+      acct.tier = higherTier(acct.tier, tier);
+      await save(acct);
+      return { granted: false, summary: summarize(acct) };
+    }
+    const conf = TIERS[tier];
+    if (conf) addGrant(acct, `subscription:${tier}`, conf.creditsPerCycle);
+    acct.tier = tier;
+    acct.starterGiven = true;
+    if (periodKey) {
+      acct.processedTx.push(periodKey);
+      if (acct.processedTx.length > 200) acct.processedTx = acct.processedTx.slice(-200);
+    }
+    await save(acct);
+    return { granted: true, summary: summarize(acct) };
+  });
+}
+
+// Merge one identity's live credits/tier into another (used when a user signs in
+// with Apple: their device's credits follow them to the account). The source is
+// emptied so nothing is double-counted. Idempotent-ish: only live grants move.
+export async function mergeCredits(fromId: string, toId: string): Promise<CreditSummary> {
+  if (!fromId || !toId || fromId === toId) return summary(toId);
+  return withLock(toId, async () => {
+    const from = await load(fromId);
+    const to = await load(toId);
+    const now = Date.now();
+    for (const g of from.grants) {
+      if (g.expiresAt > now && g.remaining > 0) to.grants.push(g);
+    }
+    to.tier = higherTier(to.tier, from.tier);
+    to.starterGiven = to.starterGiven || from.starterGiven;
+    to.processedTx = [...(to.processedTx || []), ...(from.processedTx || [])].slice(-200);
+    await save(to);
+    // Empty the source so its credits can't be claimed again.
+    await save({ deviceId: fromId, tier: "free", grants: [], starterGiven: true, processedTx: [], updatedAt: Date.now() });
+    return summarize(to);
   });
 }
 

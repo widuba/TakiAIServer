@@ -18,7 +18,9 @@ import {
 import { cachedTrackerSnapshot } from "./src/tracker.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
 import { isDurable, storeGet, storeSet } from "./src/store.js";
-import { summary as creditSummary, grantTier, spend, reset as resetCredits, costForRequest, tierCatalog, type Tier } from "./src/credits.js";
+import { summary as creditSummary, grantTier, spend, reset as resetCredits, costForRequest, tierCatalog, grantForTransaction, mergeCredits, type Tier } from "./src/credits.js";
+import { verifyTransaction } from "./src/iap.js";
+import { verifyAppleIdentityToken, appleIdentity } from "./src/appleauth.js";
 import { transcribe, synthesize, listVoices, isVoiceConfigured } from "./src/voice.js";
 
 // Dev-only shared secret guarding the credit-grant endpoints (which simulate a
@@ -422,6 +424,50 @@ app.post("/api/credits/grant", async (req, res) => {
   const tier = typeof b.tier === "string" && VALID_TIERS.has(b.tier) ? (b.tier as Tier) : null;
   if (!deviceId || !tier) { res.status(400).json({ error: "deviceId and valid tier required" }); return; }
   res.json(await grantTier(deviceId, tier));
+});
+
+/* ---- Apple In-App Purchase (StoreKit 2) --------------------------------- */
+// The device sends its verified signed transaction(s) (JWS). We read the product,
+// map it to a tier, and grant that cycle's credits to the caller's identity
+// (device id, or the Apple account id when signed in). Idempotent per billing
+// period, so relaunch/restore won't double-grant.
+app.post("/api/iap/verify", async (req, res) => {
+  const b = req.body || {};
+  const identity = typeof b.identity === "string" ? b.identity.trim() : (typeof b.deviceId === "string" ? b.deviceId.trim() : "");
+  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  const jwsList: string[] = Array.isArray(b.transactions)
+    ? b.transactions.filter((t: unknown) => typeof t === "string")
+    : (typeof b.transaction === "string" ? [b.transaction] : []);
+  if (jwsList.length === 0) { res.status(400).json({ error: "transaction(s) required" }); return; }
+
+  let tier: Tier | null = null;
+  let anyGranted = false;
+  for (const jws of jwsList) {
+    const info = await verifyTransaction(jws);
+    if (!info) continue;
+    // Skip clearly-expired auto-renewables (a stale entitlement).
+    if (info.expiresDate && info.expiresDate < Date.now()) continue;
+    const r = await grantForTransaction(identity, info.tier, info.periodKey);
+    anyGranted = anyGranted || r.granted;
+    tier = info.tier;
+  }
+  if (!tier) { res.status(400).json({ error: "no valid subscription transaction" }); return; }
+  res.json({ ...(await creditSummary(identity)), granted: anyGranted, tier });
+});
+
+/* ---- Sign in with Apple (optional account) ------------------------------ */
+// Verify the identity token, derive the stable Apple account id, and merge the
+// device's existing credits into that account so they follow the user across
+// devices. Returns the account identity the app should use from now on.
+app.post("/api/account/apple", async (req, res) => {
+  const b = req.body || {};
+  const idToken = typeof b.identityToken === "string" ? b.identityToken : "";
+  const deviceId = typeof b.deviceId === "string" ? b.deviceId.trim() : "";
+  const identdata = await verifyAppleIdentityToken(idToken);
+  if (!identdata) { res.status(401).json({ error: "invalid Apple identity token" }); return; }
+  const accountId = appleIdentity(identdata.sub);
+  const summary = deviceId ? await mergeCredits(deviceId, accountId) : await creditSummary(accountId);
+  res.json({ accountId, email: identdata.email, ...summary, tiers: tierCatalog() });
 });
 
 // User feedback on an answer / composed message / the app. Stored durably so the
