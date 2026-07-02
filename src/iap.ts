@@ -27,10 +27,13 @@ const APP_APPLE_ID = process.env.APP_APPLE_ID ? Number(process.env.APP_APPLE_ID)
 
 // Product id (App Store Connect) -> credits tier. Create these exact ids as
 // auto-renewable subscriptions in one group ("Taki Membership").
+// NOTE: the original *.monthly ids were accidentally used for (deleted) In-App
+// Purchases; Apple permanently reserves product ids even after deletion, so the
+// subscriptions use these `.sub.` ids instead.
 export const PRODUCT_TO_TIER: Record<string, Tier> = {
-  "com.davidwiduba.takiai.plus.monthly": "plus",
-  "com.davidwiduba.takiai.plusvoice.monthly": "plus_voice",
-  "com.davidwiduba.takiai.pro.monthly": "pro"
+  "com.davidwiduba.takiai.sub.plus.monthly": "plus",
+  "com.davidwiduba.takiai.sub.plusvoice.monthly": "plus_voice",
+  "com.davidwiduba.takiai.sub.pro.monthly": "pro"
 };
 
 export interface TxInfo {
