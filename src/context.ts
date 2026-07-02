@@ -28,7 +28,8 @@ export function buildConversationState(
   deviceLocation?: DeviceLocation,
   timeZone?: string,
   styleProfiles?: IncomingStyleProfile[],
-  userProfile?: UserPersona
+  userProfile?: UserPersona,
+  voiceMode?: boolean
 ): ConversationState {
   let structured: any = null;
   try {
@@ -85,6 +86,7 @@ export function buildConversationState(
     priorMemory: decoded.memory,
     deviceLocation,
     styleProfiles: parseIncomingStyleProfiles(styleProfiles),
-    userProfile: userProfile || {}
+    userProfile: userProfile || {},
+    voiceMode: !!voiceMode
   };
 }

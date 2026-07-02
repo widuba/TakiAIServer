@@ -279,6 +279,10 @@ export type ConversationState = {
 
   // Who the user is + how they want the assistant to talk (device-stored).
   userProfile: import("./persona.js").UserPersona;
+
+  // True when this turn came in over voice (STT→brain→TTS). Generation is kept
+  // extra-brief so replies are cheap to synthesize and fast to hear aloud.
+  voiceMode?: boolean;
 };
 
 /* ---- Planner output ----------------------------------------------------- */

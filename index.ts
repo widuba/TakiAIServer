@@ -501,7 +501,7 @@ async function runAssistant(state: ReturnType<typeof buildConversationState>, de
   const plan = await withTimeout(planAssistantResponse(state), 45000, "Assistant plan");
   const finalized = finalizeResponse(plan, state);
   if (finalized.spokenText && (finalized.action || finalized.memory?.pendingClarification)) {
-    finalized.spokenText = await styleInCharacter(finalized.spokenText, state.userProfile);
+    finalized.spokenText = await styleInCharacter(finalized.spokenText, state.userProfile, voiceMode);
   }
   if (deviceId) {
     const cost = costForRequest(finalized.memory?.lastIntent, voiceMode, tier);
@@ -527,7 +527,7 @@ app.post("/api/assistant", async (req, res) => {
   // per request; the server stores none of it.
   const userProfile = parseUserPersona(req.body?.profile, req.body?.addressUser);
 
-  const state = buildConversationState(userMessage, rawContext, deviceLocation, timeZone, styleProfiles, userProfile);
+  const state = buildConversationState(userMessage, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, voiceMode);
 
   try {
     res.json(await runAssistant(state, deviceId, voiceMode));
@@ -577,7 +577,7 @@ app.post("/api/voice", async (req, res) => {
       res.json({ transcript: "", spokenText: "", action: null, actions: null, empty: true });
       return;
     }
-    const state = buildConversationState(transcript, rawContext, deviceLocation, timeZone, styleProfiles, userProfile);
+    const state = buildConversationState(transcript, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, true);
     const result = await runAssistant(state, deviceId, true); // voice → surcharge applies
     const audio = await synthesize(result.spokenText || "", voiceId);
     res.json({ ...result, transcript, audioBase64: audio, mime: "audio/mpeg" });

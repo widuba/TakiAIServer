@@ -1934,14 +1934,15 @@ ${message}
 // Mom for Friday at 7:00 PM.") so it carries the user's personality, WITHOUT
 // changing any facts. Returns the original text when no character is active
 // (e.g. "plain"), so plain users keep instant preset lines and pay no latency.
-export async function styleInCharacter(text: string, persona?: UserPersona): Promise<string> {
+export async function styleInCharacter(text: string, persona?: UserPersona, voiceMode?: boolean): Promise<string> {
   const directive = characterDirective(persona);
   const clean = String(text || "").trim();
   if (!directive || !clean) return clean;
 
+  const brief = voiceMode ? " This is read ALOUD — keep it to ONE short sentence and do not lengthen it." : "";
   const prompt = `Rewrite this short assistant message so it is fully IN CHARACTER.
 KEEP EVERY FACT IDENTICAL — names, dates, times, numbers, event titles, places, "I'll"/"Added"
-meaning. Do not add or remove any information. Keep it roughly one line.
+meaning. Do not add or remove any information. Keep it roughly one line.${brief}
 Output ONLY the rewritten message, nothing else.
 
 Character: ${directive}
@@ -2287,12 +2288,21 @@ Rules for conversation history:
 - If the user corrected you earlier, respect the correction.`
     : "";
 
+  const voiceBlock = state.voiceMode
+    ? `
+VOICE MODE — this reply is READ ALOUD, so brevity is mandatory:
+- Answer in ONE short sentence (a second only if truly necessary). Aim for under ~30 words.
+- No lists, no numbered steps, no URLs, no spelling things out — just the spoken answer.
+- Still sound fully in character, but trim every non-essential word. Short does NOT mean flat.
+`
+    : "";
+
   const prompt = `${GUARDRAILS}
 You are Taki AI, a sharp, genuinely helpful daily-life iPhone assistant talking to one person.
 ${personaPromptBlock(state.userProfile)}
 Current date & time (the user's LOCAL time — use THIS for "today"/"tomorrow"/day-of-week): ${nowInTimeZone(state.timeZone)}.
 Any date/time you mention must be in the user's LOCAL time (${state.timeZone}) — never another timezone.
-
+${voiceBlock}
 How to answer:
 - BE CONCISE. Answer the exact question and nothing more. Follow the LENGTH rule in the personality above (balanced ≈ 1-3 sentences). Lead with the answer; no preamble ("Great question", "Of course", "Sure!"), no restating the question, no wrap-up summary.
 - Do NOT volunteer extra background, history, caveats, alternatives, or lists unless the user explicitly asked for them. If they ask "what" give the fact; only explain "why/how" when asked.
