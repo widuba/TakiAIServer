@@ -325,24 +325,24 @@ You MUST only report a status you can actually verify from the carrier's trackin
   }
 }
 
-// Package snapshot for the Live Activity. query = "carrier:number". Status is
-// best-effort (grounded search; carrier pages aren't always indexed) — falls back
-// to "Tracking…" so the card (with its Open-carrier button) is still useful.
+// Package snapshot for the Live Activity. query = "carrier:number". We do NOT
+// claim a live status: carrier tracking pages aren't reliably indexed, so a
+// grounded search almost always returned null and the card showed a fake
+// "Tracking…" that never changed. Instead the card is an honest, glanceable
+// shortcut — carrier + number — whose whole job is the "tap to open the carrier"
+// button. (A real live status would need a tracking-API key; see deep-link mode.)
 export async function fetchPackageSnapshot(query: string): Promise<TrackerSnapshot | null> {
   const idx = query.indexOf(":");
   const carrier = idx >= 0 ? query.slice(0, idx) : "";
   const number = (idx >= 0 ? query.slice(idx + 1) : query).trim();
   if (!number) return null;
-  let status: string | null = null;
-  try { status = await fetchPackageStatus(number, carrier); } catch { /* best effort */ }
-  const delivered = !!status && /deliver(ed)?/i.test(status);
   const tail = number.length > 8 ? `#…${number.slice(-6)}` : `#${number}`;
   return {
     title: carrier || "Package",
-    symbol: delivered ? "✅" : "📦",
-    line1: status || "Tracking…",
+    symbol: "📦",
+    line1: "Tap to track",
     line2: tail,
-    trend: delivered ? "up" : "flat",
+    trend: "flat",
     status: ""
   };
 }

@@ -881,7 +881,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       action.trackQuery = q;
       action.liveTitle = pkg.carrier || "Package";
       action.liveSymbol = snap?.symbol || "📦";
-      action.line1 = snap?.line1 || "Tracking…";
+      action.line1 = snap?.line1 || "Tap to track";
       action.line2 = snap?.line2 || `#…${pkg.number.slice(-6)}`;
       action.trend = snap?.trend || "flat";
       action.statusText = snap?.status || "";
@@ -889,8 +889,8 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       action.appName = pkg.carrier || "carrier";
       action.appUrl = pkg.url;
       action.fallbackUrl = pkg.url;
-      const note = snap?.line1 && snap.line1 !== "Tracking…" ? ` ${snap.line1}.` : "";
-      return actionPlan(`Tracking ${who} on your lock screen and Dynamic Island.${note}`, action, { lastIntent: "live_activity" });
+      const openWhere = pkg.carrier ? `open ${pkg.carrier}` : "open the carrier";
+      return actionPlan(`Pinned ${who} to your lock screen and Dynamic Island — tap the card to ${openWhere} for live status.`, action, { lastIntent: "live_activity" });
     }
   }
 

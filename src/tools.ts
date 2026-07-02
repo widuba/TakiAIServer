@@ -1075,11 +1075,20 @@ export function parsePackageTracking(message: string): { number: string; carrier
   const wants = explicit || (trackVerb && (packageWord || carrierWord || unambiguous));
   if (!wants) return null;
 
+  // Carrier: an explicit word in the message always wins; otherwise infer from
+  // the number's shape. Bare FedEx/DHL numbers now resolve to the right carrier
+  // (previously they only worked if you typed "fedex"/"dhl").
   let carrier = "";
-  if (/\bups\b/.test(lower) || /^1Z/i.test(number)) carrier = "UPS";
-  else if (/\busps\b/.test(lower) || /^[A-Z]{2}\d{9}US$/i.test(number) || /^9[1-5]\d{18,20}$/.test(number)) carrier = "USPS";
+  if (/\bups\b/.test(lower)) carrier = "UPS";
+  else if (/\busps\b/.test(lower)) carrier = "USPS";
   else if (/\bfed ?ex\b/.test(lower)) carrier = "FedEx";
   else if (/\bdhl\b/.test(lower)) carrier = "DHL";
+  else if (/^1Z/i.test(number)) carrier = "UPS";                       // UPS 1Z…
+  else if (/^[A-Z]{2}\d{9}[A-Z]{2}$/i.test(number)) carrier = "USPS";  // USPS/UPU S10 intl
+  else if (/^9[0-5]\d{18,20}$/.test(number)) carrier = "USPS";         // USPS IMpb (91–95…, 20–22 digits)
+  else if (/^\d{10}$/.test(number)) carrier = "DHL";                   // DHL Express air waybill (10 digits)
+  else if (/^\d{12}$/.test(number) || /^\d{15}$/.test(number)) carrier = "FedEx"; // FedEx Express/Ground
+  else if (/^96\d{18}$/.test(number)) carrier = "FedEx";              // FedEx SmartPost / Ground 96… (20 digits)
 
   const carrierUrls: Record<string, string> = {
     UPS: `https://www.ups.com/track?tracknum=${encodeURIComponent(number)}`,
