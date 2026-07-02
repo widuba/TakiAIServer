@@ -2327,12 +2327,26 @@ ${memoryText}
     return out || t;
   };
 
+  // Cost control for voice: spoken answers are short and constant, so paying for
+  // gemini-2.5-pro + grounded search on every turn is wasteful. In voice mode we
+  // use flash, and only turn on Google Search when the question actually needs
+  // live/current info (scores, prices, "now", public schedules) — plain knowledge
+  // ("capital of France") is answered flash-only, no grounding charge. Text mode
+  // keeps pro + always-on grounding for maximum quality.
+  const needsSearch = !state.voiceMode || looksLikeLiveInfoQuestion(state.message) || looksLikeFreshFactQuestion(state.message);
+  const primaryModel = state.voiceMode ? MAIN_MODEL : RESEARCH_MODEL;
+  const primaryConfig: any = {
+    ...(needsSearch ? { tools: [{ googleSearch: {} }] } : {}),
+    ...(state.voiceMode ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+    ...safetyConfig(state.userProfile?.teen)
+  };
+
   try {
     const response: any = await withTimeout(
       ai.models.generateContent({
-        model: RESEARCH_MODEL,
+        model: primaryModel,
         contents: prompt,
-        config: { tools: [{ googleSearch: {} }], ...safetyConfig(state.userProfile?.teen) }
+        config: primaryConfig
       } as any),
       RESEARCH_TIMEOUT_MS,
       "General answer"
@@ -2341,7 +2355,7 @@ ${memoryText}
     if (text) return cap(text);
     throw new Error("empty");
   } catch (error) {
-    console.error("General answer (pro) failed, falling back to flash:", error);
+    console.error("General answer (primary) failed, falling back to flash:", error);
     // Graceful degrade so we always reply, even if the strong model times out.
     try {
       const r2: any = await withTimeout(
