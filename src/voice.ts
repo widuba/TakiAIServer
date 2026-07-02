@@ -11,46 +11,9 @@ const ELEVEN_KEY = process.env.ELEVENLABS_API_KEY || "";
 const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM"; // "Rachel"
 const STT_MODEL = process.env.ELEVENLABS_STT_MODEL || "scribe_v1";
 const TTS_MODEL = process.env.ELEVENLABS_TTS_MODEL || "eleven_flash_v2_5";
-// Phase 2 (realtime): the ElevenLabs Agent whose "LLM" is set to our custom-LLM
-// shim. Set ELEVENLABS_AGENT_ID on Render after creating the agent.
-const AGENT_ID = process.env.ELEVENLABS_AGENT_ID || "";
 
 export function isVoiceConfigured(): boolean {
   return !!ELEVEN_KEY;
-}
-
-// Realtime voice (Phase 2) is available only once we also have an agent id.
-export function isRealtimeConfigured(): boolean {
-  return !!ELEVEN_KEY && !!AGENT_ID;
-}
-
-export function defaultAgentId(): string {
-  return AGENT_ID;
-}
-
-// Mint a short-lived WebRTC conversation token for a PRIVATE agent so the device
-// can connect directly to ElevenLabs without ever seeing the API key. Token
-// expires ~15 min; the device fetches a fresh one each session.
-export async function getConversationToken(agentId?: string): Promise<string> {
-  const id = (agentId && agentId.trim()) || AGENT_ID;
-  if (!ELEVEN_KEY || !id) return "";
-  try {
-    const res: any = await withTimeout(
-      fetch(`https://api.elevenlabs.io/v1/convai/conversation/token?agent_id=${encodeURIComponent(id)}`, {
-        headers: { "xi-api-key": ELEVEN_KEY }
-      }),
-      12000, "ConvAI token"
-    );
-    if (!res.ok) {
-      console.error("ConvAI token error:", res.status, (await res.text().catch(() => "")).slice(0, 200));
-      return "";
-    }
-    const data = await res.json();
-    return typeof data?.token === "string" ? data.token : "";
-  } catch (error) {
-    console.error("ConvAI token error:", error);
-    return "";
-  }
 }
 
 // Transcribe a base64 audio clip → text. Returns "" on failure.
