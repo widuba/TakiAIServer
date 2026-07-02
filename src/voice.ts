@@ -25,6 +25,11 @@ export async function transcribe(audioBase64: string, mime = "audio/m4a"): Promi
     const ext = mime.includes("mp") || mime.includes("m4a") || mime.includes("aac") ? "m4a" : mime.includes("wav") ? "wav" : "audio";
     form.append("file", new Blob([bytes], { type: mime }), `clip.${ext}`);
     form.append("model_id", STT_MODEL);
+    // Do NOT transcribe non-speech: otherwise scribe emits "(footsteps)",
+    // "(conversation)", "(music)" tags that pollute the transcript (and confuse
+    // the brain) when the user is walking or in a noisy place.
+    form.append("tag_audio_events", "false");
+    form.append("diarize", "false");
     const res: any = await withTimeout(
       fetch("https://api.elevenlabs.io/v1/speech-to-text", {
         method: "POST",
@@ -38,7 +43,14 @@ export async function transcribe(audioBase64: string, mime = "audio/m4a"): Promi
       return "";
     }
     const data = await res.json();
-    return typeof data?.text === "string" ? data.text.trim() : "";
+    if (typeof data?.text !== "string") return "";
+    // Belt-and-suspenders: strip any residual "(footsteps)"-style audio-event
+    // tags (single short parentheticals with no sentence punctuation).
+    const cleaned = data.text
+      .replace(/\((?:[^()]{0,30})\)/g, (m: string) => (/[.?!,]/.test(m) ? m : " "))
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    return cleaned;
   } catch (error) {
     console.error("Transcribe error:", error);
     return "";
