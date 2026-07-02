@@ -2316,6 +2316,17 @@ ${state.message}
 ${memoryText}
 `;
 
+  // Voice replies are read aloud: hard-cap to the first couple of sentences so a
+  // grounded model that over-answers can't run up TTS cost / latency. The
+  // character lives in the opening words, so this stays in-voice.
+  const cap = (t: string): string => {
+    if (!state.voiceMode || !t) return t;
+    const sentences = t.match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g) || [t];
+    let out = sentences.slice(0, 2).join("").trim();
+    if (out.length > 280) out = out.slice(0, 280).replace(/\s+\S*$/, "").trim() + "…";
+    return out || t;
+  };
+
   try {
     const response: any = await withTimeout(
       ai.models.generateContent({
@@ -2327,7 +2338,7 @@ ${memoryText}
       "General answer"
     );
     const text = stripMarkdown(String(response.text || "").trim());
-    if (text) return text;
+    if (text) return cap(text);
     throw new Error("empty");
   } catch (error) {
     console.error("General answer (pro) failed, falling back to flash:", error);
@@ -2338,7 +2349,7 @@ ${memoryText}
         8000,
         "General answer fast"
       );
-      return stripMarkdown(String(r2.text || "").trim()) || "I'm not sure how to answer that — can you say a bit more?";
+      return cap(stripMarkdown(String(r2.text || "").trim())) || "I'm not sure how to answer that — can you say a bit more?";
     } catch {
       return "I had trouble answering that — try me again?";
     }
