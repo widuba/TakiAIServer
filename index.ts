@@ -597,6 +597,23 @@ app.get("/api/voices", async (_req, res) => {
   res.json({ voices: await listVoices() });
 });
 
+// Voice preview for the full-screen picker: each voice speaks one fixed sample
+// line. Cached per voice id (the line never changes) so swiping back and forth
+// costs ElevenLabs exactly once per voice, not once per swipe.
+const VOICE_SAMPLE_LINE = "The colors of the sky fade with the setting sun.";
+const voiceSampleCache = new Map<string, string>();
+app.get("/api/voice/sample", async (req, res) => {
+  if (!isVoiceConfigured()) { res.status(503).json({ error: "voice not configured" }); return; }
+  const voiceId = typeof req.query?.voiceId === "string" ? req.query.voiceId.trim() : "";
+  const key = voiceId || "default";
+  const cached = voiceSampleCache.get(key);
+  if (cached) { res.json({ audioBase64: cached, mime: "audio/mpeg" }); return; }
+  const audio = await synthesize(VOICE_SAMPLE_LINE, voiceId || undefined);
+  if (!audio) { res.status(502).json({ error: "tts failed" }); return; }
+  voiceSampleCache.set(key, audio);
+  res.json({ audioBase64: audio, mime: "audio/mpeg" });
+});
+
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Taki AI server (planner-first, modular) listening on http://0.0.0.0:${PORT}`);
 });
