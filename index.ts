@@ -18,16 +18,15 @@ import {
 import { cachedTrackerSnapshot } from "./src/tracker.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
 import { isDurable, storeGet, storeSet } from "./src/store.js";
-import { summary as creditSummary, grantTier, spend, reset as resetCredits, costForRequest, tierCatalog, grantForTransaction, mergeCredits, downgradeToFree, revokeSubscription, type Tier } from "./src/credits.js";
+import { summary as creditSummary, spend, reset as resetCredits, costForRequest, tierCatalog, grantForTransaction, mergeCredits, downgradeToFree, revokeSubscription, type Tier } from "./src/credits.js";
 import { verifyTransaction, linkTransactionIdentity, getTransactionIdentity, verifyNotification } from "./src/iap.js";
 import { verifyAppleIdentityToken, appleIdentity } from "./src/appleauth.js";
 import { transcribe, synthesize, listVoices, isVoiceConfigured } from "./src/voice.js";
 
-// Dev-only shared secret guarding the credit-grant endpoints (which simulate a
-// purchase until real Apple IAP lands). Set ADMIN_SECRET on Render to lock it
-// down; the app sends the matching value. TODO: remove when StoreKit IAP ships.
+// Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
+// Render. (The purchase-simulating grant endpoint was removed when real
+// StoreKit IAP shipped — grants only happen via verified transactions now.)
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "taki-dev-grant-2026";
-const VALID_TIERS = new Set(["free", "plus", "plus_voice", "pro"]);
 const OUT_OF_CREDITS_MSG = "You're out of credits — top up or upgrade in Membership to keep asking.";
 
 /* ============================================================================
@@ -415,16 +414,10 @@ app.get("/api/credits", async (req, res) => {
   res.json({ ...(await creditSummary(deviceId)), tiers: tierCatalog() });
 });
 
-// Grant a tier's credits — simulates a purchase/renewal until Apple IAP. Guarded
-// by ADMIN_SECRET. TODO: replace with StoreKit receipt validation.
-app.post("/api/credits/grant", async (req, res) => {
-  const b = req.body || {};
-  if (b.secret !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return; }
-  const deviceId = typeof b.deviceId === "string" ? b.deviceId.trim() : "";
-  const tier = typeof b.tier === "string" && VALID_TIERS.has(b.tier) ? (b.tier as Tier) : null;
-  if (!deviceId || !tier) { res.status(400).json({ error: "deviceId and valid tier required" }); return; }
-  res.json(await grantTier(deviceId, tier));
-});
+// The dev grant stub that simulated purchases was REMOVED once real StoreKit
+// IAP shipped — subscriptions now grant exclusively through /api/iap/verify
+// (cryptographically verified transactions), so there is no secret-guarded
+// free-credits path left in production.
 
 /* ---- Apple In-App Purchase (StoreKit 2) --------------------------------- */
 // The device sends its verified signed transaction(s) (JWS). We read the product,
