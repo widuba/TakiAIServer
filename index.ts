@@ -21,6 +21,7 @@ import { isDurable, storeGet, storeSet } from "./src/store.js";
 import { summary as creditSummary, spend, reset as resetCredits, costForRequest, tierCatalog, grantForTransaction, mergeCredits, downgradeToFree, revokeSubscription, type Tier } from "./src/credits.js";
 import { verifyTransaction, linkTransactionIdentity, getTransactionIdentity, verifyNotification } from "./src/iap.js";
 import { verifyAppleIdentityToken, appleIdentity } from "./src/appleauth.js";
+import { recordAssoc, isBanned, getSafetyAccount, recordViolation, classifyHarm, reinstate, terminateAndBan, reviewQueue, SUSPENDED_MSG, BANNED_MSG } from "./src/safety.js";
 import { transcribe, synthesize, listVoices, isVoiceConfigured } from "./src/voice.js";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
@@ -382,6 +383,8 @@ app.post("/api/vision", async (req, res) => {
     res.status(400).json({ error: "image is required" });
     return;
   }
+  const visionBlocked = await safetyGate(deviceId, question, req);
+  if (visionBlocked) { res.json({ spokenText: visionBlocked, blocked: true }); return; }
   let tier: Tier = "free";
   if (deviceId) {
     const sum = await creditSummary(deviceId);
@@ -462,6 +465,9 @@ app.post("/api/account/apple", async (req, res) => {
   const identdata = await verifyAppleIdentityToken(idToken);
   if (!identdata) { res.status(401).json({ error: "invalid Apple identity token" }); return; }
   const accountId = appleIdentity(identdata.sub);
+  // Link the Apple account to the raw device id + IP so a ban can cascade to
+  // every device tied to the Apple ID.
+  try { await recordAssoc(accountId, deviceId || undefined, clientIp(req)); } catch { /* best effort */ }
   const summary = deviceId ? await mergeCredits(deviceId, accountId) : await creditSummary(accountId);
   res.json({ accountId, email: identdata.email, ...summary, tiers: tierCatalog() });
 });
@@ -534,6 +540,33 @@ app.post("/api/credits/reset", async (req, res) => {
   res.json({ ok: true });
 });
 
+/* ---- Safety review + enforcement (ADMIN_SECRET) ------------------------- */
+// The human-review queue: every currently-suspended account and the retained
+// flagged messages that triggered it (the only point that content is visible).
+app.post("/api/admin/flagged", async (req, res) => {
+  if (req.body?.secret !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return; }
+  res.json({ queue: await reviewQueue() });
+});
+
+// Reinstate a suspended account (clears strikes + retained flagged messages).
+app.post("/api/admin/reinstate", async (req, res) => {
+  if (req.body?.secret !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return; }
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  await reinstate(identity);
+  res.json({ ok: true, identity, status: "active" });
+});
+
+// Terminate + permanently ban the identity, its devices/IPs, and any other
+// identities seen on the same device(s). No appeal.
+app.post("/api/admin/terminate", async (req, res) => {
+  if (req.body?.secret !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return; }
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  const banned = await terminateAndBan(identity);
+  res.json({ ok: true, identity, status: "terminated", banned });
+});
+
 // Travel time for the commute Live Activity, by mode (driving w/ traffic,
 // walking, bicycling, transit) via Google Directions. 502 if no key/route so
 // the device can fall back to MapKit for driving/walking.
@@ -559,6 +592,36 @@ app.post("/api/travel-time", async (req, res) => {
     res.status(502).json({ error: "travel time unavailable" });
   }
 });
+
+// Best-effort client IP (Render sits behind a proxy → prefer X-Forwarded-For).
+function clientIp(req: any): string {
+  const xf = String(req.headers?.["x-forwarded-for"] || "");
+  return (xf.split(",")[0].trim() || req.ip || req.socket?.remoteAddress || "unknown");
+}
+
+// Safety gate: records the identity↔device↔IP association, blocks banned or
+// suspended accounts, and flags (and retains) messages that solicit clearly
+// illegal/harmful content — auto-suspending at the strike limit for human review.
+// Returns a blocking spokenText when the request must be stopped, else null.
+async function safetyGate(identity: string, message: string, req: any): Promise<string | null> {
+  if (!identity) return null; // unmetered/legacy clients
+  const ip = clientIp(req);
+  const dev = identity.startsWith("apple:") ? undefined : identity;
+  try {
+    await recordAssoc(identity, dev, ip);
+    if (await isBanned(identity, dev, ip)) return BANNED_MSG;
+    const acct = await getSafetyAccount(identity);
+    if (acct.status !== "active") return SUSPENDED_MSG;
+    const category = classifyHarm(message);
+    if (category) {
+      const a = await recordViolation(identity, { text: String(message).slice(0, 2000), category, at: Date.now(), ip, deviceId: dev });
+      if (a.status !== "active") return SUSPENDED_MSG;
+    }
+  } catch (e) {
+    console.error("safetyGate error:", e);
+  }
+  return null;
+}
 
 // The shared assistant core: credit gate → plan → finalize → style → meter.
 // Returns the JSON payload (finalized response + credits). Used by both
@@ -611,6 +674,12 @@ app.post("/api/assistant", async (req, res) => {
 
   const state = buildConversationState(userMessage, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, voiceMode);
 
+  const blocked = await safetyGate(deviceId, userMessage, req);
+  if (blocked) {
+    res.json(finalizeResponse({ spokenText: blocked, action: null, memoryPatch: { pendingClarification: null }, needsExecution: false }, state));
+    return;
+  }
+
   try {
     res.json(await runAssistant(state, deviceId, voiceMode));
   } catch (error) {
@@ -657,6 +726,11 @@ app.post("/api/voice", async (req, res) => {
     if (!transcript) {
       // Nothing intelligible (silence) — let the device re-listen or end.
       res.json({ transcript: "", spokenText: "", action: null, actions: null, empty: true });
+      return;
+    }
+    const blocked = await safetyGate(deviceId, transcript, req);
+    if (blocked) {
+      res.json({ transcript, spokenText: blocked, action: null, actions: null, audioBase64: "", mime: "audio/mpeg", blocked: true });
       return;
     }
     const state = buildConversationState(transcript, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, true);
