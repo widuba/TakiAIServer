@@ -59,7 +59,7 @@ app.use(express.json({ limit: "12mb", verify: (req, _res, buf) => { (req as any)
 // --- Stripe (web credit top-ups). Gated on env; endpoints 503 when unset. ---
 const STRIPE_KEY = process.env.STRIPE_SECRET_KEY || "";
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || "";
-const WEB_BASE_URL = process.env.WEB_BASE_URL || "https://taki-ai.onrender.com";
+const WEB_BASE_URL = process.env.WEB_BASE_URL || "https://takiai.app";
 const stripe = STRIPE_KEY ? new Stripe(STRIPE_KEY) : null;
 
 app.get("/health", (_req, res) => {
