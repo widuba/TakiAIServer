@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import Stripe from "stripe";
 
 import { PORT } from "./src/ai.js";
 import type { DeviceLocation } from "./src/types.js";
@@ -18,7 +19,7 @@ import {
 import { cachedTrackerSnapshot } from "./src/tracker.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
 import { isDurable, storeGet, storeSet } from "./src/store.js";
-import { summary as creditSummary, spend, reset as resetCredits, costForRequest, tierCatalog, grantForTransaction, mergeCredits, downgradeToFree, revokeSubscription, noteVoiceQuestion, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, type Tier } from "./src/credits.js";
+import { summary as creditSummary, spend, reset as resetCredits, costForRequest, tierCatalog, grantForTransaction, mergeCredits, downgradeToFree, revokeSubscription, noteVoiceQuestion, grantCredits, topupPriceCents, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, type Tier } from "./src/credits.js";
 import { verifyTransaction, linkTransactionIdentity, getTransactionIdentity, verifyNotification } from "./src/iap.js";
 import { verifyAppleIdentityToken, appleIdentity } from "./src/appleauth.js";
 import { recordAssoc, isBanned, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, SUSPENDED_MSG, BANNED_MSG, PROMPT_EXTRACTION_MSG } from "./src/safety.js";
@@ -51,7 +52,15 @@ const FREE_VOICE_LIMIT_MSG = "You've reached the Voice limit for the Free tier. 
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "12mb" })); // room for base64 photos (vision)
+// Keep the raw body around so the Stripe webhook can verify its signature (Stripe
+// signs the exact bytes, not the parsed JSON).
+app.use(express.json({ limit: "12mb", verify: (req, _res, buf) => { (req as any).rawBody = buf; } }));
+
+// --- Stripe (web credit top-ups). Gated on env; endpoints 503 when unset. ---
+const STRIPE_KEY = process.env.STRIPE_SECRET_KEY || "";
+const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || "";
+const WEB_BASE_URL = process.env.WEB_BASE_URL || "https://taki-ai.onrender.com";
+const stripe = STRIPE_KEY ? new Stripe(STRIPE_KEY) : null;
 
 app.get("/health", (_req, res) => {
   res.json({
@@ -416,6 +425,65 @@ app.get("/api/credits", async (req, res) => {
   const deviceId = typeof req.query.deviceId === "string" ? req.query.deviceId.trim() : "";
   if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
   res.json({ ...(await creditSummary(deviceId)), tiers: tierCatalog() });
+});
+
+/* ---- Web credit top-ups (Stripe Checkout) ------------------------------- */
+// Whether web top-ups are available (so the buy page can show/hide itself).
+app.get("/api/credits/topup-config", (_req, res) => {
+  res.json({ enabled: !!stripe, min: CREDIT_TOPUP_MIN, max: CREDIT_TOPUP_MAX });
+});
+
+// Start a checkout for `credits` credits toward `identity`. Price is computed
+// server-side from the credit count (client-sent prices are never trusted).
+app.post("/api/credits/checkout", async (req, res) => {
+  if (!stripe) { res.status(503).json({ error: "top-ups are not available yet" }); return; }
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  const credits = Math.floor(Number(req.body?.credits));
+  if (!identity) { res.status(400).json({ error: "account ID required" }); return; }
+  const cents = topupPriceCents(credits);
+  if (cents == null) { res.status(400).json({ error: `Choose between ${CREDIT_TOPUP_MIN.toLocaleString()} and ${CREDIT_TOPUP_MAX.toLocaleString()} credits.` }); return; }
+  try {
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
+      line_items: [{ quantity: 1, price_data: { currency: "usd", unit_amount: cents, product_data: { name: `${credits.toLocaleString()} Taki AI credits` } } }],
+      metadata: { identity, credits: String(credits) },
+      success_url: `${WEB_BASE_URL}/buy?status=success`,
+      cancel_url: `${WEB_BASE_URL}/buy?status=canceled`
+    });
+    res.json({ url: session.url, priceUsd: (cents / 100).toFixed(2) });
+  } catch (e) {
+    console.error("Stripe checkout error:", e);
+    res.status(502).json({ error: "could not start checkout" });
+  }
+});
+
+// Stripe webhook — grants credits after a completed payment. Verifies the
+// signature against the raw body, and dedupes by session id.
+app.post("/api/stripe/webhook", async (req, res) => {
+  if (!stripe || !STRIPE_WEBHOOK_SECRET) { res.status(503).end(); return; }
+  let event: Stripe.Event;
+  try {
+    event = stripe.webhooks.constructEvent((req as any).rawBody, String(req.headers["stripe-signature"] || ""), STRIPE_WEBHOOK_SECRET);
+  } catch (e) {
+    console.error("Stripe webhook signature error:", (e as Error).message);
+    res.status(400).send("bad signature");
+    return;
+  }
+  if (event.type === "checkout.session.completed") {
+    const s = event.data.object as Stripe.Checkout.Session;
+    const identity = s.metadata?.identity || "";
+    const credits = parseInt(s.metadata?.credits || "0", 10);
+    const dedupeKey = `stripe:session:${s.id}`;
+    try {
+      if (identity && credits > 0 && s.payment_status === "paid" && !(await storeGet<boolean>(dedupeKey, false))) {
+        await grantCredits(identity, credits, "web_topup");
+        await storeSet(dedupeKey, true);
+      }
+    } catch (e) {
+      console.error("Stripe grant error:", e);
+    }
+  }
+  res.json({ received: true });
 });
 
 // The dev grant stub that simulated purchases was REMOVED once real StoreKit

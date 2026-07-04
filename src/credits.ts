@@ -183,6 +183,31 @@ function summarize(acct: CreditAccount): CreditSummary {
   };
 }
 
+// Grant a one-off block of credits (e.g. a web top-up purchase). 90-day expiry
+// like any grant; does NOT change the subscription tier.
+export async function grantCredits(identity: string, amount: number, source: string): Promise<CreditSummary> {
+  return withLock(identity, async () => {
+    const acct = await load(identity);
+    addGrant(acct, source, Math.max(0, Math.floor(amount)));
+    acct.starterGiven = true;
+    await save(acct);
+    return summarize(acct);
+  });
+}
+
+// Web top-up pricing: server-authoritative (never trust a client-sent price).
+// Volume discount tiers; custom amounts allowed within [1k, 100k].
+export const CREDIT_TOPUP_MIN = 1000;
+export const CREDIT_TOPUP_MAX = 100000;
+export const CREDIT_TOPUP_PRESETS = [1000, 5000, 15000];
+export function topupPriceCents(credits: number): number | null {
+  if (!Number.isFinite(credits)) return null;
+  const c = Math.floor(credits);
+  if (c < CREDIT_TOPUP_MIN || c > CREDIT_TOPUP_MAX) return null;
+  const perCredit = c >= 15000 ? 0.004 : c >= 5000 ? 0.0044 : 0.005; // $ per credit
+  return Math.round(c * perCredit * 100);
+}
+
 // Count a voice question (for the free-tier cap). Returns the new total.
 export async function noteVoiceQuestion(identity: string): Promise<number> {
   return withLock(identity, async () => {
