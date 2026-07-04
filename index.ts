@@ -21,7 +21,7 @@ import { isDurable, storeGet, storeSet } from "./src/store.js";
 import { summary as creditSummary, spend, reset as resetCredits, costForRequest, tierCatalog, grantForTransaction, mergeCredits, downgradeToFree, revokeSubscription, type Tier } from "./src/credits.js";
 import { verifyTransaction, linkTransactionIdentity, getTransactionIdentity, verifyNotification } from "./src/iap.js";
 import { verifyAppleIdentityToken, appleIdentity } from "./src/appleauth.js";
-import { recordAssoc, isBanned, getSafetyAccount, recordViolation, classifyHarm, reinstate, terminateAndBan, reviewQueue, SUSPENDED_MSG, BANNED_MSG } from "./src/safety.js";
+import { recordAssoc, isBanned, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, SUSPENDED_MSG, BANNED_MSG, PROMPT_EXTRACTION_MSG } from "./src/safety.js";
 import { transcribe, synthesize, listVoices, isVoiceConfigured } from "./src/voice.js";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
@@ -604,7 +604,9 @@ function clientIp(req: any): string {
 // illegal/harmful content — auto-suspending at the strike limit for human review.
 // Returns a blocking spokenText when the request must be stopped, else null.
 async function safetyGate(identity: string, message: string, req: any): Promise<string | null> {
-  if (!identity) return null; // unmetered/legacy clients
+  // Prompt-extraction is refused for EVERYONE (even legacy clients with no id).
+  const isExtraction = looksLikePromptExtraction(message);
+  if (!identity) return isExtraction ? PROMPT_EXTRACTION_MSG : null;
   const ip = clientIp(req);
   const dev = identity.startsWith("apple:") ? undefined : identity;
   try {
@@ -612,6 +614,12 @@ async function safetyGate(identity: string, message: string, req: any): Promise<
     if (await isBanned(identity, dev, ip)) return BANNED_MSG;
     const acct = await getSafetyAccount(identity);
     if (acct.status !== "active") return SUSPENDED_MSG;
+    // Prompt/instruction extraction: never help, break character with a fixed
+    // reply, and count a strike (repeated attempts → suspension = "restriction").
+    if (isExtraction) {
+      const a = await recordViolation(identity, { text: String(message).slice(0, 2000), category: "prompt_extraction", at: Date.now(), ip, deviceId: dev });
+      return a.status !== "active" ? SUSPENDED_MSG : PROMPT_EXTRACTION_MSG;
+    }
     const category = classifyHarm(message);
     if (category) {
       const a = await recordViolation(identity, { text: String(message).slice(0, 2000), category, at: Date.now(), ip, deviceId: dev });

@@ -33,6 +33,35 @@ export const SUSPENDED_MSG =
   "Your account is temporarily suspended and under review for activity that may violate Taki's Terms of Service. If you believe this is a mistake, contact Taki AI Support.";
 export const BANNED_MSG =
   "Your access to Taki has been permanently revoked for violating the Terms of Service.";
+// Fixed reply for attempts to extract the system prompt / hidden instructions.
+// Deliberately out-of-character and identical every time.
+export const PROMPT_EXTRACTION_MSG =
+  "I am not able to assist with this request. Continual requests for restricted information will result in an account restriction.";
+
+/* ---- Prompt / instruction extraction detection -------------------------- */
+// Catches attempts to reveal the system prompt, hidden instructions, guardrails,
+// or how the assistant was configured — in any framing. Precise-leaning; a false
+// positive only costs a refusal + a (reversible) strike.
+const PROMPT_EXTRACTION_PATTERNS: RegExp[] = [
+  /\bsystem\s*-?\s*prompt\b/i,
+  /\bsystem\s*message\b/i,
+  /\bdeveloper\s*(prompt|message|instructions?)\b/i,
+  /\b(initial|original|hidden|internal|secret|underlying)\s+(prompt|instructions?|system\s*message|directives?)\b/i,
+  /\bguard\s?rails?\b/i,
+  /\bprompt\s*injection\b/i,
+  /\bignore\s+(all\s+|any\s+)?(your\s+)?(previous|prior|above|earlier|the|these)\s+(instructions?|prompts?|directives?|messages?|rules?|guard\s?rails?)\b/i,
+  /\b(reveal|show|tell|give|print|repeat|display|share|list|expose|leak|output|paste|reproduce|divulge|disclose|read\s*back)\b[^.?!\n]{0,34}\byour\s+(exact\s+|full\s+|entire\s+|complete\s+|original\s+|initial\s+|real\s+|actual\s+|verbatim\s+|secret\s+)?(prompt|instructions?|system\s*message|guidelines?|rules|directives?|programming|configuration|persona\s*prompt)\b/i,
+  /\bwhat\b[^.?!\n]{0,20}\byour\s+(exact\s+|full\s+|original\s+|initial\s+|system\s+|actual\s+)?(prompt|instructions?|system\s*message|rules|directives?)\b/i,
+  /\bwhat\s+(were|are|was)\s+(you|the\s+ai|taki)\s+(instructed|programmed|configured|designed|prompted)\b/i,
+  /\b(repeat|say|print|output|reproduce|echo)\b[^.?!\n]{0,30}\b(everything|all|the)\b[^.?!\n]{0,22}\b(above|before|prior|preceding|earlier)\b/i,
+  /\b(text|words|content|message|prompt)\s+(above|before|preceding|prior to this)\b[^.?!\n]{0,25}\b(verbatim|word[ -]for[ -]word|exactly|character for character)\b/i
+];
+
+export function looksLikePromptExtraction(text: string): boolean {
+  const t = String(text || "");
+  if (!t.trim()) return false;
+  return PROMPT_EXTRACTION_PATTERNS.some((re) => re.test(t));
+}
 
 /* ---- Harm classifier (conservative heuristic first pass) ---------------- */
 const HARM_PATTERNS: { category: string; re: RegExp }[] = [
