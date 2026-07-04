@@ -18,7 +18,7 @@ import {
 import { cachedTrackerSnapshot } from "./src/tracker.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
 import { isDurable, storeGet, storeSet } from "./src/store.js";
-import { summary as creditSummary, spend, reset as resetCredits, costForRequest, tierCatalog, grantForTransaction, mergeCredits, downgradeToFree, revokeSubscription, type Tier } from "./src/credits.js";
+import { summary as creditSummary, spend, reset as resetCredits, costForRequest, tierCatalog, grantForTransaction, mergeCredits, downgradeToFree, revokeSubscription, noteVoiceQuestion, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, type Tier } from "./src/credits.js";
 import { verifyTransaction, linkTransactionIdentity, getTransactionIdentity, verifyNotification } from "./src/iap.js";
 import { verifyAppleIdentityToken, appleIdentity } from "./src/appleauth.js";
 import { recordAssoc, isBanned, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, SUSPENDED_MSG, BANNED_MSG, PROMPT_EXTRACTION_MSG } from "./src/safety.js";
@@ -29,6 +29,7 @@ import { transcribe, synthesize, listVoices, isVoiceConfigured } from "./src/voi
 // StoreKit IAP shipped — grants only happen via verified transactions now.)
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "taki-dev-grant-2026";
 const OUT_OF_CREDITS_MSG = "You're out of credits — top up or upgrade in Membership to keep asking.";
+const FREE_VOICE_LIMIT_MSG = "You've reached the Voice limit for the Free tier. Upgrade to Plus for full access.";
 
 /* ============================================================================
  * Taki AI server — planner-first architecture (entrypoint).
@@ -389,7 +390,7 @@ app.post("/api/vision", async (req, res) => {
   if (deviceId) {
     const sum = await creditSummary(deviceId);
     tier = sum.tier;
-    if (sum.balance <= 0) {
+    if (sum.balance < MIN_REQUEST_CREDITS) {
       res.json({ spokenText: OUT_OF_CREDITS_MSG, credits: { ...sum, cost: 0, outOfCredits: true } });
       return;
     }
@@ -639,7 +640,9 @@ async function runAssistant(state: ReturnType<typeof buildConversationState>, de
   if (deviceId) {
     const sum = await creditSummary(deviceId);
     tier = sum.tier;
-    if (sum.balance <= 0) {
+    // Cut users off BEFORE they hit 0 — they need at least a standard request's
+    // worth of credits to ask anything.
+    if (sum.balance < MIN_REQUEST_CREDITS) {
       return {
         ...finalizeResponse({ spokenText: OUT_OF_CREDITS_MSG, action: null, memoryPatch: { pendingClarification: null }, needsExecution: false }, state),
         credits: { ...sum, cost: 0, outOfCredits: true }
@@ -657,7 +660,9 @@ async function runAssistant(state: ReturnType<typeof buildConversationState>, de
     finalized.spokenText = briefForVoice(finalized.spokenText);
   }
   if (deviceId) {
-    const cost = costForRequest(finalized.memory?.lastIntent, voiceMode, tier);
+    let cost = costForRequest(finalized.memory?.lastIntent, voiceMode, tier);
+    // Plus tier pays for voice output by length: +1 credit per 10 chars spoken.
+    if (voiceMode && tier === "plus") cost += Math.ceil((finalized.spokenText || "").length / 10);
     const s = await spend(deviceId, cost);
     return { ...finalized, credits: { balance: s.balance, cost: s.spent, tier, nextExpiry: s.nextExpiry } };
   }
@@ -729,6 +734,17 @@ app.post("/api/voice", async (req, res) => {
   const userProfile = parseUserPersona(req.body?.profile, req.body?.addressUser);
   if (!audioBase64) { res.status(400).json({ error: "audioBase64 required" }); return; }
 
+  // Free tier: hard cap of voice questions regardless of credits.
+  let freeTier = false;
+  if (deviceId) {
+    const sum = await creditSummary(deviceId);
+    freeTier = sum.tier === "free";
+    if (freeTier && sum.voiceUsed >= FREE_VOICE_LIMIT) {
+      res.json({ transcript: "", spokenText: FREE_VOICE_LIMIT_MSG, action: null, actions: null, audioBase64: "", mime: "audio/mpeg", voiceLimitReached: true, voiceUsed: sum.voiceUsed });
+      return;
+    }
+  }
+
   try {
     const transcript = await transcribe(audioBase64, mime);
     if (!transcript) {
@@ -741,10 +757,13 @@ app.post("/api/voice", async (req, res) => {
       res.json({ transcript, spokenText: blocked, action: null, actions: null, audioBase64: "", mime: "audio/mpeg", blocked: true });
       return;
     }
+    // Count this voice question toward the free-tier cap.
+    let voiceUsed: number | undefined;
+    if (freeTier && deviceId) voiceUsed = await noteVoiceQuestion(deviceId);
     const state = buildConversationState(transcript, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, true);
     const result = await runAssistant(state, deviceId, true); // voice → surcharge applies
     const audio = await synthesize(result.spokenText || "", voiceId);
-    res.json({ ...result, transcript, audioBase64: audio, mime: "audio/mpeg" });
+    res.json({ ...result, transcript, audioBase64: audio, mime: "audio/mpeg", voiceUsed });
   } catch (error) {
     console.error("Voice route error:", error);
     res.status(502).json({ error: "voice unavailable" });

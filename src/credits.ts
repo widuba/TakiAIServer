@@ -87,6 +87,12 @@ export interface CreditGrant {
   source: string;      // "free_starter" | "subscription:plus" | ...
 }
 
+// Minimum balance required to ask anything (cut users off before they hit 0,
+// so a request can't overspend into a negative balance).
+export const MIN_REQUEST_CREDITS = COST_TIERS.standard; // 4
+// Free tier gets a hard cap of voice questions, independent of credits.
+export const FREE_VOICE_LIMIT = 5;
+
 export interface CreditAccount {
   deviceId: string;
   tier: Tier;
@@ -94,6 +100,8 @@ export interface CreditAccount {
   starterGiven?: boolean;
   // Billing-period keys already granted (StoreKit), so a renewal grants once.
   processedTx?: string[];
+  // Lifetime count of voice questions asked (enforces the free-tier voice cap).
+  voiceCount?: number;
   updatedAt: number;
 }
 
@@ -104,6 +112,7 @@ export interface CreditSummary {
   // Per-grant breakdown so the UI can show "1,000 credits expire Sep 27".
   expiring: { credits: number; expiresAt: number }[];
   durable: boolean;
+  voiceUsed: number;          // voice questions asked (for the free-tier cap)
 }
 
 function keyFor(deviceId: string): string {
@@ -169,8 +178,19 @@ function summarize(acct: CreditAccount): CreditSummary {
     balance: balanceOf(acct),
     nextExpiry: live[0]?.expiresAt ?? null,
     expiring: live.map((g) => ({ credits: g.remaining, expiresAt: g.expiresAt })),
-    durable: isDurable()
+    durable: isDurable(),
+    voiceUsed: acct.voiceCount || 0
   };
+}
+
+// Count a voice question (for the free-tier cap). Returns the new total.
+export async function noteVoiceQuestion(identity: string): Promise<number> {
+  return withLock(identity, async () => {
+    const acct = await load(identity);
+    acct.voiceCount = (acct.voiceCount || 0) + 1;
+    await save(acct);
+    return acct.voiceCount;
+  });
 }
 
 // First-touch starter grant + current summary.
