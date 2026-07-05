@@ -393,8 +393,8 @@ app.post("/api/vision", async (req, res) => {
     res.status(400).json({ error: "image is required" });
     return;
   }
-  const visionBlocked = await safetyGate(deviceId, question, req);
-  if (visionBlocked) { res.json({ spokenText: visionBlocked, blocked: true }); return; }
+  const visionGate = await safetyGate(deviceId, question, req);
+  if (visionGate) { res.json({ spokenText: visionGate.message, blocked: true, ...(visionGate.block ? { access: visionGate.block, accessMessage: visionGate.message } : {}) }); return; }
   let tier: Tier = "free";
   if (deviceId) {
     const sum = await creditSummary(deviceId);
@@ -424,7 +424,19 @@ app.post("/api/vision", async (req, res) => {
 app.get("/api/credits", async (req, res) => {
   const deviceId = typeof req.query.deviceId === "string" ? req.query.deviceId.trim() : "";
   if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
-  res.json({ ...(await creditSummary(deviceId)), tiers: tierCatalog() });
+  // Report access status so the app can hard-block a banned/suspended account on
+  // launch (full-screen), not just when the user asks something.
+  let access: "active" | "suspended" | "banned" = "active";
+  let accessMessage = "";
+  try {
+    const ip = clientIp(req);
+    const dev = deviceId.startsWith("apple:") ? undefined : deviceId;
+    await recordAssoc(deviceId, dev, ip);
+    const acct = await getSafetyAccount(deviceId);
+    if (acct.status === "terminated" || (await isBanned(deviceId, dev, ip))) { access = "banned"; accessMessage = BANNED_MSG; }
+    else if (acct.status === "suspended") { access = "suspended"; accessMessage = SUSPENDED_MSG; }
+  } catch (e) { console.error("credits access check:", e); }
+  res.json({ ...(await creditSummary(deviceId)), tiers: tierCatalog(), access, accessMessage });
 });
 
 /* ---- Web credit top-ups (Stripe Checkout) ------------------------------- */
@@ -671,28 +683,31 @@ function clientIp(req: any): string {
 // Safety gate: records the identity↔device↔IP association, blocks banned or
 // suspended accounts, and flags (and retains) messages that solicit clearly
 // illegal/harmful content — auto-suspending at the strike limit for human review.
-// Returns a blocking spokenText when the request must be stopped, else null.
-async function safetyGate(identity: string, message: string, req: any): Promise<string | null> {
+// Returns a result when the request must be stopped, else null. `block` is set
+// only for banned/suspended accounts (→ the app hard-blocks full-screen); a plain
+// message (no `block`) is a normal refusal (e.g. prompt-extraction).
+type GateResult = { message: string; block?: "banned" | "suspended" };
+async function safetyGate(identity: string, message: string, req: any): Promise<GateResult | null> {
   // Prompt-extraction is refused for EVERYONE (even legacy clients with no id).
   const isExtraction = looksLikePromptExtraction(message);
-  if (!identity) return isExtraction ? PROMPT_EXTRACTION_MSG : null;
+  if (!identity) return isExtraction ? { message: PROMPT_EXTRACTION_MSG } : null;
   const ip = clientIp(req);
   const dev = identity.startsWith("apple:") ? undefined : identity;
   try {
     await recordAssoc(identity, dev, ip);
-    if (await isBanned(identity, dev, ip)) return BANNED_MSG;
+    if (await isBanned(identity, dev, ip)) return { message: BANNED_MSG, block: "banned" };
     const acct = await getSafetyAccount(identity);
-    if (acct.status !== "active") return SUSPENDED_MSG;
+    if (acct.status !== "active") return { message: SUSPENDED_MSG, block: "suspended" };
     // Prompt/instruction extraction: never help, break character with a fixed
     // reply, and count a strike (repeated attempts → suspension = "restriction").
     if (isExtraction) {
       const a = await recordViolation(identity, { text: String(message).slice(0, 2000), category: "prompt_extraction", at: Date.now(), ip, deviceId: dev });
-      return a.status !== "active" ? SUSPENDED_MSG : PROMPT_EXTRACTION_MSG;
+      return a.status !== "active" ? { message: SUSPENDED_MSG, block: "suspended" } : { message: PROMPT_EXTRACTION_MSG };
     }
     const category = classifyHarm(message);
     if (category) {
       const a = await recordViolation(identity, { text: String(message).slice(0, 2000), category, at: Date.now(), ip, deviceId: dev });
-      if (a.status !== "active") return SUSPENDED_MSG;
+      if (a.status !== "active") return { message: SUSPENDED_MSG, block: "suspended" };
     }
   } catch (e) {
     console.error("safetyGate error:", e);
@@ -755,9 +770,12 @@ app.post("/api/assistant", async (req, res) => {
 
   const state = buildConversationState(userMessage, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, voiceMode);
 
-  const blocked = await safetyGate(deviceId, userMessage, req);
-  if (blocked) {
-    res.json(finalizeResponse({ spokenText: blocked, action: null, memoryPatch: { pendingClarification: null }, needsExecution: false }, state));
+  const gate = await safetyGate(deviceId, userMessage, req);
+  if (gate) {
+    res.json({
+      ...finalizeResponse({ spokenText: gate.message, action: null, memoryPatch: { pendingClarification: null }, needsExecution: false }, state),
+      ...(gate.block ? { blocked: true, access: gate.block, accessMessage: gate.message } : {})
+    });
     return;
   }
 
@@ -820,9 +838,9 @@ app.post("/api/voice", async (req, res) => {
       res.json({ transcript: "", spokenText: "", action: null, actions: null, empty: true });
       return;
     }
-    const blocked = await safetyGate(deviceId, transcript, req);
-    if (blocked) {
-      res.json({ transcript, spokenText: blocked, action: null, actions: null, audioBase64: "", mime: "audio/mpeg", blocked: true });
+    const gate = await safetyGate(deviceId, transcript, req);
+    if (gate) {
+      res.json({ transcript, spokenText: gate.message, action: null, actions: null, audioBase64: "", mime: "audio/mpeg", blocked: true, ...(gate.block ? { access: gate.block, accessMessage: gate.message } : {}) });
       return;
     }
     // Count this voice question toward the free-tier cap.
