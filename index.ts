@@ -23,6 +23,8 @@ import { summary as creditSummary, spend, reset as resetCredits, costForRequest,
 import { verifyTransaction, linkTransactionIdentity, getTransactionIdentity, verifyNotification } from "./src/iap.js";
 import { verifyAppleIdentityToken, appleIdentity } from "./src/appleauth.js";
 import { recordAssoc, isBanned, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, SUSPENDED_MSG, BANNED_MSG, PROMPT_EXTRACTION_MSG } from "./src/safety.js";
+import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, identitiesForIp, allUsers } from "./src/users.js";
+import { TIERS, CREDIT_USD } from "./src/credits.js";
 import { transcribe, synthesize, listVoices, isVoiceConfigured } from "./src/voice.js";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
@@ -408,6 +410,7 @@ app.post("/api/vision", async (req, res) => {
     const spokenText = await withTimeout(answerAboutImage(image, mime, question, userProfile, timeZone), 28000, "Vision");
     if (deviceId) {
       const s = await spend(deviceId, costForRequest("vision", voiceMode, tier));
+      await noteSpend(deviceId, s.spent);
       res.json({ spokenText, credits: { balance: s.balance, cost: s.spent, tier, nextExpiry: s.nextExpiry } });
     } else {
       res.json({ spokenText });
@@ -490,6 +493,7 @@ app.post("/api/stripe/webhook", async (req, res) => {
       if (identity && credits > 0 && s.payment_status === "paid" && !(await storeGet<boolean>(dedupeKey, false))) {
         await grantCredits(identity, credits, "web_topup");
         await storeSet(dedupeKey, true);
+        await noteRevenue(identity, { at: Date.now(), kind: "topup", amountUsd: (s.amount_total || 0) / 100, credits });
       }
     } catch (e) {
       console.error("Stripe grant error:", e);
@@ -528,6 +532,12 @@ app.post("/api/iap/verify", async (req, res) => {
     // Skip clearly-expired auto-renewables (a stale entitlement).
     if (info.expiresDate && info.expiresDate < Date.now()) continue;
     const r = await grantForTransaction(identity, info.tier, info.periodKey);
+    if (r.granted) {
+      // Analytics: record the plan + gross revenue for this billing period.
+      await noteTier(identity, info.tier, "subscription");
+      const conf = TIERS[info.tier];
+      if (conf) await noteRevenue(identity, { at: Date.now(), kind: "subscription", amountUsd: conf.priceUsd, credits: conf.creditsPerCycle, tier: info.tier });
+    }
     anyGranted = anyGranted || r.granted;
     tier = info.tier;
   }
@@ -546,9 +556,14 @@ app.post("/api/account/apple", async (req, res) => {
   const identdata = await verifyAppleIdentityToken(idToken);
   if (!identdata) { res.status(401).json({ error: "invalid Apple identity token" }); return; }
   const accountId = appleIdentity(identdata.sub);
+  const fullName = typeof b.fullName === "string" ? b.fullName.trim() : "";
   // Link the Apple account to the raw device id + IP so a ban can cascade to
   // every device tied to the Apple ID.
   try { await recordAssoc(accountId, deviceId || undefined, clientIp(req)); } catch { /* best effort */ }
+  try {
+    await noteUser(accountId, clientIp(req), String(req.headers?.["user-agent"] || ""));
+    await noteApple(accountId, { sub: identdata.sub, email: identdata.email, name: fullName || undefined });
+  } catch { /* best effort */ }
   const summary = deviceId ? await mergeCredits(deviceId, accountId) : await creditSummary(accountId);
   res.json({ accountId, email: identdata.email, ...summary, tiers: tierCatalog() });
 });
@@ -648,6 +663,45 @@ app.post("/api/admin/terminate", async (req, res) => {
   res.json({ ok: true, identity, status: "terminated", banned });
 });
 
+// Full admin dashboard feed: every user + plan/history, IPs, device, credit
+// usage, cost-to-serve, revenue, profit, safety status, Apple identity, and the
+// other identities seen on their IP(s).
+app.post("/api/admin/users", async (req, res) => {
+  if (req.body?.secret !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return; }
+  const users = await allUsers();
+  const rows = await Promise.all(users.map(async (u) => {
+    const acct = await getSafetyAccount(u.identity);
+    const summary = await creditSummary(u.identity);
+    const costUsd = Math.round(u.creditsUsed * CREDIT_USD * 100) / 100;
+    // Net revenue estimate (subscriptions ≈ 85% after Apple; top-ups ≈ Stripe fee).
+    let netUsd = 0;
+    for (const p of u.purchases) netUsd += p.kind === "topup" ? Math.max(0, p.amountUsd * 0.971 - 0.30) : p.amountUsd * 0.85;
+    netUsd = Math.round(netUsd * 100) / 100;
+    const neighbors = new Set<string>();
+    for (const ip of u.ips) for (const i of await identitiesForIp(ip)) if (i !== u.identity) neighbors.add(i);
+    return {
+      ...u,
+      balance: summary.balance,
+      status: acct.status,
+      strikes: acct.strikes,
+      costUsd,
+      grossRevenueUsd: u.revenueUsd,
+      netRevenueUsd: netUsd,
+      profitUsd: Math.round((netUsd - costUsd) * 100) / 100,
+      ipNeighbors: Array.from(neighbors)
+    };
+  }));
+  // Totals for the header.
+  const totals = rows.reduce((t, r) => ({
+    users: t.users + 1,
+    gross: t.gross + r.grossRevenueUsd,
+    net: t.net + r.netRevenueUsd,
+    cost: t.cost + r.costUsd,
+    profit: t.profit + r.profitUsd
+  }), { users: 0, gross: 0, net: 0, cost: 0, profit: 0 });
+  res.json({ users: rows, totals });
+});
+
 // Travel time for the commute Live Activity, by mode (driving w/ traffic,
 // walking, bicycling, transit) via Google Directions. 502 if no key/route so
 // the device can fall back to MapKit for driving/walking.
@@ -695,6 +749,7 @@ async function safetyGate(identity: string, message: string, req: any): Promise<
   const dev = identity.startsWith("apple:") ? undefined : identity;
   try {
     await recordAssoc(identity, dev, ip);
+    await noteUser(identity, ip, String(req.headers?.["user-agent"] || ""));
     if (await isBanned(identity, dev, ip)) return { message: BANNED_MSG, block: "banned" };
     const acct = await getSafetyAccount(identity);
     if (acct.status !== "active") return { message: SUSPENDED_MSG, block: "suspended" };
@@ -747,6 +802,7 @@ async function runAssistant(state: ReturnType<typeof buildConversationState>, de
     // Plus tier pays for voice output by length: +1 credit per 10 chars spoken.
     if (voiceMode && tier === "plus") cost += Math.ceil((finalized.spokenText || "").length / 10);
     const s = await spend(deviceId, cost);
+    await noteSpend(deviceId, s.spent);
     return { ...finalized, credits: { balance: s.balance, cost: s.spent, tier, nextExpiry: s.nextExpiry } };
   }
   return finalized;
