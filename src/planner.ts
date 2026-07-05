@@ -74,6 +74,7 @@ import { personaPromptBlock, GUARDRAILS } from "./persona.js";
 import { parseTrackCommand, fetchTrackerSnapshot, fetchAssetPrice, extractFlightCode } from "./tracker.js";
 import { looksLikePlanDay, generateDayPlan } from "./dayplan.js";
 import { looksLikeCookingRequest, generateRecipe, parseRecipeImport, importRecipeFromUrl } from "./cooking.js";
+import { looksLikeUrlSummarize, summarizeUrl } from "./websummary.js";
 import {
   NEUTRAL_VECTOR,
   STYLE_KEYS,
@@ -943,6 +944,14 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       }
       // Couldn't read a recipe from the link — fall through to a normal answer.
     }
+  }
+
+  // "Summarize this: <link>" / a bare pasted link -> read the page + summarize it.
+  // Runs after recipe-import (so recipe links still open Cooking Mode) but before
+  // the LLM so a link is never answered from the model's stale memory.
+  if (looksLikeUrlSummarize(state.message)) {
+    const summary = await summarizeUrl(state);
+    if (summary) return answerPlan(summary, { lastIntent: "web_search" });
   }
 
   // "Cook me chicken parmesan" / "walk me through carbonara" -> a guided recipe
