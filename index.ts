@@ -433,11 +433,20 @@ let deviceSeqChain: Promise<unknown> = Promise.resolve();
 async function assignDeviceNumber(region: string): Promise<string> {
   const country = region.toUpperCase() === "US" ? "1" : "0";
   const run = deviceSeqChain.then(async () => {
-    const key = `devnum:seq:${country}`;
-    const cur = await storeGet<{ n: number }>(key, { n: 0 });
-    cur.n = (cur.n || 0) + 1;
-    await storeSet(key, cur);
-    return country + String(cur.n).padStart(7, "0");
+    // Random 7 digits (so the id doesn't reveal how many devices exist), checked
+    // against a used-set for uniqueness and marked so it's never reused.
+    for (let attempt = 0; attempt < 25; attempt++) {
+      const rnd = String(Math.floor(Math.random() * 10_000_000)).padStart(7, "0");
+      const id = country + rnd;
+      if (!(await storeGet<boolean>(`devnum:used:${id}`, false))) {
+        await storeSet(`devnum:used:${id}`, true);
+        return id;
+      }
+    }
+    // Astronomically unlikely fallback (would need the number space near-full).
+    const id = country + String(Date.now()).slice(-7);
+    await storeSet(`devnum:used:${id}`, true);
+    return id;
   });
   deviceSeqChain = run.then(() => {}, () => {});
   return run;
