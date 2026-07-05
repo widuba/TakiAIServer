@@ -19,10 +19,10 @@ import {
 import { cachedTrackerSnapshot } from "./src/tracker.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
 import { isDurable, storeGet, storeSet } from "./src/store.js";
-import { summary as creditSummary, spend, reset as resetCredits, costForRequest, tierCatalog, grantForTransaction, mergeCredits, downgradeToFree, revokeSubscription, noteVoiceQuestion, grantCredits, topupPriceCents, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, type Tier } from "./src/credits.js";
+import { summary as creditSummary, spend, reset as resetCredits, costForRequest, tierCatalog, grantForTransaction, downgradeToFree, revokeSubscription, noteVoiceQuestion, grantCredits, topupPriceCents, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, type Tier } from "./src/credits.js";
 import { verifyTransaction, linkTransactionIdentity, getTransactionIdentity, verifyNotification } from "./src/iap.js";
-import { verifyAppleIdentityToken, appleIdentity } from "./src/appleauth.js";
-import { recordAssoc, isBanned, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, associationsFor, SUSPENDED_MSG, BANNED_MSG, PROMPT_EXTRACTION_MSG } from "./src/safety.js";
+import { verifyAppleIdentityToken } from "./src/appleauth.js";
+import { recordAssoc, isBanned, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, linkApple, devicesForApple, SUSPENDED_MSG, BANNED_MSG, PROMPT_EXTRACTION_MSG } from "./src/safety.js";
 import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, identitiesForIp, allUsers, deleteUser } from "./src/users.js";
 import { TIERS, CREDIT_USD } from "./src/credits.js";
 import { transcribe, synthesize, listVoices, isVoiceConfigured } from "./src/voice.js";
@@ -585,17 +585,19 @@ app.post("/api/account/apple", async (req, res) => {
   const deviceId = typeof b.deviceId === "string" ? b.deviceId.trim() : "";
   const identdata = await verifyAppleIdentityToken(idToken);
   if (!identdata) { res.status(401).json({ error: "invalid Apple identity token" }); return; }
-  const accountId = appleIdentity(identdata.sub);
+  if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
   const fullName = typeof b.fullName === "string" ? b.fullName.trim() : "";
-  // Link the Apple account to the raw device id + IP so a ban can cascade to
-  // every device tied to the Apple ID.
-  try { await recordAssoc(accountId, deviceId || undefined, clientIp(req)); } catch { /* best effort */ }
+  // The 8-digit device number stays the identity. Apple sign-in just LINKS this
+  // device to the account (for grouping in the dashboard + a ban cascade) and
+  // attaches the email/name to this device's record. No credit merge, no identity
+  // change — each device keeps its own number and its own balance.
   try {
-    await noteUser(accountId, clientIp(req), String(req.headers?.["user-agent"] || ""));
-    await noteApple(accountId, { sub: identdata.sub, email: identdata.email, name: fullName || undefined });
-  } catch { /* best effort */ }
-  const summary = deviceId ? await mergeCredits(deviceId, accountId) : await creditSummary(accountId);
-  res.json({ accountId, email: identdata.email, ...summary, tiers: tierCatalog() });
+    await linkApple(identdata.sub, deviceId);
+    await noteApple(deviceId, { sub: identdata.sub, email: identdata.email, name: fullName || undefined });
+    await noteUser(deviceId, clientIp(req), String(req.headers?.["user-agent"] || ""));
+  } catch (e) { console.error("apple link:", e); }
+  const linkedDevices = (await devicesForApple(identdata.sub)).filter((d) => d !== deviceId);
+  res.json({ deviceId, email: identdata.email, linkedDevices, ...(await creditSummary(deviceId)), tiers: tierCatalog() });
 });
 
 // App Store Server Notifications V2 — Apple POSTs {signedPayload} on renewals,
@@ -718,9 +720,8 @@ app.post("/api/admin/users", async (req, res) => {
     netUsd = Math.round(netUsd * 100) / 100;
     const neighbors = new Set<string>();
     for (const ip of u.ips) for (const i of await identitiesForIp(ip)) if (i !== u.identity) neighbors.add(i);
-    // Devices linked to this identity (e.g. an Apple account's device numbers).
-    const assoc = await associationsFor(u.identity);
-    const linkedDevices = assoc.devices.filter((d) => d !== u.identity);
+    // Other device numbers signed into the same Apple account.
+    const linkedDevices = u.apple?.sub ? (await devicesForApple(u.apple.sub)).filter((d) => d !== u.identity) : [];
     return {
       ...u,
       balance: summary.balance,

@@ -146,6 +146,23 @@ export async function associationsFor(identity: string): Promise<Assoc> {
   return await storeGet<Assoc>(assocKey(identity), { devices: [], ips: [] });
 }
 
+/* ---- Apple account ↔ device links (identity stays the device number) ---- */
+function appleKey(sub: string): string { return `safety:applelink:${keyify(sub)}`; }
+function devAppleKey(dev: string): string { return `safety:devapple:${keyify(dev)}`; }
+export async function linkApple(sub: string, deviceId: string): Promise<void> {
+  if (!sub || !deviceId) return;
+  const a = await storeGet<{ devices: string[] }>(appleKey(sub), { devices: [] });
+  if (!a.devices.includes(deviceId)) { a.devices.push(deviceId); await storeSet(appleKey(sub), a); }
+  await storeSet(devAppleKey(deviceId), { sub });
+}
+export async function devicesForApple(sub: string): Promise<string[]> {
+  if (!sub) return [];
+  return (await storeGet<{ devices: string[] }>(appleKey(sub), { devices: [] })).devices;
+}
+export async function appleForDevice(deviceId: string): Promise<string> {
+  return (await storeGet<{ sub: string }>(devAppleKey(deviceId), { sub: "" })).sub;
+}
+
 export async function isBanned(identity: string, deviceId?: string, ip?: string): Promise<boolean> {
   const b = await getBanList();
   if (b.identities.includes(identity)) return true;
@@ -174,6 +191,10 @@ export async function terminateAndBan(identity: string): Promise<{ identities: s
     const d = await storeGet<{ ids: string[] }>(devKey(dev), { ids: [] });
     for (const i of d.ids) idset.add(i);
   }
+  // Cascade across the linked Apple account: ban EVERY device signed into the same
+  // Apple ID (identity is a device number; devices stay separate but linked).
+  const sub = await appleForDevice(identity);
+  if (sub) for (const d of await devicesForApple(sub)) { devset.add(d); idset.add(d); }
   const b = await getBanList();
   b.identities = Array.from(new Set([...b.identities, ...idset]));
   b.devices = Array.from(new Set([...b.devices, ...devset]));
