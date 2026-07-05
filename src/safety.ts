@@ -141,6 +141,11 @@ export async function recordAssoc(identity: string, deviceId?: string, ip?: stri
 
 export async function getBanList(): Promise<BanList> { return await storeGet<BanList>(BAN_KEY, { identities: [], devices: [], ips: [] }); }
 
+// Device ids + IPs seen for an identity (used to show linked devices per account).
+export async function associationsFor(identity: string): Promise<Assoc> {
+  return await storeGet<Assoc>(assocKey(identity), { devices: [], ips: [] });
+}
+
 export async function isBanned(identity: string, deviceId?: string, ip?: string): Promise<boolean> {
   const b = await getBanList();
   if (b.identities.includes(identity)) return true;

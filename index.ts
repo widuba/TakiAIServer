@@ -22,8 +22,8 @@ import { isDurable, storeGet, storeSet } from "./src/store.js";
 import { summary as creditSummary, spend, reset as resetCredits, costForRequest, tierCatalog, grantForTransaction, mergeCredits, downgradeToFree, revokeSubscription, noteVoiceQuestion, grantCredits, topupPriceCents, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, type Tier } from "./src/credits.js";
 import { verifyTransaction, linkTransactionIdentity, getTransactionIdentity, verifyNotification } from "./src/iap.js";
 import { verifyAppleIdentityToken, appleIdentity } from "./src/appleauth.js";
-import { recordAssoc, isBanned, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, SUSPENDED_MSG, BANNED_MSG, PROMPT_EXTRACTION_MSG } from "./src/safety.js";
-import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, identitiesForIp, allUsers } from "./src/users.js";
+import { recordAssoc, isBanned, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, associationsFor, SUSPENDED_MSG, BANNED_MSG, PROMPT_EXTRACTION_MSG } from "./src/safety.js";
+import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, identitiesForIp, allUsers, deleteUser } from "./src/users.js";
 import { TIERS, CREDIT_USD } from "./src/credits.js";
 import { transcribe, synthesize, listVoices, isVoiceConfigured } from "./src/voice.js";
 
@@ -424,6 +424,36 @@ app.post("/api/vision", async (req, res) => {
 /* ---- Credits / subscriptions ------------------------------------------- */
 
 // Current balance + tier for a device (also gives a fresh device its starter grant).
+/* ---- Short 8-digit device ids ------------------------------------------- */
+// Assigns a unique 8-digit number per device: 1st digit = country (1 = USA, 0 =
+// other), remaining 7 = a per-country registration sequence. Server-tracked so
+// numbers are unique + never reused; the device saves it in the Keychain so it
+// persists across reinstall. Serialized so concurrent registrations don't collide.
+let deviceSeqChain: Promise<unknown> = Promise.resolve();
+async function assignDeviceNumber(region: string): Promise<string> {
+  const country = region.toUpperCase() === "US" ? "1" : "0";
+  const run = deviceSeqChain.then(async () => {
+    const key = `devnum:seq:${country}`;
+    const cur = await storeGet<{ n: number }>(key, { n: 0 });
+    cur.n = (cur.n || 0) + 1;
+    await storeSet(key, cur);
+    return country + String(cur.n).padStart(7, "0");
+  });
+  deviceSeqChain = run.then(() => {}, () => {});
+  return run;
+}
+
+app.post("/api/register-device", async (req, res) => {
+  const region = typeof req.body?.region === "string" ? req.body.region : "";
+  try {
+    const deviceId = await assignDeviceNumber(region);
+    res.json({ deviceId });
+  } catch (e) {
+    console.error("register-device error:", e);
+    res.status(502).json({ error: "could not register device" });
+  }
+});
+
 app.get("/api/credits", async (req, res) => {
   const deviceId = typeof req.query.deviceId === "string" ? req.query.deviceId.trim() : "";
   if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
@@ -663,6 +693,15 @@ app.post("/api/admin/terminate", async (req, res) => {
   res.json({ ok: true, identity, status: "terminated", banned });
 });
 
+// Remove a user from the dashboard registry (e.g. test accounts).
+app.post("/api/admin/delete-user", async (req, res) => {
+  if (req.body?.secret !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return; }
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  await deleteUser(identity);
+  res.json({ ok: true, identity, deleted: true });
+});
+
 // Full admin dashboard feed: every user + plan/history, IPs, device, credit
 // usage, cost-to-serve, revenue, profit, safety status, Apple identity, and the
 // other identities seen on their IP(s).
@@ -679,6 +718,9 @@ app.post("/api/admin/users", async (req, res) => {
     netUsd = Math.round(netUsd * 100) / 100;
     const neighbors = new Set<string>();
     for (const ip of u.ips) for (const i of await identitiesForIp(ip)) if (i !== u.identity) neighbors.add(i);
+    // Devices linked to this identity (e.g. an Apple account's device numbers).
+    const assoc = await associationsFor(u.identity);
+    const linkedDevices = assoc.devices.filter((d) => d !== u.identity);
     return {
       ...u,
       balance: summary.balance,
@@ -688,7 +730,8 @@ app.post("/api/admin/users", async (req, res) => {
       grossRevenueUsd: u.revenueUsd,
       netRevenueUsd: netUsd,
       profitUsd: Math.round((netUsd - costUsd) * 100) / 100,
-      ipNeighbors: Array.from(neighbors)
+      ipNeighbors: Array.from(neighbors),
+      linkedDevices
     };
   }));
   // Totals for the header.

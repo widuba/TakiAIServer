@@ -124,3 +124,10 @@ export async function allUsers(): Promise<UserRecord[]> {
   for (const id of idx.ids) out.push(await loadUser(id));
   return out;
 }
+
+// Remove a user from the registry (dashboard). Leaves credits/safety untouched.
+export async function deleteUser(identity: string): Promise<void> {
+  const idx = await storeGet<{ ids: string[] }>(USERS_INDEX, { ids: [] });
+  if (idx.ids.includes(identity)) { idx.ids = idx.ids.filter((i) => i !== identity); await storeSet(USERS_INDEX, idx); }
+  await storeSet(uKey(identity), null);
+}
