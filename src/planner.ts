@@ -890,7 +890,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       action.appUrl = pkg.url;
       action.fallbackUrl = pkg.url;
       const openWhere = pkg.carrier ? `open ${pkg.carrier}` : "open the carrier";
-      return actionPlan(`Pinned ${who} to your lock screen and Dynamic Island — tap the card to ${openWhere} for live status.`, action, { lastIntent: "live_activity" });
+      return actionPlan(`Tracking ${who} on your lock screen and Dynamic Island — I'll keep the status updated, and you can tap the card to ${openWhere} for full details.`, action, { lastIntent: "live_activity" });
     }
   }
 

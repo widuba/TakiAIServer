@@ -302,45 +302,78 @@ Use the user's local timezone (${timeZone}). Always include the '|note' part. If
   }
 }
 
-// Best-effort grounded package status ("Out for delivery", "Delivered Tue") for a
-// tracking number. Returns a SHORT status string, or null when it can't be
-// verified (carrier tracking pages are often not indexed — so this is a bonus on
-// top of the deep link, never a replacement). Conservative to avoid fabrication.
-export async function fetchPackageStatus(number: string, carrier: string): Promise<string | null> {
-  const who = carrier ? `${carrier} ` : "";
-  const prompt = `Find the CURRENT shipment status for ${who}tracking number "${number}".
-Respond with ONLY a short status phrase of at most 6 words (e.g. "Out for delivery", "Delivered Monday", "In transit — Memphis, TN", "Label created").
-You MUST only report a status you can actually verify from the carrier's tracking for THIS exact number. If you cannot find it, respond with exactly: null`;
+// Real package tracking via Ship24 (one universal API for UPS/FedEx/DHL/USPS/…).
+// Set SHIP24_API_KEY on Render to enable live status; without it the card falls
+// back to an honest "Tap to track" shortcut. The endpoint is idempotent — the
+// first call creates the tracker (can be slow) and later calls return updates.
+const SHIP24_KEY = process.env.SHIP24_API_KEY || "";
+export function isPackageTrackingConfigured(): boolean { return !!SHIP24_KEY; }
+
+const SHIP24_MILESTONES: Record<string, { label: string; symbol: string; delivered?: boolean }> = {
+  delivered: { label: "Delivered", symbol: "✅", delivered: true },
+  out_for_delivery: { label: "Out for delivery", symbol: "🚚" },
+  in_transit: { label: "In transit", symbol: "🚚" },
+  available_for_pickup: { label: "Ready for pickup", symbol: "📮" },
+  failed_attempt: { label: "Delivery attempted", symbol: "⚠️" },
+  exception: { label: "Delivery issue", symbol: "⚠️" },
+  info_received: { label: "Label created", symbol: "📦" },
+  pending: { label: "Tracking…", symbol: "📦" }
+};
+
+async function fetchShip24Status(number: string, carrier: string): Promise<{ line1: string; line2: string; symbol: string; delivered: boolean } | null> {
+  if (!SHIP24_KEY) return null;
   try {
+    const body: any = { trackingNumber: number };
+    const cc = carrier ? carrier.toLowerCase() : "";
+    if (cc === "ups" || cc === "fedex" || cc === "dhl" || cc === "usps") body.courierCode = [cc];
     const res: any = await withTimeout(
-      ai.models.generateContent({ model: RESEARCH_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }] } } as any),
-      RESEARCH_TIMEOUT_MS, "Package status"
+      fetch("https://api.ship24.com/public/v1/trackers/track", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${SHIP24_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      }),
+      20000, "Ship24 track"
     );
-    const text = (res.text || "").trim().replace(/^```.*$/gm, "").replace(/^["']|["']$/g, "").trim();
-    if (!text || /^null$/i.test(text) || text.length > 60) return null;
-    return text;
+    if (!res.ok) { console.error("Ship24 status", res.status, (await res.text().catch(() => "")).slice(0, 160)); return null; }
+    const data = await res.json();
+    const t = data?.data?.trackings?.[0];
+    if (!t) return null;
+    const milestone = String(t?.shipment?.statusMilestone || "pending");
+    const m = SHIP24_MILESTONES[milestone] || SHIP24_MILESTONES.pending;
+    const ev = Array.isArray(t?.events) && t.events.length ? t.events[0] : null;
+    const evText = ev?.status ? String(ev.status).trim() : "";
+    const loc = ev?.location ? String(ev.location).trim() : "";
+    return {
+      line1: (evText || m.label).slice(0, 42),
+      line2: loc ? loc.slice(0, 30) : (m.delivered ? "Delivered" : m.label),
+      symbol: m.symbol,
+      delivered: !!m.delivered
+    };
   } catch (error) {
-    console.error("Package status error:", error);
+    console.error("Ship24 error:", error);
     return null;
   }
 }
 
-// Package snapshot for the Live Activity. query = "carrier:number". We do NOT
-// claim a live status: carrier tracking pages aren't reliably indexed, so a
-// grounded search almost always returned null and the card showed a fake
-// "Tracking…" that never changed. Instead the card is an honest, glanceable
-// shortcut — carrier + number — whose whole job is the "tap to open the carrier"
-// button. (A real live status would need a tracking-API key; see deep-link mode.)
+// Package snapshot for the Live Activity. query = "carrier:number". When a
+// tracking API key is configured we show REAL live status (and the LA updates on
+// each push); otherwise we fall back to an honest "Tap to track" card. Either way
+// the card keeps its "Open <carrier>" button.
 export async function fetchPackageSnapshot(query: string): Promise<TrackerSnapshot | null> {
   const idx = query.indexOf(":");
   const carrier = idx >= 0 ? query.slice(0, idx) : "";
   const number = (idx >= 0 ? query.slice(idx + 1) : query).trim();
   if (!number) return null;
   const tail = number.length > 8 ? `#…${number.slice(-6)}` : `#${number}`;
+
+  const live = await fetchShip24Status(number, carrier);
+  if (live) {
+    return { title: carrier || "Package", symbol: live.symbol, line1: live.line1, line2: live.line2, trend: live.delivered ? "up" : "flat", status: "" };
+  }
   return {
     title: carrier || "Package",
     symbol: "📦",
-    line1: "Tap to track",
+    line1: SHIP24_KEY ? "Tracking…" : "Tap to track",
     line2: tail,
     trend: "flat",
     status: ""
