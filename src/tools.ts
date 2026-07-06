@@ -1398,6 +1398,32 @@ export function parseMusicCommand(message: string): { action: string; query: str
   return null;
 }
 
+// Semantic photo search — "find photos of my dog", "pictures from the beach",
+// "photos with food". Returns the search subject (the device runs on-device
+// Vision classification against it), or null. Runs BEFORE parsePhotosCommand so a
+// content search isn't treated as a plain recent-photos request. Pure date
+// phrasings ("photos from last week") are rejected so they fall through to the
+// recency viewer.
+export function parsePhotosSearch(message: string): { query: string } | null {
+  const m = message.toLowerCase().trim();
+  if (!/\b(photos?|pictures?|pics|images?)\b/.test(m)) return null;
+  const mm =
+    m.match(/\b(?:photos?|pictures?|pics|images?)\s+(?:of|with|showing|containing|featuring|that (?:have|show|contain)|from)\s+(.+)/) ||
+    m.match(/\b(?:find|search|look for|show me|pull up|get)\b[^.]*\b(?:photos?|pictures?|pics|images?)\s+(?:of|with|for)\s+(.+)/) ||
+    m.match(/\b(?:find|search for|look for)\s+(.+?)\s+(?:photos?|pictures?|pics)\b/);
+  if (!mm) return null;
+  let q = mm[1]
+    .replace(/\b(?:in (?:it|them)|please)\b.*$/, "")
+    .replace(/[?.!]+$/, "")
+    .trim()
+    .replace(/^(?:the|a|an|my|some|any)\s+/, "")
+    .trim();
+  if (!q || q.length > 60) return null;
+  // Date-only "searches" belong to the recency viewer, not content search.
+  if (/^(?:today|yesterday|last week|this week|this month|last month|recent|the weekend|vacation)$/.test(q)) return null;
+  return { query: q };
+}
+
 // "show my photos / recent photos / photos from today/this week/last week".
 export function parsePhotosCommand(message: string): { days: number } | null {
   const m = message.toLowerCase();

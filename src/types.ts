@@ -42,6 +42,7 @@ export type AssistantActionType =
   | "home_control"
   | "music_control"
   | "photos_show"
+  | "photos_search"
   | "day_plan"
   | "automation_create"
   | "scheduled_message"
@@ -114,6 +115,8 @@ export type AssistantAction = {
   musicQuery: string | null;
   // photos_show: how many days back (0 = just most recent).
   photoDays: number | null;
+  // photos_search: content to look for on-device (e.g. "dog", "beach", "food").
+  photoQuery: string | null;
   // finance/sports Live Activity tracking. trackKind = "finance" | "sports";
   // trackQuery is what the device re-polls (/api/quote or /api/score) to keep the
   // activity live. The rest are the initial snapshot to display.
@@ -423,6 +426,7 @@ export function blankAction(type: AssistantActionType): AssistantAction {
     healthDurationMin: null,
     trendDays: null,
     photoDays: null,
+    photoQuery: null,
     trackKind: null,
     trackQuery: null,
     liveTitle: null,

@@ -69,7 +69,8 @@ import {
   parseSceneCommand,
   parseHomeCommand,
   parseMusicCommand,
-  parsePhotosCommand
+  parsePhotosCommand,
+  parsePhotosSearch
 } from "./tools.js";
 import { buildCalendarCreateAction } from "./validators.js";
 import { personaPromptBlock, GUARDRAILS } from "./persona.js";
@@ -831,6 +832,16 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
     action.musicAction = musicCmd.action;
     action.musicQuery = musicCmd.query || null;
     return actionPlan("On it.", action, { lastIntent: "music_control" });
+  }
+
+  // Semantic photo search — "photos of my dog" → device runs on-device Vision
+  // classification. Runs before the recency viewer so a content search isn't
+  // treated as a plain "show my photos".
+  const photosSearch = parsePhotosSearch(state.message);
+  if (photosSearch) {
+    const action = blankAction("photos_search");
+    action.photoQuery = photosSearch.query;
+    return actionPlan(`Searching your photos for ${photosSearch.query}…`, action, { lastIntent: "photos_search" });
   }
 
   // Show recent photos in-app.
