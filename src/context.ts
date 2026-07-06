@@ -29,7 +29,8 @@ export function buildConversationState(
   timeZone?: string,
   styleProfiles?: IncomingStyleProfile[],
   userProfile?: UserPersona,
-  voiceMode?: boolean
+  voiceMode?: boolean,
+  deviceId?: string
 ): ConversationState {
   let structured: any = null;
   try {
@@ -87,6 +88,7 @@ export function buildConversationState(
     deviceLocation,
     styleProfiles: parseIncomingStyleProfiles(styleProfiles),
     userProfile: userProfile || {},
-    voiceMode: !!voiceMode
+    voiceMode: !!voiceMode,
+    deviceId: deviceId ? deviceId.trim() : ""
   };
 }

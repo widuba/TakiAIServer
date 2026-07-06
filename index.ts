@@ -877,7 +877,7 @@ app.post("/api/assistant", async (req, res) => {
   // per request; the server stores none of it.
   const userProfile = parseUserPersona(req.body?.profile, req.body?.addressUser);
 
-  const state = buildConversationState(userMessage, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, voiceMode);
+  const state = buildConversationState(userMessage, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, voiceMode, deviceId);
 
   const gate = await safetyGate(deviceId, userMessage, req);
   if (gate) {
@@ -955,7 +955,7 @@ app.post("/api/voice", async (req, res) => {
     // Count this voice question toward the free-tier cap.
     let voiceUsed: number | undefined;
     if (freeTier && deviceId) voiceUsed = await noteVoiceQuestion(deviceId);
-    const state = buildConversationState(transcript, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, true);
+    const state = buildConversationState(transcript, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, true, deviceId);
     const result = await runAssistant(state, deviceId, true); // voice → surcharge applies
     const audio = await synthesize(result.spokenText || "", voiceId);
     res.json({ ...result, transcript, audioBase64: audio, mime: "audio/mpeg", voiceUsed });

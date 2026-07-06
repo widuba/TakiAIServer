@@ -291,6 +291,11 @@ export type ConversationState = {
   // True when this turn came in over voice (STT→brain→TTS). Generation is kept
   // extra-brief so replies are cheap to synthesize and fast to hear aloud.
   voiceMode?: boolean;
+
+  // The 8-digit device identity (empty for older unmetered builds). Scopes the
+  // per-device durable state the planner reads/writes — e.g. custom home
+  // routines.
+  deviceId?: string;
 };
 
 /* ---- Planner output ----------------------------------------------------- */

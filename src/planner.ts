@@ -77,6 +77,16 @@ import { looksLikeCookingRequest, generateRecipe, parseRecipeImport, importRecip
 import { looksLikeUrlSummarize, summarizeUrl } from "./websummary.js";
 import { parseRecurring } from "./recurring.js";
 import {
+  parseRoutineDefinition,
+  parseRoutineManagement,
+  matchRoutine,
+  loadRoutines,
+  saveRoutine,
+  deleteRoutine,
+  describeStep,
+  displayRoutineName
+} from "./routines.js";
+import {
   NEUTRAL_VECTOR,
   STYLE_KEYS,
   estimateVectorFromText,
@@ -635,6 +645,68 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       const action = blankAction("memory_save");
       action.memoryFact = fact;
       return actionPlan(`Got it — I'll remember that.`, action, { lastIntent: "memory_save" });
+    }
+  }
+
+  // Custom home routines — user-defined "when I say X, do A, B, C". Stored per
+  // device and recalled by name. Runs BEFORE built-in scenes (so a custom
+  // routine can override a built-in name) and before parseHomeCommand (so a
+  // definition isn't grabbed as one immediate command). Needs the device
+  // identity to scope storage; older unmetered builds simply skip it.
+  if (state.deviceId) {
+    // "list my routines" / "delete the goodnight routine".
+    const mgmt = parseRoutineManagement(state.message);
+    if (mgmt) {
+      if (mgmt.op === "list") {
+        const list = await loadRoutines(state.deviceId);
+        if (!list.length) {
+          return answerPlan(
+            `You don't have any routines yet. Try: "when I say goodnight, turn off the lights and lock the door."`,
+            { lastIntent: "answer_only" }
+          );
+        }
+        const lines = list.map((r) => `“${r.name}” → ${r.steps.map(describeStep).join(", ")}`);
+        return answerPlan(`Your routines:\n${lines.join("\n")}`, { lastIntent: "answer_only" });
+      }
+      const removed = await deleteRoutine(state.deviceId, mgmt.name);
+      return answerPlan(
+        removed
+          ? `Deleted the “${displayRoutineName(mgmt.name)}” routine.`
+          : `I couldn't find a routine called “${displayRoutineName(mgmt.name)}”.`,
+        { lastIntent: "answer_only" }
+      );
+    }
+
+    // "when I say goodnight, turn off the lights and lock the door" — define it.
+    const def = parseRoutineDefinition(state.message);
+    if (def) {
+      await saveRoutine(state.deviceId, def);
+      return answerPlan(
+        `Got it — when you say “${def.name}”, I'll ${def.steps.map(describeStep).join(", then ")}.`,
+        { lastIntent: "answer_only" }
+      );
+    }
+
+    // Bare routine name (or "run <name>") — fire the saved steps in order.
+    const hit = await matchRoutine(state.deviceId, state.message);
+    if (hit) {
+      const actions = hit.steps.map((s) => {
+        if (s.kind === "music") {
+          const a = blankAction("music_control");
+          a.musicAction = s.action;
+          a.musicQuery = s.query || null;
+          return a;
+        }
+        const a = blankAction("home_control");
+        a.homeAction = s.action;
+        a.homeTarget = s.target || null;
+        a.homeValue = s.value ?? null;
+        return a;
+      });
+      if (actions.length === 1) {
+        return actionPlan(`Running “${hit.name}”.`, actions[0], { lastIntent: "home_control" });
+      }
+      return actionsPlan(`Running “${hit.name}”.`, actions, { lastIntent: "home_control" });
     }
   }
 
