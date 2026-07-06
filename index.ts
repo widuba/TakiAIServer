@@ -19,7 +19,7 @@ import {
 import { cachedTrackerSnapshot } from "./src/tracker.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
 import { isDurable, storeGet, storeSet } from "./src/store.js";
-import { summary as creditSummary, spend, reset as resetCredits, costForRequest, tierCatalog, grantForTransaction, downgradeToFree, revokeSubscription, noteVoiceQuestion, grantCredits, topupPriceCents, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, type Tier } from "./src/credits.js";
+import { summary as creditSummary, spend, reset as resetCredits, costForRequest, tierCatalog, grantForTransaction, downgradeToFree, revokeSubscription, noteVoiceQuestion, grantCredits, topupPriceCents, topupCentsPerCredit, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, type Tier } from "./src/credits.js";
 import { verifyTransaction, linkTransactionIdentity, getTransactionIdentity, verifyNotification } from "./src/iap.js";
 import { verifyAppleIdentityToken } from "./src/appleauth.js";
 import { recordAssoc, isBanned, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, linkApple, devicesForApple, SUSPENDED_MSG, BANNED_MSG, PROMPT_EXTRACTION_MSG } from "./src/safety.js";
@@ -482,24 +482,77 @@ app.get("/api/credits", async (req, res) => {
 });
 
 /* ---- Web credit top-ups (Stripe Checkout) ------------------------------- */
-// Whether web top-ups are available (so the buy page can show/hide itself).
+// Whether web top-ups are available (so the buy page can show/hide itself) + the
+// price rules the buyer page mirrors (the server stays authoritative on charge).
 app.get("/api/credits/topup-config", (_req, res) => {
-  res.json({ enabled: !!stripe, min: CREDIT_TOPUP_MIN, max: CREDIT_TOPUP_MAX });
+  res.json({
+    enabled: !!stripe,
+    min: CREDIT_TOPUP_MIN,
+    max: CREDIT_TOPUP_MAX,
+    centsPerCredit: topupCentsPerCredit(false),
+    proCentsPerCredit: topupCentsPerCredit(true)
+  });
 });
 
-// Start a checkout for `credits` credits toward `identity`. Price is computed
-// server-side from the credit count (client-sent prices are never trusted).
+// Validate a top-up account: must be an issued 8-digit device id, exist, and be
+// in good standing (no strikes / suspension / ban). Also reports Pro status so
+// the buyer gets the 20% discount. Shared by /account-check and /checkout so the
+// price is always computed server-side against the real subscription tier.
+async function validateTopupAccount(identity: string): Promise<{ valid: boolean; reason?: string; isPro: boolean }> {
+  const id = identity.trim();
+  if (!/^\d{8}$/.test(id)) {
+    return { valid: false, reason: "That doesn't look like a valid 8-digit Account ID. You'll find it in the app under Settings → Account ID.", isPro: false };
+  }
+  const issued = await storeGet<boolean>(`devnum:used:${id}`, false);
+  if (!issued) {
+    return { valid: false, reason: "We couldn't find an account with that ID. Double-check Settings → Account ID in the app.", isPro: false };
+  }
+  // Restrict any account that's flagged, suspended, terminated, or banned.
+  try {
+    const safety = await getSafetyAccount(id);
+    const restricted = safety.status !== "active" || (safety.strikes || 0) > 0 || (await isBanned(id, id));
+    if (restricted) {
+      return { valid: false, reason: "This account isn't eligible for credit purchases. If you believe this is a mistake, contact Taki AI Support.", isPro: false };
+    }
+  } catch (e) {
+    console.error("topup account safety check:", e);
+    return { valid: false, reason: "We couldn't verify that account right now — please try again.", isPro: false };
+  }
+  const isPro = (await creditSummary(id)).tier === "pro";
+  return { valid: true, isPro };
+}
+
+// Step 1 of the buy flow: check an Account ID and return validity + Pro pricing.
+app.post("/api/credits/account-check", async (req, res) => {
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  if (!identity) { res.status(400).json({ valid: false, reason: "Enter your Account ID." }); return; }
+  const v = await validateTopupAccount(identity);
+  res.json({
+    valid: v.valid,
+    reason: v.reason || "",
+    isPro: v.isPro,
+    min: CREDIT_TOPUP_MIN,
+    max: CREDIT_TOPUP_MAX,
+    centsPerCredit: topupCentsPerCredit(v.isPro)
+  });
+});
+
+// Step 2: start a checkout for `credits` credits toward `identity`. Re-validates
+// the account and computes the price server-side from the real Pro tier (client-
+// sent prices/Pro flags are never trusted).
 app.post("/api/credits/checkout", async (req, res) => {
   if (!stripe) { res.status(503).json({ error: "top-ups are not available yet" }); return; }
   const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
   const credits = Math.floor(Number(req.body?.credits));
   if (!identity) { res.status(400).json({ error: "account ID required" }); return; }
-  const cents = topupPriceCents(credits);
+  const v = await validateTopupAccount(identity);
+  if (!v.valid) { res.status(403).json({ error: v.reason || "This account can't purchase credits." }); return; }
+  const cents = topupPriceCents(credits, v.isPro);
   if (cents == null) { res.status(400).json({ error: `Choose between ${CREDIT_TOPUP_MIN.toLocaleString()} and ${CREDIT_TOPUP_MAX.toLocaleString()} credits.` }); return; }
   try {
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
-      line_items: [{ quantity: 1, price_data: { currency: "usd", unit_amount: cents, product_data: { name: `${credits.toLocaleString()} Taki AI credits` } } }],
+      line_items: [{ quantity: 1, price_data: { currency: "usd", unit_amount: cents, product_data: { name: `${credits.toLocaleString()} Taki AI credits${v.isPro ? " (Pro price)" : ""}` } } }],
       metadata: { identity, credits: String(credits) },
       success_url: `${WEB_BASE_URL}/buy?status=success`,
       cancel_url: `${WEB_BASE_URL}/buy?status=canceled`

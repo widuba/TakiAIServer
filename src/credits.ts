@@ -196,16 +196,24 @@ export async function grantCredits(identity: string, amount: number, source: str
 }
 
 // Web top-up pricing: server-authoritative (never trust a client-sent price).
-// Volume discount tiers; custom amounts allowed within [1k, 100k].
-export const CREDIT_TOPUP_MIN = 1000;
-export const CREDIT_TOPUP_MAX = 100000;
-export const CREDIT_TOPUP_PRESETS = [1000, 5000, 15000];
-export function topupPriceCents(credits: number): number | null {
+// Deliberately POOR value vs. a subscription (subscriptions are ~1/3¢ per credit
+// of granted value) — buying à la carte is 1¢/credit flat, so subscribing is
+// always the better deal. Pro subscribers get 20% off (0.8¢/credit).
+export const CREDIT_TOPUP_MIN = 500;
+export const CREDIT_TOPUP_MAX = 500000;
+export const CREDIT_TOPUP_PRESETS = [500, 5000, 50000];
+export const TOPUP_CENTS_PER_CREDIT = 1;      // 1¢ per credit, no volume discount
+export const PRO_TOPUP_DISCOUNT = 0.2;         // Pro members: 20% off
+// Cents per credit for a given buyer (whole-cent for display; Stripe charges the
+// exact computed total).
+export function topupCentsPerCredit(isPro: boolean): number {
+  return TOPUP_CENTS_PER_CREDIT * (isPro ? 1 - PRO_TOPUP_DISCOUNT : 1);
+}
+export function topupPriceCents(credits: number, isPro = false): number | null {
   if (!Number.isFinite(credits)) return null;
   const c = Math.floor(credits);
   if (c < CREDIT_TOPUP_MIN || c > CREDIT_TOPUP_MAX) return null;
-  const perCredit = c >= 15000 ? 0.004 : c >= 5000 ? 0.0044 : 0.005; // $ per credit
-  return Math.round(c * perCredit * 100);
+  return Math.round(c * topupCentsPerCredit(isPro));
 }
 
 // Count a voice question (for the free-tier cap). Returns the new total.
