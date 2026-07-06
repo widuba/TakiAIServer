@@ -47,6 +47,7 @@ export type AssistantActionType =
   | "cooking_schedule"
   | "alert_create"
   | "alert_cancel"
+  | "recurring_reminder"
   | "memory_save";
 
 export type AssistantAction = {
@@ -144,6 +145,13 @@ export type AssistantAction = {
   alertTarget: number | null;
   alertDirection: string | null;
   alertTrigger: string | null;
+  // recurring_reminder: a repeating local notification the device schedules.
+  recurKind: string | null;          // "daily" | "weekly" | "interval"
+  recurHour: number | null;
+  recurMinute: number | null;
+  recurWeekdays: number[] | null;    // 1=Sun … 7=Sat
+  recurIntervalMinutes: number | null;
+  recurIsBriefing: boolean | null;
 };
 
 export type DeviceLocation = {
@@ -413,6 +421,12 @@ export function blankAction(type: AssistantActionType): AssistantAction {
     alertQuery: null,
     alertTarget: null,
     alertDirection: null,
-    alertTrigger: null
+    alertTrigger: null,
+    recurKind: null,
+    recurHour: null,
+    recurMinute: null,
+    recurWeekdays: null,
+    recurIntervalMinutes: null,
+    recurIsBriefing: null
   };
 }

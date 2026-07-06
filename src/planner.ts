@@ -75,6 +75,7 @@ import { parseTrackCommand, fetchTrackerSnapshot, fetchAssetPrice, extractFlight
 import { looksLikePlanDay, generateDayPlan } from "./dayplan.js";
 import { looksLikeCookingRequest, generateRecipe, parseRecipeImport, importRecipeFromUrl } from "./cooking.js";
 import { looksLikeUrlSummarize, summarizeUrl } from "./websummary.js";
+import { parseRecurring } from "./recurring.js";
 import {
   NEUTRAL_VECTOR,
   STYLE_KEYS,
@@ -943,6 +944,25 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         return actionPlan(`Got it — I pulled up ${recipe.title} from that link. Let's cook!`, action, { lastIntent: "cooking_mode" });
       }
       // Couldn't read a recipe from the link — fall through to a normal answer.
+    }
+  }
+
+  // "Remind me to stretch every 2 hours" / "every weekday at 7 brief me" -> a
+  // REPEATING local notification the device schedules. Runs before the one-shot
+  // reminder + LLM so a recurring phrase isn't treated as a single reminder.
+  {
+    const rec = parseRecurring(state.message);
+    if (rec) {
+      const action = blankAction("recurring_reminder");
+      action.title = rec.title;
+      action.recurKind = rec.kind;
+      action.recurHour = rec.hour ?? null;
+      action.recurMinute = rec.minute ?? null;
+      action.recurWeekdays = rec.weekdays ?? null;
+      action.recurIntervalMinutes = rec.intervalMinutes ?? null;
+      action.recurIsBriefing = !!rec.isBriefing;
+      const what = rec.isBriefing ? "your briefing" : `to ${rec.title.replace(/^to\s+/i, "")}`;
+      return actionPlan(`Done — I'll remind you ${what} ${rec.descr}.`, action, { lastIntent: "recurring_reminder" });
     }
   }
 
