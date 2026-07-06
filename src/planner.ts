@@ -56,6 +56,8 @@ import {
   computeMath,
   detectHealthMetric,
   detectHealthDay,
+  parseHealthLog,
+  detectHealthTrend,
   parseLocationAutomation,
   parseScheduledMessage,
   parsePriceAlert,
@@ -777,6 +779,34 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
     action.homeTarget = homeCmd.target || null;
     action.homeValue = homeCmd.value || null;
     return actionPlan("On it.", action, { lastIntent: "home_control" });
+  }
+
+  // Log a health sample (water/weight/workout/calories/mindful) — device WRITES
+  // to HealthKit. Runs before the read detector so "log my weight 175" isn't
+  // answered as a weight query.
+  {
+    const log = parseHealthLog(state.message);
+    if (log) {
+      const action = blankAction("health_log");
+      action.healthLogMetric = log.metric;
+      action.healthLogValue = log.value;
+      action.healthWorkoutType = log.workoutType || null;
+      action.healthDurationMin = log.durationMin ?? null;
+      return actionPlan("Logging that.", action, { lastIntent: "health_log" });
+    }
+  }
+
+  // Health TRENDS ("how have my steps been this week") — device buckets the
+  // metric over a window vs. the prior one. Runs before the single-day read so a
+  // trend question isn't answered with just today's number.
+  {
+    const trend = detectHealthTrend(state.message);
+    if (trend) {
+      const action = blankAction("health_trend");
+      action.metric = trend.metric;
+      action.trendDays = trend.days;
+      return actionPlan("Let me check the trend.", action, { lastIntent: "health_trend" });
+    }
   }
 
   // Health stats (steps/sleep/etc.) — device reads HealthKit and reports back.

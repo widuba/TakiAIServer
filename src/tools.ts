@@ -844,6 +844,162 @@ export function detectHealthDay(message: string, timeZone: string): { offset: nu
   return null;
 }
 
+// ---- HealthKit WRITES ------------------------------------------------------
+// Log a health sample: water, weight, a workout, dietary calories, or mindful
+// minutes. Values are normalized here to the device's canonical units (water =
+// fl oz, weight = lb, energy = kcal, workout/mindful = minutes) so HealthBridge
+// can save without re-parsing. Returns null when there's no clear log intent.
+export type HealthLog = {
+  metric: "water" | "weight" | "workout" | "energy" | "mindful";
+  value: number; // fl oz | lb | kcal | (unused for workout/mindful; see durationMin)
+  workoutType?: string;
+  durationMin?: number;
+};
+
+// Canonical workout types → map to HKWorkoutActivityType on the device. Stems
+// use a leading \b but NO trailing \b so "cycling"/"jogging" still match.
+const WORKOUT_WORDS: [RegExp, string][] = [
+  [/\b(?:run\b|ran\b|running|jog|jogged|jogging)/, "running"],
+  [/\b(?:walk|walked|walking)/, "walking"],
+  [/\b(?:cycl|bik(?:e|ed|ing)|bicycl|spin class)/, "cycling"],
+  [/\b(?:swim|swam|swimming)/, "swimming"],
+  [/\b(?:hik(?:e|ed|ing))/, "hiking"],
+  [/\byoga\b/, "yoga"],
+  [/\bpilates\b/, "pilates"],
+  [/\belliptical/, "elliptical"],
+  [/\b(?:row\b|rowed|rowing)/, "rowing"],
+  [/\b(?:hiit\b|interval training)/, "hiit"],
+  [/\b(?:strength|weight ?lift|lifted|lifting|weights|resistance)/, "strength"]
+];
+
+function parseDurationMin(m: string): number | null {
+  // "for 30 minutes", "30 min", "45-minute", "an hour", "1.5 hours", "90 mins"
+  const hr = m.match(/\b(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)\b/);
+  const min = m.match(/\b(\d+(?:\.\d+)?)\s*(?:minutes?|mins?|min|m)\b/);
+  let total = 0;
+  if (hr) total += parseFloat(hr[1]) * 60;
+  if (min) total += parseFloat(min[1]);
+  if (total > 0) return Math.round(total);
+  if (/\ban hour\b/.test(m)) return 60;
+  if (/\bhalf an hour\b/.test(m)) return 30;
+  return null;
+}
+
+export function parseHealthLog(message: string): HealthLog | null {
+  const m = message.toLowerCase().trim();
+  // Questions are reads/trends, never logs — bail so "how far did I run" and
+  // "what's my weight" fall through to the read/trend detectors.
+  if (/\b(how (?:far|long|many|much|'?s|is|are|was)|what(?:'?s| is| was| are)|did i|have i|do i|am i|whats|show me|tell me)\b/.test(m)) {
+    return null;
+  }
+  // Future intent isn't a log ("I'm going to run", "remind me to log water").
+  if (/\b(going to|gonna|planning to|plan to|want to|need to|should i?|i'?ll|i will|remind me|reminder to)\b/.test(m)) {
+    return null;
+  }
+  // A plain "log/record/track/add …" qualifies any branch; consumption and
+  // completion verbs qualify their own branch even without an explicit log verb
+  // ("I drank a glass", "I ran for an hour", "I weigh 175").
+  const logVerb = /\b(log|record|track|add|save|note|mark)\b/.test(m);
+  const consumeVerb = /\b(drank|drink|ate|eat|had|consumed|chugged|downed)\b/.test(m);
+
+  // --- Water --- (require the word "water" so "had a cup of coffee" isn't logged)
+  if ((logVerb || consumeVerb) && /\bwater\b/.test(m)) {
+    let oz = 0;
+    const num = m.match(/\b(\d+(?:\.\d+)?)\s*(oz|ounces?|ml|milliliters?|l|liters?|litres?|cups?|glass(?:es)?|bottles?)\b/);
+    if (num) {
+      const v = parseFloat(num[1]);
+      const u = num[2];
+      if (/^oz|^ounce/.test(u)) oz = v;
+      else if (/^ml|^milli/.test(u)) oz = v / 29.5735;
+      else if (/^l|^liter|^litre/.test(u)) oz = v * 33.814;
+      else if (/^cup/.test(u)) oz = v * 8;
+      else if (/^glass/.test(u)) oz = v * 8;
+      else if (/^bottle/.test(u)) oz = v * 16.9;
+    } else if (/\ba glass\b/.test(m)) oz = 8;
+    else if (/\ba cup\b/.test(m)) oz = 8;
+    else if (/\ba bottle\b/.test(m)) oz = 16.9;
+    else if (/\bwater\b/.test(m)) oz = 8; // "log some water" → assume one glass
+    if (oz > 0) return { metric: "water", value: Math.round(oz * 10) / 10 };
+  }
+
+  // --- Weight --- (needs a number, so bare "weight" trend/queries aren't logged)
+  if ((logVerb || /\b(weigh|weighed)\b/.test(m)) && /\b(weigh|weighed|weight)\b/.test(m)) {
+    const num = m.match(/\b(\d+(?:\.\d+)?)\s*(kg|kilos?|kilograms?|lbs?|pounds?)?\b/);
+    if (num) {
+      let lb = parseFloat(num[1]);
+      if (num[2] && /^kg|^kilo/.test(num[2])) lb = lb * 2.20462;
+      if (lb >= 40 && lb <= 1000) return { metric: "weight", value: Math.round(lb * 10) / 10 };
+    }
+  }
+
+  // --- Mindful minutes (meditation) --- the word itself signals intent (stems,
+  // no trailing \b); questions/future already filtered above.
+  if (/\b(?:meditat|mindful|breathwork)/.test(m)) {
+    const mins = parseDurationMin(m) ?? 10;
+    return { metric: "mindful", value: mins, durationMin: mins };
+  }
+
+  // --- Workout --- an activity word alone isn't enough ("run to the store");
+  // require a log verb, a completion phrase, a duration, a distance, or an
+  // "I <verbed>" past-tense so plain mentions don't get logged.
+  const wt = WORKOUT_WORDS.find(([re]) => re.test(m));
+  const genericWorkout = /\b(?:work ?out|worked out|exercis|training|trained)/.test(m);
+  const dur = parseDurationMin(m);
+  const hasDistance = /\b\d+(?:\.\d+)?\s*(?:miles?|mi|km|kilometers?|kilometres?)\b/.test(m);
+  const iVerbed = /\bi (?:just |already )?(?:ran|jogged|walked|biked|cycled|swam|hiked|rowed|lifted|did|finished|completed|went for)\b/.test(m);
+  const workoutCue = logVerb || dur !== null || hasDistance || iVerbed || /\bworked out\b/.test(m) || genericWorkout;
+  if (workoutCue && (wt || genericWorkout)) {
+    const d = dur ?? 30;
+    return { metric: "workout", value: d, workoutType: wt ? wt[1] : "other", durationMin: d };
+  }
+
+  // --- Dietary calories --- (stems: no trailing \b)
+  if ((logVerb || consumeVerb) && /\b(?:calor|kcal)/.test(m)) {
+    const num = m.match(/\b(\d+(?:\.\d+)?)\s*(?:k?cal|calories?|kcal)?\b/);
+    if (num) {
+      const v = parseFloat(num[1]);
+      if (v > 0 && v <= 20000) return { metric: "energy", value: Math.round(v) };
+    }
+  }
+
+  return null;
+}
+
+// ---- Health TRENDS ---------------------------------------------------------
+// "how have my steps been this week", "am I sleeping more lately", "weight trend
+// this month". Returns the metric + window (7 = week, 30 = month), or null. Runs
+// BEFORE detectHealthMetric so a trend question isn't answered as a single day.
+export function detectHealthTrend(message: string): { metric: string; days: number } | null {
+  const m = message.toLowerCase();
+  const trendCue =
+    /\b(trend|trending|average|avg|lately|this week|this month|past (?:week|month|7 days|30 days)|last (?:week|month|7 days|30 days)|over the (?:week|month|last)|each day|per day|on average|how (?:have|has|'ve|'s)\b[^.]*\bbeen\b|compared to)\b/.test(
+      m
+    );
+  if (!trendCue) return null;
+  let metric = detectHealthMetric(message);
+  // detectHealthMetric is tuned for single-day questions; catch looser trend
+  // phrasings it misses ("steps per day", "am I walking more", "weight lately").
+  if (!metric) {
+    const loose: [RegExp, string][] = [
+      [/\bsteps?\b/, "steps"],
+      [/\b(walk|walking|walked|distance|miles)\b/, "distance"],
+      [/\b(cycl|biking|bike)\b/, "cycling"],
+      [/\b(weigh|weight)\b/, "weight"],
+      [/\b(calor|energy|burned)\b/, "energy"],
+      [/\b(exercise|active minutes|workout|move ring)\b/, "exercise"],
+      [/\bwater\b/, "water"],
+      [/\b(heart ?rate|pulse|bpm)\b/, "heartrate"],
+      [/\b(flights?|stairs)\b/, "flights"]
+    ];
+    for (const [re, key] of loose) if (re.test(m)) { metric = key; break; }
+  }
+  // Sleep trends need per-night bucketing (not yet supported); fall through so
+  // "how's my sleep this week" still gives last night.
+  if (!metric || metric === "sleep" || metric === "bloodpressure") return null;
+  const days = /\b(month|30 days|4 weeks)\b/.test(m) ? 30 : 7;
+  return { metric, days };
+}
+
 // "Remember I'm vegetarian" / "note that my wife is Sarah" → a long-term fact to
 // store about the user (applied to every future reply). Returns the fact, or null.
 // "Remember TO …" is a reminder, not a fact, so it's excluded.

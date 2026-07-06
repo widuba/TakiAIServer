@@ -37,6 +37,8 @@ export type AssistantActionType =
   | "stopwatch_stop"
   | "contact_create"
   | "health_query"
+  | "health_log"
+  | "health_trend"
   | "home_control"
   | "music_control"
   | "photos_show"
@@ -92,6 +94,16 @@ export type AssistantAction = {
   // "yesterday" / "on Friday" for the spoken reply.
   healthDayOffset: number | null;
   healthDayLabel: string | null;
+  // health_log: WRITE a sample. metric = "water"|"weight"|"workout"|"energy"|
+  // "mindful". Value is pre-normalized (water=fl oz, weight=lb, energy=kcal);
+  // workout/mindful use healthDurationMin, workouts also carry healthWorkoutType.
+  healthLogMetric: string | null;
+  healthLogValue: number | null;
+  healthWorkoutType: string | null;
+  healthDurationMin: number | null;
+  // health_trend: `metric` (reused) averaged over a window vs. the prior one.
+  // 7 = this week, 30 = this month.
+  trendDays: number | null;
   // home_control: action ("lightsOn"|"lightsOff"|"lock"|"unlock"|"thermostat"),
   // target room (lights), value (thermostat °F).
   homeAction: string | null;
@@ -405,6 +417,11 @@ export function blankAction(type: AssistantActionType): AssistantAction {
     musicQuery: null,
     healthDayOffset: null,
     healthDayLabel: null,
+    healthLogMetric: null,
+    healthLogValue: null,
+    healthWorkoutType: null,
+    healthDurationMin: null,
+    trendDays: null,
     photoDays: null,
     trackKind: null,
     trackQuery: null,
