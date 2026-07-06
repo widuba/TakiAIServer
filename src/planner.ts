@@ -80,6 +80,16 @@ import { looksLikeCookingRequest, generateRecipe, parseRecipeImport, importRecip
 import { looksLikeUrlSummarize, summarizeUrl } from "./websummary.js";
 import { parseRecurring } from "./recurring.js";
 import {
+  detectEmailRequest,
+  answerEmail,
+  emailConnected,
+  emailProviderConfigured,
+  anyEmailProviderConfigured,
+  createOAuthState,
+  buildAuthUrl,
+  type EmailProvider
+} from "./email.js";
+import {
   parseRoutineDefinition,
   parseRoutineManagement,
   matchRoutine,
@@ -832,6 +842,50 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
     action.musicAction = musicCmd.action;
     action.musicQuery = musicCmd.query || null;
     return actionPlan("On it.", action, { lastIntent: "music_control" });
+  }
+
+  // Email — connect an inbox, or read/search/summarize it. Gated on a provider
+  // being configured (env), so it's inert until the user sets up OAuth.
+  if (anyEmailProviderConfigured()) {
+    const em = state.message.toLowerCase();
+    const wantsConnect =
+      /\b(connect|link|set ?up|hook up|sign ?in to|log ?in to)\b[^.?!]*\b(e-?mail|inbox|gmail|google|outlook|microsoft|hotmail)\b/.test(em) ||
+      /\b(connect|link|add)\s+(my\s+)?(gmail|outlook|email|inbox)\b/.test(em);
+    if (wantsConnect) {
+      if (!state.deviceId) {
+        return answerPlan("I can't connect email on this version — update the app first.", { lastIntent: "answer_only" });
+      }
+      let provider: EmailProvider | null =
+        /\b(gmail|google)\b/.test(em) ? "gmail" : /\b(outlook|microsoft|hotmail|office ?365)\b/.test(em) ? "outlook" : null;
+      if (!provider) {
+        // No provider named: pick the only configured one, else ask.
+        const g = emailProviderConfigured("gmail"), o = emailProviderConfigured("outlook");
+        if (g && !o) provider = "gmail";
+        else if (o && !g) provider = "outlook";
+        else return answerPlan("Sure — Gmail or Outlook?", { lastIntent: "answer_only" });
+      }
+      if (!emailProviderConfigured(provider)) {
+        return answerPlan(`${provider === "gmail" ? "Gmail" : "Outlook"} isn't available yet. You can connect from Settings → Email.`, { lastIntent: "answer_only" });
+      }
+      const oauthState = await createOAuthState(state.deviceId, provider);
+      const url = buildAuthUrl(provider, oauthState);
+      if (!url) return answerPlan("Email connections aren't set up yet.", { lastIntent: "answer_only" });
+      const action = blankAction("email_connect");
+      action.emailAuthUrl = url;
+      return actionPlan(`Opening ${provider === "gmail" ? "Gmail" : "Outlook"} sign-in…`, action, { lastIntent: "email_connect" });
+    }
+
+    const emailReq = detectEmailRequest(state.message);
+    if (emailReq) {
+      if (!state.deviceId || !(await emailConnected(state.deviceId))) {
+        return answerPlan("You haven't connected an email account yet — go to Settings → Email to link Gmail or Outlook.", { lastIntent: "answer_only" });
+      }
+      const res = await answerEmail(state, emailReq.kind, emailReq.query);
+      if (!res.connected) {
+        return answerPlan("You haven't connected an email account yet — go to Settings → Email to link Gmail or Outlook.", { lastIntent: "answer_only" });
+      }
+      return answerPlan(res.answer, { lastIntent: "answer_only" });
+    }
   }
 
   // Semantic photo search — "photos of my dog" → device runs on-device Vision

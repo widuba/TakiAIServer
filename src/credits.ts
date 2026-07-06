@@ -201,7 +201,7 @@ export async function grantCredits(identity: string, amount: number, source: str
 // always the better deal. Pro subscribers get 20% off (0.8¢/credit).
 export const CREDIT_TOPUP_MIN = 500;
 export const CREDIT_TOPUP_MAX = 500000;
-export const CREDIT_TOPUP_PRESETS = [500, 5000, 50000];
+export const CREDIT_TOPUP_PRESETS = [500, 5000, 25000];
 export const TOPUP_CENTS_PER_CREDIT = 1;      // 1¢ per credit, no volume discount
 export const PRO_TOPUP_DISCOUNT = 0.2;         // Pro members: 20% off
 // Cents per credit for a given buyer (whole-cent for display; Stripe charges the

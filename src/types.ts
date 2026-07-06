@@ -44,6 +44,7 @@ export type AssistantActionType =
   | "photos_show"
   | "photos_search"
   | "day_plan"
+  | "email_connect"
   | "automation_create"
   | "scheduled_message"
   | "cooking_mode"
@@ -117,6 +118,8 @@ export type AssistantAction = {
   photoDays: number | null;
   // photos_search: content to look for on-device (e.g. "dog", "beach", "food").
   photoQuery: string | null;
+  // email_connect: the provider OAuth URL the device opens in the system browser.
+  emailAuthUrl: string | null;
   // finance/sports Live Activity tracking. trackKind = "finance" | "sports";
   // trackQuery is what the device re-polls (/api/quote or /api/score) to keep the
   // activity live. The rest are the initial snapshot to display.
@@ -427,6 +430,7 @@ export function blankAction(type: AssistantActionType): AssistantAction {
     trendDays: null,
     photoDays: null,
     photoQuery: null,
+    emailAuthUrl: null,
     trackKind: null,
     trackQuery: null,
     liveTitle: null,

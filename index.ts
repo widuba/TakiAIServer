@@ -26,6 +26,7 @@ import { recordAssoc, isBanned, getSafetyAccount, recordViolation, classifyHarm,
 import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, identitiesForIp, allUsers, deleteUser } from "./src/users.js";
 import { TIERS, CREDIT_USD } from "./src/credits.js";
 import { transcribe, synthesize, listVoices, isVoiceConfigured } from "./src/voice.js";
+import { emailProviderConfigured, createOAuthState, buildAuthUrl, completeOAuth, loadConnection, disconnectEmail, type EmailProvider } from "./src/email.js";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
 // Render. (The purchase-simulating grant endpoint was removed when real
@@ -606,6 +607,65 @@ app.post("/api/stripe/webhook", async (req, res) => {
     }
   }
   res.json({ received: true });
+});
+
+/* ---- Email inbox integration (Gmail + Outlook OAuth) -------------------- */
+// Start the OAuth flow for a provider: returns the consent URL the app opens in
+// the system browser. State carries the device identity so the callback can
+// store the connection against it.
+app.get("/api/email/connect", async (req, res) => {
+  const provider = String(req.query.provider || "").toLowerCase() as EmailProvider;
+  const deviceId = typeof req.query.deviceId === "string" ? req.query.deviceId.trim() : "";
+  if (provider !== "gmail" && provider !== "outlook") { res.status(400).json({ error: "provider must be gmail or outlook" }); return; }
+  if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
+  if (!emailProviderConfigured(provider)) { res.status(503).json({ error: `${provider} isn't configured yet` }); return; }
+  const state = await createOAuthState(deviceId, provider);
+  const url = buildAuthUrl(provider, state);
+  if (!url) { res.status(503).json({ error: "could not build auth URL" }); return; }
+  res.json({ url });
+});
+
+// OAuth redirect target (must match the provider's registered redirect URI).
+// Exchanges the code, stores the connection, then bounces the browser back to
+// the app via the takiai:// deep link.
+app.get("/api/email/callback", async (req, res) => {
+  const code = typeof req.query.code === "string" ? req.query.code : "";
+  const state = typeof req.query.state === "string" ? req.query.state : "";
+  const err = typeof req.query.error === "string" ? req.query.error : "";
+  const page = (title: string, body: string) => `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>body{margin:0;background:#07070e;color:#ececf6;font:16px/1.6 -apple-system,system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;text-align:center;padding:24px}a{display:inline-block;margin-top:20px;padding:13px 22px;border-radius:12px;background:linear-gradient(120deg,#8b5cf6,#4b8cff);color:#fff;text-decoration:none;font-weight:700}h1{font-size:22px;margin:0 0 8px}p{color:#9a9ab6;max-width:340px}</style></head><body><div><h1>${title}</h1><p>${body}</p><a href="takiai://email-connected">Return to Taki AI</a></div><script>setTimeout(function(){location.href="takiai://email-connected"},900)</script></body></html>`;
+  if (err || !code || !state) {
+    res.status(400).send(page("Couldn't connect", "The sign-in was cancelled or failed. You can try again from Settings → Email."));
+    return;
+  }
+  try {
+    const done = await completeOAuth(code, state);
+    if (!done) { res.status(400).send(page("Couldn't connect", "That sign-in link expired or was invalid. Please try again from the app.")); return; }
+    res.send(page("Email connected 🎉", `${done.email || "Your account"} is now linked to Taki AI. You can head back to the app.`));
+  } catch (e) {
+    console.error("email callback:", e);
+    res.status(500).send(page("Something went wrong", "Please try connecting again from Settings → Email."));
+  }
+});
+
+// Whether this device has a connected inbox (for Settings + polling after OAuth).
+app.get("/api/email/status", async (req, res) => {
+  const deviceId = typeof req.query.deviceId === "string" ? req.query.deviceId.trim() : "";
+  if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
+  const conn = await loadConnection(deviceId);
+  res.json({
+    connected: !!(conn && conn.refreshToken),
+    provider: conn?.provider || null,
+    email: conn?.email || "",
+    gmailAvailable: emailProviderConfigured("gmail"),
+    outlookAvailable: emailProviderConfigured("outlook")
+  });
+});
+
+app.post("/api/email/disconnect", async (req, res) => {
+  const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
+  if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
+  await disconnectEmail(deviceId);
+  res.json({ connected: false });
 });
 
 // The dev grant stub that simulated purchases was REMOVED once real StoreKit
