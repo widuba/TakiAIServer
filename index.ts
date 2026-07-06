@@ -507,10 +507,10 @@ async function hasCreditsAccount(identity: string): Promise<boolean> {
   return !!acct && acct.deviceId === identity && Number(acct.updatedAt || 0) > 0;
 }
 
-// Validate a top-up account: must be an 8-digit device id that either has an
-// issued-id marker or has already touched the credits ledger. The ledger check
-// keeps top-ups working if the fragile issued marker is missing after a deploy,
-// while still rejecting random never-seen IDs.
+// Validate a top-up account: must be an 8-digit device id. Older deploys used a
+// fragile issued-id marker; if that marker is missing, accept the ID and restore
+// the marker so a real user's copied Account ID does not get blocked by server
+// storage churn. Stripe metadata still pins the purchase to this exact ID.
 async function validateTopupAccount(identity: string): Promise<{ valid: boolean; reason?: string; isPro: boolean }> {
   const id = normalizeTopupIdentity(identity);
   if (!/^\d{8}$/.test(id)) {
@@ -518,7 +518,7 @@ async function validateTopupAccount(identity: string): Promise<{ valid: boolean;
   }
   const issued = await storeGet<boolean>(`devnum:used:${id}`, false);
   if (!issued && !(await hasCreditsAccount(id))) {
-    return { valid: false, reason: "We couldn't find an account with that ID. Double-check Settings → Account ID in the app.", isPro: false };
+    await storeSet(`devnum:used:${id}`, true);
   }
   // Restrict any account that's flagged, suspended, terminated, or banned.
   try {
