@@ -511,10 +511,10 @@ async function hasCreditsAccount(identity: string): Promise<boolean> {
 // fragile issued-id marker; if that marker is missing, accept the ID and restore
 // the marker so a real user's copied Account ID does not get blocked by server
 // storage churn. Stripe metadata still pins the purchase to this exact ID.
-async function validateTopupAccount(identity: string): Promise<{ valid: boolean; reason?: string; isPro: boolean }> {
+async function validateTopupAccount(identity: string): Promise<{ valid: boolean; reason?: string; isPro: boolean; tier: Tier }> {
   const id = normalizeTopupIdentity(identity);
   if (!/^\d{8}$/.test(id)) {
-    return { valid: false, reason: "That doesn't look like a valid 8-digit Account ID. You'll find it in the app under Settings → Account ID.", isPro: false };
+    return { valid: false, reason: "That doesn't look like a valid 8-digit Account ID. You'll find it in the app under Settings → Account ID.", isPro: false, tier: "free" };
   }
   const issued = await storeGet<boolean>(`devnum:used:${id}`, false);
   if (!issued && !(await hasCreditsAccount(id))) {
@@ -525,14 +525,14 @@ async function validateTopupAccount(identity: string): Promise<{ valid: boolean;
     const safety = await getSafetyAccount(id);
     const restricted = safety.status !== "active" || (safety.strikes || 0) > 0 || (await isBanned(id, id));
     if (restricted) {
-      return { valid: false, reason: "This account isn't eligible for credit purchases. If you believe this is a mistake, contact Taki AI Support.", isPro: false };
+      return { valid: false, reason: "This account isn't eligible for credit purchases. If you believe this is a mistake, contact Taki AI Support.", isPro: false, tier: "free" };
     }
   } catch (e) {
     console.error("topup account safety check:", e);
-    return { valid: false, reason: "We couldn't verify that account right now — please try again.", isPro: false };
+    return { valid: false, reason: "We couldn't verify that account right now — please try again.", isPro: false, tier: "free" };
   }
-  const isPro = (await creditSummary(id)).tier === "pro";
-  return { valid: true, isPro };
+  const summary = await creditSummary(id);
+  return { valid: true, isPro: summary.tier === "pro", tier: summary.tier };
 }
 
 // Step 1 of the buy flow: check an Account ID and return validity + Pro pricing.
@@ -544,6 +544,7 @@ app.post("/api/credits/account-check", async (req, res) => {
     valid: v.valid,
     reason: v.reason || "",
     isPro: v.isPro,
+    tier: v.tier,
     min: CREDIT_TOPUP_MIN,
     max: CREDIT_TOPUP_MAX,
     centsPerCredit: topupCentsPerCredit(v.isPro)
