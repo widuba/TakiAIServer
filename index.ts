@@ -494,17 +494,30 @@ app.get("/api/credits/topup-config", (_req, res) => {
   });
 });
 
-// Validate a top-up account: must be an issued 8-digit device id, exist, and be
-// in good standing (no strikes / suspension / ban). Also reports Pro status so
-// the buyer gets the 20% discount. Shared by /account-check and /checkout so the
-// price is always computed server-side against the real subscription tier.
+function normalizeTopupIdentity(identity: string): string {
+  return identity.replace(/\D/g, "").slice(0, 8);
+}
+
+function creditsKeyForIdentity(identity: string): string {
+  return `credits:${identity.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+}
+
+async function hasCreditsAccount(identity: string): Promise<boolean> {
+  const acct = await storeGet<any | null>(creditsKeyForIdentity(identity), null);
+  return !!acct && acct.deviceId === identity && Number(acct.updatedAt || 0) > 0;
+}
+
+// Validate a top-up account: must be an 8-digit device id that either has an
+// issued-id marker or has already touched the credits ledger. The ledger check
+// keeps top-ups working if the fragile issued marker is missing after a deploy,
+// while still rejecting random never-seen IDs.
 async function validateTopupAccount(identity: string): Promise<{ valid: boolean; reason?: string; isPro: boolean }> {
-  const id = identity.trim();
+  const id = normalizeTopupIdentity(identity);
   if (!/^\d{8}$/.test(id)) {
     return { valid: false, reason: "That doesn't look like a valid 8-digit Account ID. You'll find it in the app under Settings → Account ID.", isPro: false };
   }
   const issued = await storeGet<boolean>(`devnum:used:${id}`, false);
-  if (!issued) {
+  if (!issued && !(await hasCreditsAccount(id))) {
     return { valid: false, reason: "We couldn't find an account with that ID. Double-check Settings → Account ID in the app.", isPro: false };
   }
   // Restrict any account that's flagged, suspended, terminated, or banned.
@@ -524,7 +537,7 @@ async function validateTopupAccount(identity: string): Promise<{ valid: boolean;
 
 // Step 1 of the buy flow: check an Account ID and return validity + Pro pricing.
 app.post("/api/credits/account-check", async (req, res) => {
-  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  const identity = typeof req.body?.identity === "string" ? normalizeTopupIdentity(req.body.identity) : "";
   if (!identity) { res.status(400).json({ valid: false, reason: "Enter your Account ID." }); return; }
   const v = await validateTopupAccount(identity);
   res.json({
@@ -542,7 +555,7 @@ app.post("/api/credits/account-check", async (req, res) => {
 // sent prices/Pro flags are never trusted).
 app.post("/api/credits/checkout", async (req, res) => {
   if (!stripe) { res.status(503).json({ error: "top-ups are not available yet" }); return; }
-  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  const identity = typeof req.body?.identity === "string" ? normalizeTopupIdentity(req.body.identity) : "";
   const credits = Math.floor(Number(req.body?.credits));
   if (!identity) { res.status(400).json({ error: "account ID required" }); return; }
   const v = await validateTopupAccount(identity);
