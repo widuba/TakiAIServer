@@ -147,7 +147,8 @@ export function parseServiceRequest(message: string): ServiceRequest | null {
         .replace(PROVIDER_RE, "")
         .replace(/\s+/g, " ")
         .trim();
-      if (r && r.length <= 60) req.query = r;
+      // Restaurant names are proper nouns — title-case for the confirmation line.
+      if (r && r.length <= 60) req.query = r.replace(/\b([a-z])/g, (c) => c.toUpperCase());
     }
     req.partySize = partySize(m);
   } else if (svc.kind === "food" || svc.kind === "grocery") {
