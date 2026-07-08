@@ -81,6 +81,8 @@ import { looksLikeUrlSummarize, summarizeUrl } from "./websummary.js";
 import { parseRecurring } from "./recurring.js";
 import { parseServiceRequest } from "./services.js";
 import { parseListCommand } from "./lists.js";
+import { looksLikeConversion, computeConversion } from "./conversions.js";
+import { parseExpense, parseHabit } from "./tracking.js";
 import {
   detectEmailRequest,
   answerEmail,
@@ -645,6 +647,12 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
     return answerPlan(res.spokenText, { lastIntent: "weather_answer" });
   }
 
+  // Unit & currency conversion: exact in code (units) or live ECB rate (currency).
+  if (looksLikeConversion(state.message)) {
+    const res = await computeConversion(state.message);
+    if (res) return answerPlan(res, { lastIntent: "answer_only" });
+  }
+
   // Math/calculations: evaluate exactly in code (the model only translates to an
   // expression) — LLMs get arithmetic like "ln(8)" wrong.
   if (looksLikeMathQuestion(state.message)) {
@@ -893,6 +901,32 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
   const healthFollowUp = healthFollowUpAction(state);
   if (healthFollowUp) {
     return actionPlan("Let me check.", healthFollowUp, { lastIntent: "health_query" });
+  }
+
+  // Expense logging / totals (device-stored). "I spent $40 on gas", "how much did
+  // I spend this week".
+  {
+    const exp = parseExpense(state.message);
+    if (exp) {
+      const action = blankAction("expense_action");
+      action.expenseOp = exp.op;
+      action.expenseAmount = exp.amount ?? null;
+      action.expenseCategory = exp.category || null;
+      action.expensePeriod = exp.period || null;
+      return actionPlan("Done.", action, { lastIntent: "expense_action" });
+    }
+  }
+
+  // Habit / medication tracking with streaks (device-stored). Runs AFTER the
+  // health-log detector so "log a 30-minute run" goes to HealthKit, not here.
+  {
+    const habit = parseHabit(state.message);
+    if (habit) {
+      const action = blankAction("habit_action");
+      action.habitOp = habit.op;
+      action.habitName = habit.name || null;
+      return actionPlan("Done.", action, { lastIntent: "habit_action" });
+    }
   }
 
   // Apple Music control.

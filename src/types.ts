@@ -47,6 +47,8 @@ export type AssistantActionType =
   | "email_connect"
   | "service_handoff"
   | "list_action"
+  | "expense_action"
+  | "habit_action"
   | "automation_create"
   | "scheduled_message"
   | "cooking_mode"
@@ -138,6 +140,14 @@ export type AssistantAction = {
   listOp: string | null;
   listName: string | null;
   listItem: string | null;
+  // expense_action (device-stored): op "log"|"query"; amount/category/period.
+  expenseOp: string | null;
+  expenseAmount: number | null;
+  expenseCategory: string | null;
+  expensePeriod: string | null;
+  // habit_action (device-stored): op "log"|"check"|"streak"|"list"; name.
+  habitOp: string | null;
+  habitName: string | null;
   // finance/sports Live Activity tracking. trackKind = "finance" | "sports";
   // trackQuery is what the device re-polls (/api/quote or /api/score) to keep the
   // activity live. The rest are the initial snapshot to display.
@@ -459,6 +469,12 @@ export function blankAction(type: AssistantActionType): AssistantAction {
     listOp: null,
     listName: null,
     listItem: null,
+    expenseOp: null,
+    expenseAmount: null,
+    expenseCategory: null,
+    expensePeriod: null,
+    habitOp: null,
+    habitName: null,
     trackKind: null,
     trackQuery: null,
     liveTitle: null,
