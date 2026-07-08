@@ -46,6 +46,7 @@ export type AssistantActionType =
   | "day_plan"
   | "email_connect"
   | "service_handoff"
+  | "list_action"
   | "automation_create"
   | "scheduled_message"
   | "cooking_mode"
@@ -132,6 +133,11 @@ export type AssistantAction = {
   serviceDestination: string | null; // ride destination text (may be home/work/place)
   servicePartySize: number | null;  // reservation covers
   serviceDateTimeIso: string | null; // reservation date/time
+  // list_action: device-side lists. op = "add"|"remove"|"show"|"create"|"clear"
+  // |"showAll"; listName canonical ("grocery"/"to-do"); listItem for add/remove.
+  listOp: string | null;
+  listName: string | null;
+  listItem: string | null;
   // finance/sports Live Activity tracking. trackKind = "finance" | "sports";
   // trackQuery is what the device re-polls (/api/quote or /api/score) to keep the
   // activity live. The rest are the initial snapshot to display.
@@ -450,6 +456,9 @@ export function blankAction(type: AssistantActionType): AssistantAction {
     serviceDestination: null,
     servicePartySize: null,
     serviceDateTimeIso: null,
+    listOp: null,
+    listName: null,
+    listItem: null,
     trackKind: null,
     trackQuery: null,
     liveTitle: null,

@@ -80,6 +80,7 @@ import { looksLikeCookingRequest, generateRecipe, parseRecipeImport, importRecip
 import { looksLikeUrlSummarize, summarizeUrl } from "./websummary.js";
 import { parseRecurring } from "./recurring.js";
 import { parseServiceRequest } from "./services.js";
+import { parseListCommand } from "./lists.js";
 import {
   detectEmailRequest,
   answerEmail,
@@ -659,6 +660,22 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       const action = blankAction("memory_save");
       action.memoryFact = fact;
       return actionPlan(`Got it — I'll remember that.`, action, { lastIntent: "memory_save" });
+    }
+  }
+
+  // Lists & notes — "add milk to my grocery list", "what's on my to-do list".
+  // Device owns the lists (localStorage + iCloud); server just extracts the op.
+  // Runs before reminder/memory detectors so "add X to my list" isn't misread.
+  {
+    const lc = parseListCommand(state.message);
+    if (lc) {
+      const action = blankAction("list_action");
+      action.listOp = lc.op;
+      action.listName = lc.list || null;
+      action.listItem = lc.item || null;
+      // The device returns the definitive confirmation (with the item count);
+      // this spoken line is just a fallback.
+      return actionPlan("Done.", action, { lastIntent: "list_action" });
     }
   }
 
