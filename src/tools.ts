@@ -140,17 +140,40 @@ export async function getLocationAnswer(deviceLocation: any): Promise<AssistantR
 export function isWeatherQuestion(message: string) {
   const m = message.toLowerCase();
 
-  // Unambiguous weather vocabulary (precipitation words are weather on their
-  // own, e.g. "when is it expected to rain", "is it going to snow").
-  if (/\b(weather|forecast|umbrella|temperature|rain|raining|snow|snowing|sleet|drizzle|hail|thunderstorm|humidity)\b/.test(m)) return true;
+  // Weather-question framing + environment/time context. A weather word alone is
+  // NOT enough — "raining on my parade", "weather the storm", "it was raining
+  // men" all mention weather vocabulary without asking about the weather.
+  const ask = /\?|\b(is|are|will|won'?t|would|does|do|did|gonna|going to|expected|supposed to|how'?s|how is|how are|what'?s|what is|what will|when'?s|when is|when will|should i|do i need|chance|odds|probability|likelihood|forecast)\b/;
+  const context = /\b(outside|out there|today|tonight|tomorrow|this (morning|afternoon|evening|week|weekend)|right now|currently|later|out|weekend|this week|next week)\b/;
 
-  // "what's the temp", "how's the temp outside".
-  if (/\btemp\b/.test(m) && /\b(outside|out|today|tonight|tomorrow|now)\b/.test(m)) return true;
+  // "weather" / "forecast" are strong signals — but skip the common idioms
+  // ("weather the storm") and business "forecast" (sales/revenue forecast).
+  const strong = /\b(weather|forecast)\b/.test(m)
+    && !/\bweather (the|this|that|through|out)\b/.test(m)          // "weather the storm"
+    && !/\bunder the weather\b/.test(m)                            // = feeling ill
+    && !/\bweather[- ]beaten\b/.test(m)
+    && !/\b(sales|revenue|budget|earnings|financial|economic|quarterly|traffic|q[1-4])\s+forecast\b/.test(m);
+  if (strong && (ask.test(m) || context.test(m) || m.trim().split(/\s+/).length <= 3)) return true;
+
+  // Umbrella is essentially always about weather — but only when you're asking
+  // about needing one (so "play Umbrella" stays music).
+  if (/\bumbrella\b/.test(m) && (ask.test(m) || context.test(m) || /\b(need|bring|grab|get|take)\b/.test(m))) return true;
+
+  // Precipitation words: weather ONLY when the message actually asks about it.
+  const precip = /\b(rain|raining|rainy|snow|snowing|snowy|sleet|drizzle|drizzling|hail|hailing|thunderstorm|thundering|humidity|precipitation)\b/;
+  if (precip.test(m)) {
+    if (/\b(is|will|would|wo n'?t|gonna|going to)\s+it\b/.test(m)) return true;   // "is it going to rain"
+    if (/\bit'?s\s+(gonna|going to|supposed to)\b/.test(m)) return true;           // "it's supposed to snow"
+    if (/\b(chance|odds|probability|likelihood)\s+of\b/.test(m)) return true;      // "chance of rain"
+    if (ask.test(m) && context.test(m)) return true;                              // "will there be rain tomorrow"
+  }
+
+  // "what's the temp/temperature outside/today/high/low".
+  if (/\b(temperature|temp)\b/.test(m) && (context.test(m) || /\b(outside|out|high|low|degrees?)\b/.test(m))) return true;
 
   // Ambiguous condition words only count as weather when tied to the
   // environment/time (e.g. "is it hot outside", "how cold is it today").
   const condition = /\b(hot|cold|warm|chilly|cool|freezing|muggy|humid|sunny|windy|cloudy)\b/;
-  const context = /\b(outside|out there|today|tonight|tomorrow|this (morning|afternoon|evening)|right now|currently|out)\b/;
   const itPattern = /\b(is it|will it be|gonna be|how (hot|cold|warm|chilly|humid) is it)\b/;
   if (condition.test(m) && (context.test(m) || itPattern.test(m))) return true;
 
@@ -1380,7 +1403,11 @@ export function parseMusicCommand(message: string): { action: string; query: str
     const obj = pm[1].trim();
     const nonMusic =
       /^with\b/.test(obj) ||
-      /\b(game|match|video|movie|film|episode|series|trailer|the news|podcast|highlights?|world cup|super ?bowl|nba|nfl|mlb|nhl|youtube|tv|show)\b/.test(obj);
+      /\b(game|match|video|movie|film|episode|series|trailer|the news|podcast|highlights?|world cup|super ?bowl|nba|nfl|mlb|nhl|youtube|tv|show)\b/.test(obj) ||
+      // "play it by ear / cool / safe / smart", "play hardball / dumb / along /
+      // the field / possum / hard to get / with fire" — idioms, not music.
+      /^it\s+(by ear|cool|safe|smart|straight|by the book|forward|off)\b/.test(obj) ||
+      /^(hardball|dumb|coy|possum|dead|hooky|favou?rites?|nice|along|house|doctor|god|the (field|fool|victim|blame|odds)|devil'?s advocate|hard to get|with fire|mind games?|games with)\b/.test(obj);
     if (!nonMusic) {
       // Keep the query close to what they said (so "goat songs" / "all falls down"
       // match); only trim framing words.
