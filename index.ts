@@ -17,6 +17,7 @@ import {
   registerLiveActivity, unregisterLiveActivity, getLiveActivities, sendLiveActivityUpdate
 } from "./src/push.js";
 import { cachedTrackerSnapshot } from "./src/tracker.js";
+import { setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
 import { isDurable, storeGet, storeSet } from "./src/store.js";
 import { summary as creditSummary, spend, reset as resetCredits, costForRequest, tierCatalog, grantForTransaction, downgradeToFree, revokeSubscription, noteVoiceQuestion, grantCredits, topupPriceCents, topupCentsPerCredit, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, type Tier } from "./src/credits.js";
@@ -79,12 +80,24 @@ app.get("/health", (_req, res) => {
 // alerts (commute "leave now", fresh morning briefing, breaking updates).
 app.post("/api/register-push", (req, res) => {
   const token = typeof req.body?.token === "string" ? req.body.token : "";
+  const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   if (!token) {
     res.status(400).json({ error: "token required" });
     return;
   }
   registerToken(token);
+  // Tie the token to the device id so the nudge engine can target this device.
+  if (deviceId) void setPushToken(deviceId, token);
   res.json({ ok: true, configured: isPushConfigured(), devices: getTokens().length });
+});
+
+// The device syncs its upcoming nudge manifest on every foreground; the cron
+// loop below fires each when due (so nudges arrive with the app closed).
+app.post("/api/nudges/sync", async (req, res) => {
+  const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
+  if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
+  const count = await syncNudges(deviceId, Array.isArray(req.body?.nudges) ? req.body.nudges : []);
+  res.json({ ok: true, count, pushConfigured: isPushConfigured() });
 });
 
 // Let a device unsubscribe (e.g. notifications turned off).
@@ -277,6 +290,9 @@ setInterval(() => {
   if (!isPushConfigured()) return;
   void pollAlerts(process.env.ALERT_TZ || "America/New_York");
 }, 90 * 1000);
+
+// Fire any due proactive nudges (server-push tier) every minute.
+setInterval(() => { void tickNudges(); }, 60 * 1000);
 
 // Live finance/sports snapshot for an active Live Activity. The device polls
 // this to keep the lock-screen / Dynamic Island tracker fresh.
