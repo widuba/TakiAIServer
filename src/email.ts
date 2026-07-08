@@ -61,9 +61,9 @@ function cfg(provider: EmailProvider): ProviderCfg | null {
       clientSecret,
       authUrl: "https://accounts.google.com/o/oauth2/v2/auth",
       tokenUrl: "https://oauth2.googleapis.com/token",
-      // gmail.readonly is a restricted scope (needs Google app verification for
-      // >100 users); openid/email so we can read the address.
-      scopes: "openid email https://www.googleapis.com/auth/gmail.readonly"
+      // gmail.readonly (restricted) to read; gmail.send to reply/compose; openid/
+      // email for the address. Adding send means existing users must reconnect.
+      scopes: "openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send"
     };
   }
   const clientId = process.env.MS_OAUTH_CLIENT_ID || "";
@@ -74,7 +74,7 @@ function cfg(provider: EmailProvider): ProviderCfg | null {
     clientSecret,
     authUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
     tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-    scopes: "openid email offline_access User.Read Mail.Read"
+    scopes: "openid email offline_access User.Read Mail.Read Mail.Send"
   };
 }
 
@@ -276,6 +276,61 @@ async function fetchBody(conn: EmailConnection, token: string, id: string): Prom
     const content = m.body?.contentType === "html" ? stripHtml(m.body.content) : (m.body?.content || "");
     return String(content).slice(0, 6000);
   } catch { return ""; }
+}
+
+/* ---- Sending ------------------------------------------------------------ */
+
+// Send a plain-text email from the connected account. `to` must be a resolved
+// address. Returns {ok, error?}. Requires the send scope (gmail.send / Mail.Send)
+// — a connection made before send scopes were added will fail until reconnected.
+export async function sendEmail(deviceId: string, to: string, subject: string, body: string): Promise<{ ok: boolean; error?: string }> {
+  const conn = await loadConnection(deviceId);
+  if (!conn || !conn.refreshToken) return { ok: false, error: "not_connected" };
+  if (!to || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return { ok: false, error: "bad_address" };
+  let token: string | null = null;
+  try { token = await accessTokenFor(conn); } catch { token = null; }
+  if (!token) return { ok: false, error: "auth" };
+  try {
+    if (conn.provider === "gmail") {
+      const mime =
+        `To: ${to}\r\n` +
+        `Subject: ${subject}\r\n` +
+        `Content-Type: text/plain; charset="UTF-8"\r\n\r\n` +
+        body;
+      const raw = Buffer.from(mime, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      const r: any = await withTimeout(
+        fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ raw })
+        }),
+        15000, "gmail send"
+      );
+      if (!r.ok) return { ok: false, error: `gmail ${r.status}: ${(await r.text().catch(() => "")).slice(0, 150)}` };
+      return { ok: true };
+    }
+    // Microsoft Graph
+    const r: any = await withTimeout(
+      fetch("https://graph.microsoft.com/v1.0/me/sendMail", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: {
+            subject,
+            body: { contentType: "Text", content: body },
+            toRecipients: [{ emailAddress: { address: to } }]
+          },
+          saveToSentItems: true
+        })
+      }),
+      15000, "graph send"
+    );
+    if (!r.ok) return { ok: false, error: `graph ${r.status}: ${(await r.text().catch(() => "")).slice(0, 150)}` };
+    return { ok: true };
+  } catch (e) {
+    console.error("sendEmail error:", e);
+    return { ok: false, error: "network" };
+  }
 }
 
 /* ---- High-level: fetch + summarize -------------------------------------- */

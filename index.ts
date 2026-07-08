@@ -26,7 +26,7 @@ import { recordAssoc, isBanned, getSafetyAccount, recordViolation, classifyHarm,
 import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, identitiesForIp, allUsers, deleteUser } from "./src/users.js";
 import { TIERS, CREDIT_USD } from "./src/credits.js";
 import { transcribe, synthesize, listVoices, isVoiceConfigured } from "./src/voice.js";
-import { emailProviderConfigured, createOAuthState, buildAuthUrl, completeOAuth, loadConnection, disconnectEmail, type EmailProvider } from "./src/email.js";
+import { emailProviderConfigured, createOAuthState, buildAuthUrl, completeOAuth, loadConnection, disconnectEmail, sendEmail, type EmailProvider } from "./src/email.js";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
 // Render. (The purchase-simulating grant endpoint was removed when real
@@ -666,6 +666,25 @@ app.post("/api/email/disconnect", async (req, res) => {
   if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
   await disconnectEmail(deviceId);
   res.json({ connected: false });
+});
+
+// Send an email from the connected account (device already resolved the address
+// and the user confirmed). Body: {deviceId, to, subject, body}.
+app.post("/api/email/send", async (req, res) => {
+  const b = req.body || {};
+  const deviceId = typeof b.deviceId === "string" ? b.deviceId.trim() : "";
+  const to = typeof b.to === "string" ? b.to.trim() : "";
+  const subject = typeof b.subject === "string" ? b.subject.slice(0, 300) : "";
+  const body = typeof b.body === "string" ? b.body.slice(0, 20000) : "";
+  if (!deviceId || !to || !body) { res.status(400).json({ ok: false, error: "deviceId, to, and body are required" }); return; }
+  const gate = await safetyGate(deviceId, `${subject}\n${body}`, req);
+  if (gate) { res.status(403).json({ ok: false, error: "blocked" }); return; }
+  const r = await sendEmail(deviceId, to, subject || "(no subject)", body);
+  if (!r.ok && (r.error === "not_connected" || r.error === "auth")) {
+    res.status(409).json({ ok: false, error: "reconnect", message: "Reconnect your email in Settings to enable sending." });
+    return;
+  }
+  res.json(r);
 });
 
 // The dev grant stub that simulated purchases was REMOVED once real StoreKit
