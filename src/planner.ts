@@ -79,6 +79,7 @@ import { looksLikePlanDay, generateDayPlan } from "./dayplan.js";
 import { looksLikeCookingRequest, generateRecipe, parseRecipeImport, importRecipeFromUrl } from "./cooking.js";
 import { looksLikeUrlSummarize, summarizeUrl } from "./websummary.js";
 import { parseRecurring } from "./recurring.js";
+import { parseServiceRequest } from "./services.js";
 import {
   detectEmailRequest,
   answerEmail,
@@ -658,6 +659,48 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       const action = blankAction("memory_save");
       action.memoryFact = fact;
       return actionPlan(`Got it — I'll remember that.`, action, { lastIntent: "memory_save" });
+    }
+  }
+
+  // Real-world handoff — "get me an Uber to the airport", "order DoorDash",
+  // "book a table at Nobu for 2 at 8". Taki fills in the details and the device
+  // deep-links into the real app pre-filled. Runs early so a reservation's time
+  // isn't grabbed by the alarm/scheduled-message detectors, and a ride's "to X"
+  // isn't grabbed as maps directions.
+  {
+    const svc = parseServiceRequest(state.message);
+    if (svc) {
+      const action = blankAction("service_handoff");
+      action.service = svc.service;
+      action.serviceKind = svc.kind;
+      action.serviceLabel = svc.label;
+      action.serviceQuery = svc.query || null;
+      action.serviceDestination = svc.destination || null;
+      action.servicePartySize = svc.partySize ?? null;
+      // Reservations may carry a date/time — resolve it to an ISO the device
+      // passes straight to OpenTable.
+      let whenPhrase = "";
+      if (svc.kind === "reservation") {
+        const when = await parseAlarmTime(state.message, state.nowIso, state.timeZone);
+        if (when) { action.serviceDateTimeIso = when.iso; whenPhrase = ` for ${formatEventDateTime(when.iso, state.timeZone)}`; }
+      }
+      // A clear, honest confirmation: Taki opens it pre-filled; the user confirms.
+      let line: string;
+      if (svc.kind === "ride") {
+        line = svc.destination
+          ? `Opening ${svc.label} to ${svc.destination} — confirm and book it there.`
+          : `Opening ${svc.label} — set your destination and book it there.`;
+      } else if (svc.kind === "reservation") {
+        const who = svc.partySize ? ` for ${svc.partySize}` : "";
+        line = svc.query
+          ? `Opening ${svc.label} for ${svc.query}${who}${whenPhrase} — confirm the reservation there.`
+          : `Opening ${svc.label}${who}${whenPhrase} — pick your spot and confirm there.`;
+      } else if (svc.kind === "grocery") {
+        line = svc.query ? `Opening ${svc.label} for ${svc.query} — review your cart and check out there.` : `Opening ${svc.label} — build your cart and check out there.`;
+      } else {
+        line = svc.query ? `Opening ${svc.label} for ${svc.query} — place your order there.` : `Opening ${svc.label} — pick your food and order there.`;
+      }
+      return actionPlan(line, action, { lastIntent: "service_handoff" });
     }
   }
 

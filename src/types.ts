@@ -45,6 +45,7 @@ export type AssistantActionType =
   | "photos_search"
   | "day_plan"
   | "email_connect"
+  | "service_handoff"
   | "automation_create"
   | "scheduled_message"
   | "cooking_mode"
@@ -120,6 +121,17 @@ export type AssistantAction = {
   photoQuery: string | null;
   // email_connect: the provider OAuth URL the device opens in the system browser.
   emailAuthUrl: string | null;
+  // service_handoff: Taki fills in the details, the device deep-links into the
+  // real app (Uber/DoorDash/OpenTable/…) pre-filled; the user confirms + pays
+  // there. service = "uber"|"lyft"|"doordash"|"ubereats"|"grubhub"|"opentable"|
+  // "resy"|"instacart"|"yelp"; kind = "ride"|"food"|"reservation"|"grocery".
+  service: string | null;
+  serviceKind: string | null;
+  serviceLabel: string | null;      // human name for the spoken line ("Uber")
+  serviceQuery: string | null;      // restaurant / food / store to search
+  serviceDestination: string | null; // ride destination text (may be home/work/place)
+  servicePartySize: number | null;  // reservation covers
+  serviceDateTimeIso: string | null; // reservation date/time
   // finance/sports Live Activity tracking. trackKind = "finance" | "sports";
   // trackQuery is what the device re-polls (/api/quote or /api/score) to keep the
   // activity live. The rest are the initial snapshot to display.
@@ -431,6 +443,13 @@ export function blankAction(type: AssistantActionType): AssistantAction {
     photoDays: null,
     photoQuery: null,
     emailAuthUrl: null,
+    service: null,
+    serviceKind: null,
+    serviceLabel: null,
+    serviceQuery: null,
+    serviceDestination: null,
+    servicePartySize: null,
+    serviceDateTimeIso: null,
     trackKind: null,
     trackQuery: null,
     liveTitle: null,
