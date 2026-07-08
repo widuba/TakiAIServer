@@ -26,7 +26,7 @@ import { recordAssoc, isBanned, getSafetyAccount, recordViolation, classifyHarm,
 import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, identitiesForIp, allUsers, deleteUser } from "./src/users.js";
 import { TIERS, CREDIT_USD } from "./src/credits.js";
 import { transcribe, synthesize, listVoices, isVoiceConfigured } from "./src/voice.js";
-import { emailProviderConfigured, createOAuthState, buildAuthUrl, completeOAuth, loadConnection, disconnectEmail, sendEmail, type EmailProvider } from "./src/email.js";
+import { emailProviderConfigured, createOAuthState, buildAuthUrl, completeOAuth, loadConnection, disconnectEmail, sendEmail, saveDraft, type EmailProvider } from "./src/email.js";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
 // Render. (The purchase-simulating grant endpoint was removed when real
@@ -679,7 +679,10 @@ app.post("/api/email/send", async (req, res) => {
   if (!deviceId || !to || !body) { res.status(400).json({ ok: false, error: "deviceId, to, and body are required" }); return; }
   const gate = await safetyGate(deviceId, `${subject}\n${body}`, req);
   if (gate) { res.status(403).json({ ok: false, error: "blocked" }); return; }
-  const r = await sendEmail(deviceId, to, subject || "(no subject)", body);
+  const asDraft = b.draft === true;
+  const r = asDraft
+    ? await saveDraft(deviceId, to, subject || "(no subject)", body)
+    : await sendEmail(deviceId, to, subject || "(no subject)", body);
   if (!r.ok && (r.error === "not_connected" || r.error === "auth")) {
     res.status(409).json({ ok: false, error: "reconnect", message: "Reconnect your email in Settings to enable sending." });
     return;

@@ -1708,7 +1708,13 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
 
     case "compose_email": {
       const a = plan.action || {};
-      const name = a.recipientName || a.contactQuery || plan.contact?.name || state.priorContact?.name || null;
+      // An explicit email address in the user's message ALWAYS wins over an
+      // LLM-guessed recipient (the planner sometimes hallucinates a contact name
+      // like "Dr. Evelyn Reed" — never let that override a real typed address).
+      const explicitEmail = (state.message.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i) || [])[0] || "";
+      const emailAddr = explicitEmail || a.emailAddress || plan.contact?.email || null;
+      const name = explicitEmail || a.recipientName || a.contactQuery || plan.contact?.name || state.priorContact?.name || null;
+      const contactQ = explicitEmail ? null : (a.contactQuery || name);
       const body = normalizeMessageBodyForRecipient(String(a.body || ""));
       if (!name) {
         const pending: PendingClarification = {
@@ -1732,8 +1738,8 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         const emailAction: AssistantAction = {
           ...blankAction("compose_email"),
           recipientName: name,
-          contactQuery: a.contactQuery || name,
-          emailAddress: a.emailAddress || plan.contact?.email || null,
+          contactQuery: contactQ,
+          emailAddress: emailAddr,
           emailSubject: a.emailSubject || "Quick note",
           body: r.body
         };
@@ -1767,8 +1773,8 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       const action: AssistantAction = {
         ...blankAction("compose_email"),
         recipientName: name,
-        contactQuery: a.contactQuery || name,
-        emailAddress: a.emailAddress || plan.contact?.email || null,
+        contactQuery: contactQ,
+        emailAddress: emailAddr,
         emailSubject: a.emailSubject || "Quick note",
         body
       };

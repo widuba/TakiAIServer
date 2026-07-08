@@ -333,6 +333,45 @@ export async function sendEmail(deviceId: string, to: string, subject: string, b
   }
 }
 
+// Save a plain-text email as a DRAFT in the connected account (not sent).
+export async function saveDraft(deviceId: string, to: string, subject: string, body: string): Promise<{ ok: boolean; error?: string }> {
+  const conn = await loadConnection(deviceId);
+  if (!conn || !conn.refreshToken) return { ok: false, error: "not_connected" };
+  let token: string | null = null;
+  try { token = await accessTokenFor(conn); } catch { token = null; }
+  if (!token) return { ok: false, error: "auth" };
+  try {
+    if (conn.provider === "gmail") {
+      const mime = `To: ${to}\r\nSubject: ${subject}\r\nContent-Type: text/plain; charset="UTF-8"\r\n\r\n${body}`;
+      const raw = Buffer.from(mime, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      const r: any = await withTimeout(
+        fetch("https://gmail.googleapis.com/gmail/v1/users/me/drafts", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ message: { raw } })
+        }),
+        15000, "gmail draft"
+      );
+      if (!r.ok) return { ok: false, error: `gmail ${r.status}` };
+      return { ok: true };
+    }
+    // Graph: POSTing a message to /me/messages creates it in Drafts.
+    const r: any = await withTimeout(
+      fetch("https://graph.microsoft.com/v1.0/me/messages", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ subject, body: { contentType: "Text", content: body }, toRecipients: to ? [{ emailAddress: { address: to } }] : [] })
+      }),
+      15000, "graph draft"
+    );
+    if (!r.ok) return { ok: false, error: `graph ${r.status}` };
+    return { ok: true };
+  } catch (e) {
+    console.error("saveDraft error:", e);
+    return { ok: false, error: "network" };
+  }
+}
+
 /* ---- High-level: fetch + summarize -------------------------------------- */
 
 // Result of an inbox request: either not-connected (so the caller can prompt the
