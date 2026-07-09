@@ -21,6 +21,10 @@ export interface TrackerSnapshot {
   // (line1 = departure, line2 = arrival on a flight snapshot).
   depColor?: string;
   arrColor?: string;
+  // Package only: estimated delivery date (ISO) + whether it's been delivered,
+  // used to drive "arrives today" nudges.
+  eta?: string;
+  delivered?: boolean;
 }
 
 const PRICE_HEADERS = { "User-Agent": "Mozilla/5.0 (compatible; TakiAI/1.0)" };
@@ -320,7 +324,7 @@ const SHIP24_MILESTONES: Record<string, { label: string; symbol: string; deliver
   pending: { label: "Tracking…", symbol: "📦" }
 };
 
-async function fetchShip24Status(number: string, carrier: string): Promise<{ line1: string; line2: string; symbol: string; delivered: boolean } | null> {
+async function fetchShip24Status(number: string, carrier: string): Promise<{ line1: string; line2: string; symbol: string; delivered: boolean; eta: string } | null> {
   if (!SHIP24_KEY) return null;
   try {
     const body: any = { trackingNumber: number };
@@ -343,11 +347,14 @@ async function fetchShip24Status(number: string, carrier: string): Promise<{ lin
     const ev = Array.isArray(t?.events) && t.events.length ? t.events[0] : null;
     const evText = ev?.status ? String(ev.status).trim() : "";
     const loc = ev?.location ? String(ev.location).trim() : "";
+    const d = t?.shipment?.delivery || {};
+    const eta = String(d.estimatedDeliveryDate || d.estimatedDeliveryDateFrom || "").trim();
     return {
       line1: (evText || m.label).slice(0, 42),
       line2: loc ? loc.slice(0, 30) : (m.delivered ? "Delivered" : m.label),
       symbol: m.symbol,
-      delivered: !!m.delivered
+      delivered: !!m.delivered,
+      eta
     };
   } catch (error) {
     console.error("Ship24 error:", error);
@@ -368,7 +375,7 @@ export async function fetchPackageSnapshot(query: string): Promise<TrackerSnapsh
 
   const live = await fetchShip24Status(number, carrier);
   if (live) {
-    return { title: carrier || "Package", symbol: live.symbol, line1: live.line1, line2: live.line2, trend: live.delivered ? "up" : "flat", status: "" };
+    return { title: carrier || "Package", symbol: live.symbol, line1: live.line1, line2: live.line2, trend: live.delivered ? "up" : "flat", status: "", eta: live.eta || undefined, delivered: live.delivered };
   }
   return {
     title: carrier || "Package",
