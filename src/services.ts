@@ -107,6 +107,11 @@ function afterFromAt(m: string): string | undefined {
 export function parseServiceRequest(message: string): ServiceRequest | null {
   const m = message.toLowerCase().trim();
 
+  // Spending/history questions and past-tense narration are NOT booking requests
+  // ("how much did I spend on groceries", "I took an uber yesterday").
+  if (/\bhow much\b|\bspen[dt]\b|\bhow many\b/.test(m)) return null;
+  if (/\bi (?:took|ordered|booked|had|got|used)\b/.test(m) && /\byesterday|last (?:night|week)|earlier|ago\b/.test(m)) return null;
+
   // Which provider (if named)? Check longest names first so "uber eats" wins over
   // "uber".
   let named: { key: string; label: string; kind: ServiceKind } | null = null;
@@ -122,7 +127,8 @@ export function parseServiceRequest(message: string): ServiceRequest | null {
   const wantsFood = /\b(doordash|uber eats|ubereats|grubhub|postmates)\b/.test(m) ||
     (/\b(order|deliver)\b/.test(m) && /\b(food|dinner|lunch|breakfast|takeout|take-out|delivery|pizza|sushi|burgers?|chinese|thai|tacos?|a meal|something to eat)\b/.test(m)) ||
     /\b(food|takeout|take-out) delivery\b/.test(m);
-  const wantsGrocery = /\b(instacart|groceries|grocery run)\b/.test(m) || (/\b(order|get)\b/.test(m) && /\bgroceries\b/.test(m));
+  // Groceries need an order intent — the bare word "groceries" is not a request.
+  const wantsGrocery = /\binstacart\b/.test(m) || (/\b(order|buy|get|deliver|pick up|need|reorder)\b/.test(m) && /\bgroceries\b/.test(m));
 
   // Resolve the service. An explicit provider name wins; else infer from verbs.
   let kind: ServiceKind | null = named?.kind

@@ -1324,12 +1324,16 @@ export function parseLocationAutomation(message: string): { trigger: "arrive" | 
 // scene's steps (each a home_control spec), or null. Limited to on/off/lock/
 // thermostat since that's what HomeBridge supports.
 export function parseSceneCommand(message: string): { scene: string; steps: { action: string; target: string; value: number }[] } | null {
-  const m = message.toLowerCase().trim();
+  // Scene phrases are terse SPOKEN COMMANDS — anchor to the start (after an
+  // optional "ok/hey Taki") so they don't fire buried in a sentence, and exclude
+  // idioms like "I'm home free / home alone".
+  const m = message.toLowerCase().trim().replace(/^(ok|okay|hey|taki|so|well|alright)[,\s]+/, "");
   let key = "";
-  if (/\b(good ?night|night night)\b/.test(m)) key = "goodnight";
-  else if (/\b(movie (night|time|mode)|movie's? starting)\b/.test(m)) key = "movie night";
-  else if (/\b(i'?m leaving|heading out|leaving (the )?(house|home)|away mode|leaving now)\b/.test(m)) key = "leaving";
-  else if (/\b(i'?m home|i'?m back|arrived home)\b/.test(m)) key = "i'm home";
+  if (/^(good ?night|night night)\b/.test(m)) key = "goodnight";
+  else if (/^(movie (night|time|mode)|movie'?s? starting)\b/.test(m)) key = "movie night";
+  else if (/^(i'?m leaving|heading out|leaving (the )?(house|home)|away mode|leaving now)\b/.test(m)) key = "leaving";
+  else if (/^(i'?m home|i'?m back home|arrived home|just got home)\b/.test(m) &&
+           !/\bhome (free|alone|late|early|sick|run|school|base|body|now,)\b/.test(m)) key = "i'm home";
   else return null;
   const scenes: Record<string, { action: string; target?: string; value?: number }[]> = {
     goodnight: [{ action: "lightsOff" }, { action: "lock" }],
