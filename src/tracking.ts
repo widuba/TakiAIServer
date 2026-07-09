@@ -96,10 +96,18 @@ export function parseHabit(message: string): HabitCommand | null {
     if (n) return { op: "check", name: n };
   }
 
-  // Log: "log my vitamins", "took my meds", "I meditated", "mark journaling done",
-  // "track my flossing". Kept explicit so it doesn't grab arbitrary sentences.
+  // Log: "log my vitamins", "mark journaling done", "record my flossing".
+  // NOTE: "track" is deliberately NOT a habit verb — it's too overloaded with the
+  // package/finance/sports trackers ("track 1Z…", "track AAPL", "track the game"),
+  // so those own it. We also reject numbers / tracker nouns so "log 1Z…" isn't a
+  // habit either.
+  const gm = m.match(/\b(?:log|mark|record)\s+(?:my\s+|a\s+)?(.+?)(?:\s+(?:as\s+)?(?:done|complete|completed|finished))?$/);
+  if (gm && !/\d/.test(gm[1]) &&
+      !/\b(package|order|shipment|parcel|delivery|flight|tracking|stock|shares?|crypto|bitcoin|ethereum|price|game|score|match)\b/i.test(gm[1])) {
+    const n = normHabit(gm[1]);
+    if (n && n.length >= 2) return { op: "log", name: n };
+  }
   mm =
-    m.match(/\b(?:log|track|mark|record)\s+(?:my\s+|a\s+)?(.+?)(?:\s+(?:as\s+)?(?:done|complete|completed|finished))?$/) ||
     m.match(/\b(?:i\s+)?(?:just\s+|already\s+)?(?:took|take|taken|had)\s+(?:my\s+)?(meds?|medication|medicine|vitamins?|pills?|supplements?)\b/) ||
     m.match(/\bi\s+(?:just\s+|already\s+)?(meditated|journaled|flossed|stretched|exercised|worked out|read)\b/);
   if (mm) {
