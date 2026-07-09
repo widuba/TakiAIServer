@@ -117,8 +117,11 @@ export function parseServiceRequest(message: string): ServiceRequest | null {
   // Which kind (by intent verbs)?
   const wantsRide = /\b(uber|lyft|taxi|cab)\b/.test(m) || /\b(get|call|order|book|grab|need|hail)\b[^.]*\b(ride|car|cab|taxi|lift)\b/.test(m) || /\bpick me up\b/.test(m) || /\b(ride|drive me)\s+(to|home)\b/.test(m);
   const wantsReservation = /\b(reserve|reservation|book(?:ing)?\s+a?\s*table|table\s+for|book(?:ing)?\s+(?:a\s+)?(?:dinner|lunch|spot)|opentable|resy)\b/.test(m);
+  // Require a real delivery/order cue — NOT bare "grab/get" ("let's grab dinner
+  // sometime" is making plans, not ordering).
   const wantsFood = /\b(doordash|uber eats|ubereats|grubhub|postmates)\b/.test(m) ||
-    (/\b(order|get|grab|deliver|bring)\b/.test(m) && /\b(food|dinner|lunch|breakfast|takeout|take-out|delivery|pizza|sushi|burgers?|chinese|thai|tacos?|coffee|a meal|something to eat)\b/.test(m));
+    (/\b(order|deliver)\b/.test(m) && /\b(food|dinner|lunch|breakfast|takeout|take-out|delivery|pizza|sushi|burgers?|chinese|thai|tacos?|a meal|something to eat)\b/.test(m)) ||
+    /\b(food|takeout|take-out) delivery\b/.test(m);
   const wantsGrocery = /\b(instacart|groceries|grocery run)\b/.test(m) || (/\b(order|get)\b/.test(m) && /\bgroceries\b/.test(m));
 
   // Resolve the service. An explicit provider name wins; else infer from verbs.

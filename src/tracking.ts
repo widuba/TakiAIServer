@@ -79,43 +79,37 @@ function normHabit(raw: string): string {
   return n.slice(0, 40);
 }
 
+// A habit command ALWAYS requires one of these known habits — we never treat a
+// bare verb + arbitrary object as a habit (so "mark my words", "log into my
+// account", "record label" are NOT habits). Custom habits aren't supported yet;
+// add keywords here to grow the set.
+const HABIT_WORD = /\b(vitamins?|medications?|medicine|meds|pills?|supplements?|meditat(?:e|ed|es|ing|ion)?|mindfulness|workout|worked out|work out|exercis(?:e|ed|es|ing)?|gym|journal(?:ed|ing|s)?|floss(?:ed|ing|es)?|stretch(?:ed|ing|es)?|yoga|pilates|prayers?|prayed|gratitude|skincare|push-?ups?|sit-?ups?|cold shower)\b/;
+
 export function parseHabit(message: string): HabitCommand | null {
   const m = message.toLowerCase().trim();
 
-  // Streak: "what's my meditation streak", "meditation streak"
-  let mm = m.match(/\b(.+?)\s+streak\b/) || m.match(/\bstreak\s+(?:for|of|on)\s+(.+)$/);
-  if (mm) {
-    const n = normHabit(mm[1].replace(/^(what(?:'?s| is)|hows?|how is|my|the)\s+/, ""));
-    if (n) return { op: "streak", name: n };
-  }
-
-  // Check today: "did I take my meds today", "have I meditated today", "did I journal yet"
-  mm = m.match(/\b(?:did|have|has)\s+i\s+(?:take\s+my\s+|do\s+my\s+|)?(.+?)\s+(?:today|yet|this morning)\b/);
-  if (mm) {
-    const n = normHabit(mm[1].replace(/\b(take|do|log|my)\b/g, "").trim() || mm[1]);
-    if (n) return { op: "check", name: n };
-  }
-
-  // Log: "log my vitamins", "mark journaling done", "record my flossing".
-  // NOTE: "track" is deliberately NOT a habit verb — it's too overloaded with the
-  // package/finance/sports trackers ("track 1Z…", "track AAPL", "track the game"),
-  // so those own it. We also reject numbers / tracker nouns so "log 1Z…" isn't a
-  // habit either.
-  const gm = m.match(/\b(?:log|mark|record)\s+(?:my\s+|a\s+)?(.+?)(?:\s+(?:as\s+)?(?:done|complete|completed|finished))?$/);
-  if (gm && !/\d/.test(gm[1]) &&
-      !/\b(package|order|shipment|parcel|delivery|flight|tracking|stock|shares?|crypto|bitcoin|ethereum|price|game|score|match)\b/i.test(gm[1])) {
-    const n = normHabit(gm[1]);
-    if (n && n.length >= 2) return { op: "log", name: n };
-  }
-  mm =
-    m.match(/\b(?:i\s+)?(?:just\s+|already\s+)?(?:took|take|taken|had)\s+(?:my\s+)?(meds?|medication|medicine|vitamins?|pills?|supplements?)\b/) ||
-    m.match(/\bi\s+(?:just\s+|already\s+)?(meditated|journaled|flossed|stretched|exercised|worked out|read)\b/);
-  if (mm) {
-    const n = normHabit(mm[1] === "worked out" ? "workout" : mm[1]);
-    if (n && n.length >= 2) return { op: "log", name: n };
-  }
-
   // "what are my habits" / "show my habits"
   if (/\b(show|what are|list)\b[^.]*\bhabits?\b/.test(m)) return { op: "list", name: "" };
+
+  // Everything else REQUIRES a known habit word — no bare-verb hijacks.
+  const hm = m.match(HABIT_WORD);
+  if (!hm) return null;
+  const name = normHabit(hm[0]);
+  if (!name) return null;
+
+  // Streak: "what's my meditation streak", "meditation streak"
+  if (/\bstreak\b/.test(m)) return { op: "streak", name };
+
+  // Check today: "did I take my meds today", "have I meditated today"
+  if (/\b(?:did|have|has)\s+i\b/.test(m) && /\b(today|yet|this morning|already)\b/.test(m)) {
+    return { op: "check", name };
+  }
+
+  // Log: an explicit log verb, "I took my <habit>", or an "I <verbed>" past tense.
+  if (/\b(log|mark|record)\b/.test(m) ||
+      /\b(?:i\s+)?(?:just\s+|already\s+)?(?:took|take|taken|had|did|finished|completed)\b/.test(m) ||
+      /\bi\s+(?:just\s+|already\s+)?(?:meditated|journaled|flossed|stretched|exercised|worked out|prayed)\b/.test(m)) {
+    return { op: "log", name };
+  }
   return null;
 }

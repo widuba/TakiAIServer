@@ -88,11 +88,15 @@ function lookupUnit(raw: string): (Unit & { key: string }) | null {
 
 // Cheap pre-filter (generous — computeConversion returns null for non-conversions,
 // so a false positive just falls through to the LLM harmlessly).
+const UNIT_OR_CUR = /\b(miles?|mi|km|kilometers?|meters?|metres?|cm|mm|feet|foot|inch(?:es)?|yards?|kg|kilos?|grams?|mg|lbs?|pounds?|ounces?|oz|tons?|stones?|liters?|litres?|ml|cups?|pints?|quarts?|gallons?|tbsp|tsp|tablespoons?|teaspoons?|celsius|fahrenheit|kelvin|degrees?|°|usd|eur|gbp|jpy|cad|aud|dollars?|euros?|pounds?|yen|rupees?|pesos?|francs?|yuan|won|\$|€|£|¥|₹)\b/;
+// A conversion needs a number OR a unit/currency word — never just "convert"
+// ("convert him to our cause" must not qualify).
 export function looksLikeConversion(message: string): boolean {
   const m = message.toLowerCase();
-  if (/\bconvert\b/.test(m)) return true;
-  if (/\bhow many\b/.test(m) && /\b(in|per|is|are|to)\b/.test(m)) return true;
-  if (/\bhow much is\b/.test(m) && /\b(in|to|into)\b/.test(m)) return true;
+  const hasUnit = UNIT_OR_CUR.test(m) || /\d/.test(m);
+  if (/\bconvert\b/.test(m) && hasUnit) return true;
+  if (/\bhow many\b/.test(m) && /\b(in|per|is|are|to)\b/.test(m) && hasUnit) return true;
+  if (/\bhow much is\b/.test(m) && /\b(in|to|into)\b/.test(m) && hasUnit) return true;
   return /\b\d+(?:\.\d+)?\s*[a-z°$€£¥₹]+\s+(?:to|in|into)\s+[a-z°$€£¥₹]/.test(m);
 }
 
