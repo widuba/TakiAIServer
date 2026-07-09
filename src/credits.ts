@@ -47,8 +47,25 @@ export const TIERS: Record<Tier, TierConfig> = {
   free:       { label: "Free",       creditsPerCycle: 0,     priceUsd: 0,     voiceIncluded: false, extraCreditDiscount: 0 },
   plus:       { label: "Plus",       creditsPerCycle: 3000,  priceUsd: 9.99,  voiceIncluded: false, extraCreditDiscount: 0 },
   plus_voice: { label: "Plus Voice", creditsPerCycle: 4500,  priceUsd: 14.99, voiceIncluded: true,  extraCreditDiscount: 0 },
-  pro:        { label: "Pro",        creditsPerCycle: 15000, priceUsd: 29.99, voiceIncluded: false, extraCreditDiscount: 0.2 }
+  // Pro now includes voice (on base credits only, like Plus Voice).
+  pro:        { label: "Pro",        creditsPerCycle: 15000, priceUsd: 29.99, voiceIncluded: true,  extraCreditDiscount: 0.2 }
 };
+
+// Tiers whose per-cycle BASE credits get free (no-surcharge) voice.
+const VOICE_INCLUDED_TIERS: Tier[] = ["plus_voice", "pro"];
+// When voice ISN'T free, charge per spoken character to cover TTS (so we never
+// lose money on voice paid from top-ups or on non-voice tiers). ~1 credit / 8
+// spoken chars, plus a small base surcharge.
+export const VOICE_CHARS_PER_CREDIT = 8;
+// Credits to charge for a voice turn on TOP of the question's base cost.
+// `baseCredits` = the caller's remaining base-subscription credits BEFORE this
+// turn. Free voice applies ONLY on an included tier while base credits remain;
+// purchased top-ups (baseCredits === 0) always pay per-character.
+export function voiceExtraCost(spokenChars: number, tier: Tier, baseCredits: number): number {
+  const freeVoice = VOICE_INCLUDED_TIERS.includes(tier) && baseCredits > 0;
+  if (freeVoice) return 0;
+  return VOICE_SURCHARGE + Math.ceil(Math.max(0, spokenChars) / VOICE_CHARS_PER_CREDIT);
+}
 
 // Map a planner intent → a brainpower cost tier. HEAVY = grounded/pro model
 // paths; LIGHT = on-device actions (barely any model cost); everything else is
@@ -69,11 +86,10 @@ export function costTierForIntent(intent: string | null | undefined): CostTier {
   return "standard"; // answer_only, live_activity, day_plan, cooking_*, compose_*, etc.
 }
 
-export function costForRequest(intent: string | null | undefined, voiceMode: boolean, tier: Tier): number {
-  const base = COST_TIERS[costTierForIntent(intent)];
-  const conf = TIERS[tier] || TIERS.free;
-  const surcharge = voiceMode && !conf.voiceIncluded ? VOICE_SURCHARGE : 0;
-  return base + surcharge;
+// Base credit cost for a request by intent. Voice cost is added separately by the
+// caller via voiceExtraCost() (which needs the spoken length + base-credit state).
+export function costForRequest(intent: string | null | undefined, _voiceMode: boolean, _tier: Tier): number {
+  return COST_TIERS[costTierForIntent(intent)];
 }
 
 /* ---- LEDGER -------------------------------------------------------------- */
@@ -113,6 +129,9 @@ export interface CreditSummary {
   expiring: { credits: number; expiresAt: number }[];
   durable: boolean;
   voiceUsed: number;          // voice questions asked (for the free-tier cap)
+  // Remaining BASE subscription credits (source "subscription:*"). Free/included
+  // voice only applies while these are > 0 — purchased top-ups never get it.
+  baseCredits: number;
 }
 
 function keyFor(deviceId: string): string {
@@ -179,7 +198,8 @@ function summarize(acct: CreditAccount): CreditSummary {
     nextExpiry: live[0]?.expiresAt ?? null,
     expiring: live.map((g) => ({ credits: g.remaining, expiresAt: g.expiresAt })),
     durable: isDurable(),
-    voiceUsed: acct.voiceCount || 0
+    voiceUsed: acct.voiceCount || 0,
+    baseCredits: live.filter((g) => g.source.startsWith("subscription:")).reduce((s, g) => s + g.remaining, 0)
   };
 }
 

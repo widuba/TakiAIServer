@@ -2546,17 +2546,18 @@ ${memoryText}
     return out || t;
   };
 
-  // Cost control for voice: spoken answers are short and constant, so paying for
-  // gemini-2.5-pro + grounded search on every turn is wasteful. In voice mode we
-  // use flash, and only turn on Google Search when the question actually needs
-  // live/current info (scores, prices, "now", public schedules) — plain knowledge
-  // ("capital of France") is answered flash-only, no grounding charge. Text mode
-  // keeps pro + always-on grounding for maximum quality.
-  const needsSearch = !state.voiceMode || looksLikeLiveInfoQuestion(state.message) || looksLikeFreshFactQuestion(state.message);
-  const primaryModel = state.voiceMode ? MAIN_MODEL : RESEARCH_MODEL;
+  // Cost control: gemini-2.5-pro + grounded search is ONLY for questions that
+  // truly need live/current info (scores, prices, "now", public schedules, latest
+  // news). Everything else — plain knowledge, explanations, writing, math help —
+  // is answered on flash with NO grounding: far cheaper, much faster, and it
+  // doesn't burn the limited 2.5-pro request quota. (Live/fresh questions are
+  // normally routed to getStrictWebAnswer upstream; this is the general fallback.)
+  const isLive = looksLikeLiveInfoQuestion(state.message) || looksLikeFreshFactQuestion(state.message);
+  const needsSearch = isLive;
+  const primaryModel = isLive && !state.voiceMode ? RESEARCH_MODEL : MAIN_MODEL;
   const primaryConfig: any = {
     ...(needsSearch ? { tools: [{ googleSearch: {} }] } : {}),
-    ...(state.voiceMode ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+    thinkingConfig: { thinkingBudget: 0 },
     ...safetyConfig(state.userProfile?.teen)
   };
 
