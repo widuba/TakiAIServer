@@ -20,7 +20,7 @@ import { cachedTrackerSnapshot } from "./src/tracker.js";
 import { setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
 import { isDurable, storeGet, storeSet } from "./src/store.js";
-import { summary as creditSummary, spend, reset as resetCredits, costForRequest, voiceExtraCost, tierCatalog, grantForTransaction, downgradeToFree, revokeSubscription, noteVoiceQuestion, grantCredits, topupPriceCents, topupCentsPerCredit, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, type Tier } from "./src/credits.js";
+import { summary as creditSummary, spend, reset as resetCredits, costForRequest, isFreeVoice, paidVoiceCost, noteFreeVoice, tierCatalog, grantForTransaction, downgradeToFree, revokeSubscription, noteVoiceQuestion, grantCredits, topupPriceCents, topupCentsPerCredit, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, type Tier } from "./src/credits.js";
 import { verifyTransaction, linkTransactionIdentity, getTransactionIdentity, verifyNotification } from "./src/iap.js";
 import { verifyAppleIdentityToken } from "./src/appleauth.js";
 import { recordAssoc, isBanned, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, linkApple, devicesForApple, SUSPENDED_MSG, BANNED_MSG, PROMPT_EXTRACTION_MSG } from "./src/safety.js";
@@ -416,10 +416,12 @@ app.post("/api/vision", async (req, res) => {
   if (visionGate) { res.json({ spokenText: visionGate.message, blocked: true, ...(visionGate.block ? { access: visionGate.block, accessMessage: visionGate.message } : {}) }); return; }
   let tier: Tier = "free";
   let visionBaseCredits = 0;
+  let visionVoiceUsed = 0;
   if (deviceId) {
     const sum = await creditSummary(deviceId);
     tier = sum.tier;
     visionBaseCredits = sum.baseCredits;
+    visionVoiceUsed = sum.voiceCycleUsed;
     if (sum.balance < MIN_REQUEST_CREDITS) {
       res.json({ spokenText: OUT_OF_CREDITS_MSG, credits: { ...sum, cost: 0, outOfCredits: true } });
       return;
@@ -428,7 +430,11 @@ app.post("/api/vision", async (req, res) => {
   try {
     const spokenText = await withTimeout(answerAboutImage(image, mime, question, userProfile, timeZone), 28000, "Vision");
     if (deviceId) {
-      const visionCost = costForRequest("vision", voiceMode, tier) + (voiceMode ? voiceExtraCost((spokenText || "").length, tier, visionBaseCredits) : 0);
+      let visionCost = costForRequest("vision", voiceMode, tier);
+      if (voiceMode) {
+        if (isFreeVoice(tier, visionBaseCredits, visionVoiceUsed)) await noteFreeVoice(deviceId);
+        else visionCost += paidVoiceCost((spokenText || "").length);
+      }
       const s = await spend(deviceId, visionCost);
       await noteSpend(deviceId, s.spent);
       res.json({ spokenText, credits: { balance: s.balance, cost: s.spent, tier, nextExpiry: s.nextExpiry } });
@@ -996,11 +1002,13 @@ async function safetyGate(identity: string, message: string, req: any): Promise<
 // /api/assistant and /api/voice (which passes voiceMode=true).
 async function runAssistant(state: ReturnType<typeof buildConversationState>, deviceId: string, voiceMode: boolean): Promise<any> {
   let tier: Tier = "free";
-  let baseCredits = 0; // remaining base-subscription credits (for free-voice check)
+  let baseCredits = 0;     // remaining base-subscription credits (for free-voice check)
+  let voiceCycleUsed = 0;  // free voice turns used this cycle
   if (deviceId) {
     const sum = await creditSummary(deviceId);
     tier = sum.tier;
     baseCredits = sum.baseCredits;
+    voiceCycleUsed = sum.voiceCycleUsed;
     // Cut users off BEFORE they hit 0 — they need at least a standard request's
     // worth of credits to ask anything.
     if (sum.balance < MIN_REQUEST_CREDITS) {
@@ -1022,9 +1030,12 @@ async function runAssistant(state: ReturnType<typeof buildConversationState>, de
   }
   if (deviceId) {
     let cost = costForRequest(finalized.memory?.lastIntent, voiceMode, tier);
-    // Voice: free (no surcharge) only on Plus Voice / Pro while BASE subscription
-    // credits remain; otherwise (top-ups, Plus, Free) pay per spoken character.
-    if (voiceMode) cost += voiceExtraCost((finalized.spokenText || "").length, tier, baseCredits);
+    // Voice: free within the per-cycle allowance on Plus Voice / Pro (base credits
+    // only); beyond that, or on top-ups / other tiers, pay per spoken character.
+    if (voiceMode) {
+      if (isFreeVoice(tier, baseCredits, voiceCycleUsed)) await noteFreeVoice(deviceId);
+      else cost += paidVoiceCost((finalized.spokenText || "").length);
+    }
     const s = await spend(deviceId, cost);
     await noteSpend(deviceId, s.spent);
     return { ...finalized, credits: { balance: s.balance, cost: s.spent, tier, nextExpiry: s.nextExpiry } };

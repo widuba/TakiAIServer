@@ -51,20 +51,23 @@ export const TIERS: Record<Tier, TierConfig> = {
   pro:        { label: "Pro",        creditsPerCycle: 15000, priceUsd: 29.99, voiceIncluded: true,  extraCreditDiscount: 0.2 }
 };
 
-// Tiers whose per-cycle BASE credits get free (no-surcharge) voice.
-const VOICE_INCLUDED_TIERS: Tier[] = ["plus_voice", "pro"];
-// When voice ISN'T free, charge per spoken character to cover TTS (so we never
-// lose money on voice paid from top-ups or on non-voice tiers). ~1 credit / 8
-// spoken chars, plus a small base surcharge.
-export const VOICE_CHARS_PER_CREDIT = 8;
-// Credits to charge for a voice turn on TOP of the question's base cost.
-// `baseCredits` = the caller's remaining base-subscription credits BEFORE this
-// turn. Free voice applies ONLY on an included tier while base credits remain;
-// purchased top-ups (baseCredits === 0) always pay per-character.
-export function voiceExtraCost(spokenChars: number, tier: Tier, baseCredits: number): number {
-  const freeVoice = VOICE_INCLUDED_TIERS.includes(tier) && baseCredits > 0;
-  if (freeVoice) return 0;
-  return VOICE_SURCHARGE + Math.ceil(Math.max(0, spokenChars) / VOICE_CHARS_PER_CREDIT);
+// Voice pricing. Plus Voice / Pro get a per-cycle allowance of FREE voice turns
+// (no surcharge) out of their base subscription credits; beyond that allowance,
+// or on top-ups / non-voice tiers, voice costs per spoken character. The per-char
+// rate is set to 3× our ElevenLabs Flash-v2.5 TTS cost (~$0.05/1k chars) → charge
+// $0.15/1k chars, i.e. 0.15 credits/char (a credit ≈ $0.001 of usage).
+export const VOICE_CREDITS_PER_CHAR = 0.15;
+export const FREE_VOICE_PER_CYCLE: Record<Tier, number> = { free: 0, plus: 0, plus_voice: 400, pro: 1000 };
+
+// Is this voice turn covered by the free-voice allowance? Only on an included
+// tier, only while base subscription credits remain, and only under the cap.
+export function isFreeVoice(tier: Tier, baseCredits: number, voiceCycleUsed: number): boolean {
+  const cap = FREE_VOICE_PER_CYCLE[tier] || 0;
+  return cap > 0 && baseCredits > 0 && voiceCycleUsed < cap;
+}
+// Credits charged for a paid voice turn (beyond the free allowance).
+export function paidVoiceCost(spokenChars: number): number {
+  return Math.ceil(Math.max(0, spokenChars) * VOICE_CREDITS_PER_CHAR);
 }
 
 // Map a planner intent → a brainpower cost tier. HEAVY = grounded/pro model
@@ -118,6 +121,9 @@ export interface CreditAccount {
   processedTx?: string[];
   // Lifetime count of voice questions asked (enforces the free-tier voice cap).
   voiceCount?: number;
+  // FREE voice turns used THIS billing cycle (reset on renewal). Enforces the
+  // per-cycle free-voice allowance for Plus Voice / Pro.
+  voiceCycleCount?: number;
   updatedAt: number;
 }
 
@@ -132,6 +138,8 @@ export interface CreditSummary {
   // Remaining BASE subscription credits (source "subscription:*"). Free/included
   // voice only applies while these are > 0 — purchased top-ups never get it.
   baseCredits: number;
+  // FREE voice turns used this cycle (for the per-cycle allowance).
+  voiceCycleUsed: number;
 }
 
 function keyFor(deviceId: string): string {
@@ -199,8 +207,19 @@ function summarize(acct: CreditAccount): CreditSummary {
     expiring: live.map((g) => ({ credits: g.remaining, expiresAt: g.expiresAt })),
     durable: isDurable(),
     voiceUsed: acct.voiceCount || 0,
-    baseCredits: live.filter((g) => g.source.startsWith("subscription:")).reduce((s, g) => s + g.remaining, 0)
+    baseCredits: live.filter((g) => g.source.startsWith("subscription:")).reduce((s, g) => s + g.remaining, 0),
+    voiceCycleUsed: acct.voiceCycleCount || 0
   };
+}
+
+// Record a FREE voice turn against the per-cycle allowance. Returns the new count.
+export async function noteFreeVoice(identity: string): Promise<number> {
+  return withLock(identity, async () => {
+    const acct = await load(identity);
+    acct.voiceCycleCount = (acct.voiceCycleCount || 0) + 1;
+    await save(acct);
+    return acct.voiceCycleCount;
+  });
 }
 
 // Grant a one-off block of credits (e.g. a web top-up purchase). 90-day expiry
@@ -317,6 +336,7 @@ export async function grantForTransaction(
     if (conf) addGrant(acct, `subscription:${tier}`, conf.creditsPerCycle);
     acct.tier = tier;
     acct.starterGiven = true;
+    acct.voiceCycleCount = 0; // new cycle → reset the free-voice allowance
     if (periodKey) {
       acct.processedTx.push(periodKey);
       if (acct.processedTx.length > 200) acct.processedTx = acct.processedTx.slice(-200);
