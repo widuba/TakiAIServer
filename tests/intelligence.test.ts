@@ -9,6 +9,7 @@ import { blankAction } from "../src/types.js";
 import { resolveCalendarUpdateDates, validateAction } from "../src/validators.js";
 import { stabilityForVariability } from "../src/voice.js";
 import { safeParseJsonObject } from "../src/util.js";
+import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
 import { parseTrackCommand } from "../src/tracker.js";
 import { looksLikeFlightQuestion } from "../src/tools.js";
@@ -205,4 +206,13 @@ test("grounded tracker JSON survives prose and markdown wrappers", () => {
     title: "UA123",
     status: "On time"
   });
+});
+
+test("prompt extraction uses the exact voice warning without changing text mode", () => {
+  assert.equal(promptExtractionMessageForMode(false), PROMPT_EXTRACTION_MSG);
+  assert.equal(
+    promptExtractionMessageForMode(true),
+    "No. I'm warning you, if you keep asking about this, I will terminate this device."
+  );
+  assert.equal(promptExtractionMessageForMode(true), VOICE_PROMPT_EXTRACTION_MSG);
 });

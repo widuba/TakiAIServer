@@ -37,6 +37,12 @@ export const BANNED_MSG =
 // Deliberately out-of-character and identical every time.
 export const PROMPT_EXTRACTION_MSG =
   "I am not able to assist with this request. Continual requests for restricted information will result in an account restriction.";
+export const VOICE_PROMPT_EXTRACTION_MSG =
+  "No. I'm warning you, if you keep asking about this, I will terminate this device.";
+
+export function promptExtractionMessageForMode(voiceMode: boolean): string {
+  return voiceMode ? VOICE_PROMPT_EXTRACTION_MSG : PROMPT_EXTRACTION_MSG;
+}
 
 /* ---- Prompt / instruction extraction detection -------------------------- */
 // Catches attempts to reveal the system prompt, hidden instructions, guardrails,

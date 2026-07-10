@@ -24,7 +24,7 @@ import { isDurable, storeGet, storeSet } from "./src/store.js";
 import { summary as creditSummary, spend, reset as resetCredits, costForRequest, isFreeVoice, paidVoiceCost, noteFreeVoice, tierCatalog, grantForTransaction, downgradeToFree, revokeSubscription, noteVoiceQuestion, grantCredits, topupPriceCents, topupCentsPerCredit, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, type Tier } from "./src/credits.js";
 import { verifyTransaction, linkTransactionIdentity, getTransactionIdentity, verifyNotification } from "./src/iap.js";
 import { verifyAppleIdentityToken } from "./src/appleauth.js";
-import { recordAssoc, isBanned, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, linkApple, devicesForApple, SUSPENDED_MSG, BANNED_MSG, PROMPT_EXTRACTION_MSG } from "./src/safety.js";
+import { recordAssoc, isBanned, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, linkApple, devicesForApple, SUSPENDED_MSG, BANNED_MSG, promptExtractionMessageForMode } from "./src/safety.js";
 import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, identitiesForIp, allUsers, deleteUser } from "./src/users.js";
 import { TIERS, CREDIT_USD } from "./src/credits.js";
 import { transcribe, synthesize, listVoices, isVoiceConfigured } from "./src/voice.js";
@@ -981,10 +981,11 @@ function clientIp(req: any): string {
 // only for banned/suspended accounts (→ the app hard-blocks full-screen); a plain
 // message (no `block`) is a normal refusal (e.g. prompt-extraction).
 type GateResult = { message: string; block?: "banned" | "suspended" };
-async function safetyGate(identity: string, message: string, req: any): Promise<GateResult | null> {
+async function safetyGate(identity: string, message: string, req: any, voiceMode = false): Promise<GateResult | null> {
   // Prompt-extraction is refused for EVERYONE (even legacy clients with no id).
   const isExtraction = looksLikePromptExtraction(message);
-  if (!identity) return isExtraction ? { message: PROMPT_EXTRACTION_MSG } : null;
+  const extractionMessage = promptExtractionMessageForMode(voiceMode);
+  if (!identity) return isExtraction ? { message: extractionMessage } : null;
   const ip = clientIp(req);
   const dev = identity.startsWith("apple:") ? undefined : identity;
   try {
@@ -997,7 +998,7 @@ async function safetyGate(identity: string, message: string, req: any): Promise<
     // reply, and count a strike (repeated attempts → suspension = "restriction").
     if (isExtraction) {
       const a = await recordViolation(identity, { text: String(message).slice(0, 2000), category: "prompt_extraction", at: Date.now(), ip, deviceId: dev });
-      return a.status !== "active" ? { message: SUSPENDED_MSG, block: "suspended" } : { message: PROMPT_EXTRACTION_MSG };
+      return a.status !== "active" ? { message: SUSPENDED_MSG, block: "suspended" } : { message: extractionMessage };
     }
     const category = classifyHarm(message);
     if (category) {
@@ -1077,7 +1078,7 @@ app.post("/api/assistant", async (req, res) => {
 
   const state = buildConversationState(userMessage, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, voiceMode, deviceId);
 
-  const gate = await safetyGate(deviceId, userMessage, req);
+  const gate = await safetyGate(deviceId, userMessage, req, voiceMode);
   if (gate) {
     res.json({
       ...finalizeResponse({ spokenText: gate.message, action: null, memoryPatch: { pendingClarification: null }, needsExecution: false }, state),
@@ -1152,9 +1153,11 @@ app.post("/api/voice", async (req, res) => {
       res.json({ transcript: "", spokenText: "", action: null, actions: null, empty: true });
       return;
     }
-    const gate = await safetyGate(deviceId, transcript, req);
+    const gate = await safetyGate(deviceId, transcript, req, true);
     if (gate) {
-      res.json({ transcript, spokenText: gate.message, action: null, actions: null, audioBase64: "", mime: "audio/mpeg", blocked: true, ...(gate.block ? { access: gate.block, accessMessage: gate.message } : {}) });
+      let audio = "";
+      try { audio = await synthesize(gate.message, voiceId, voiceVariability); } catch { /* text still returns if TTS is temporarily unavailable */ }
+      res.json({ transcript, spokenText: gate.message, action: null, actions: null, audioBase64: audio, mime: "audio/mpeg", blocked: true, ...(gate.block ? { access: gate.block, accessMessage: gate.message } : {}) });
       return;
     }
     // Count this voice question toward the free-tier cap.
