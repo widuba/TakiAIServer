@@ -154,7 +154,7 @@ export type AssistantAction = {
   trackKind: string | null;
   trackQuery: string | null;
   liveTitle: string | null;    // "AAPL", "Lakers vs Celtics"
-  liveSymbol: string | null;   // "📈" / "🏀"
+  liveSymbol: string | null;   // SF Symbol name, e.g. "chart.line.uptrend.xyaxis"
   line1: string | null;        // primary value, e.g. "$195.20", "102 – 98"
   line2: string | null;        // secondary, e.g. "Apple Inc.", "Lakers lead"
   trend: string | null;        // "up" | "down" | "flat" (drives green/red tint)

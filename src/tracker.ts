@@ -12,7 +12,7 @@ import { withTimeout } from "./util.js";
 
 export interface TrackerSnapshot {
   title: string;   // "AAPL", "Lakers vs Celtics"
-  symbol: string;  // emoji badge
+  symbol: string;  // SF Symbol name
   line1: string;   // "$195.20", "102 – 98"
   line2: string;   // "Apple Inc.", "Lakers lead"
   trend: string;   // "up" | "down" | "flat"
@@ -116,7 +116,7 @@ async function fetchCryptoQuote(query: string): Promise<TrackerSnapshot | null> 
     const name = word.charAt(0).toUpperCase() + word.slice(1);
     return {
       title: word.length <= 4 ? word.toUpperCase() : name,
-      symbol: trend === "down" ? "📉" : "📈",
+      symbol: trend === "down" ? "chart.line.downtrend.xyaxis" : "chart.line.uptrend.xyaxis",
       line1: money(info.usd),
       line2: name,
       trend,
@@ -216,7 +216,7 @@ async function fetchStockQuote(query: string): Promise<TrackerSnapshot | null> {
     const trend = chg == null ? "flat" : chg >= 0 ? "up" : "down";
     return {
       title: symbol,
-      symbol: trend === "down" ? "📉" : "📈",
+      symbol: trend === "down" ? "chart.line.downtrend.xyaxis" : "chart.line.uptrend.xyaxis",
       line1: money(price, meta.currency || "USD"),
       line2: name,
       trend,
@@ -247,7 +247,7 @@ If it hasn't started yet, set line1 to the matchup abbreviations with no scores 
     if (!obj || typeof obj.line1 !== "string") return null;
     return {
       title: String(obj.title || query).slice(0, 40),
-      symbol: "🏆",
+      symbol: "sportscourt.fill",
       line1: String(obj.line1 || "").slice(0, 24),
       line2: String(obj.line2 || "").slice(0, 30),
       trend: "flat",
@@ -292,7 +292,7 @@ Use the user's local timezone (${timeZone}). Always include the '|note' part. If
     const color = (c: any) => (c === "green" || c === "yellow" || c === "red" ? c : "green");
     return {
       title: String(obj.title || flight).slice(0, 30),
-      symbol: "✈️",
+      symbol: "airplane",
       line1: String(obj.dep || "").slice(0, 30),  // departure "SCHEDULED|note"
       line2: String(obj.arr || "").slice(0, 30),  // arrival "SCHEDULED|note"
       trend,
@@ -314,14 +314,14 @@ const SHIP24_KEY = process.env.SHIP24_API_KEY || "";
 export function isPackageTrackingConfigured(): boolean { return !!SHIP24_KEY; }
 
 const SHIP24_MILESTONES: Record<string, { label: string; symbol: string; delivered?: boolean }> = {
-  delivered: { label: "Delivered", symbol: "✅", delivered: true },
-  out_for_delivery: { label: "Out for delivery", symbol: "🚚" },
-  in_transit: { label: "In transit", symbol: "🚚" },
-  available_for_pickup: { label: "Ready for pickup", symbol: "📮" },
-  failed_attempt: { label: "Delivery attempted", symbol: "⚠️" },
-  exception: { label: "Delivery issue", symbol: "⚠️" },
-  info_received: { label: "Label created", symbol: "📦" },
-  pending: { label: "Tracking…", symbol: "📦" }
+  delivered: { label: "Delivered", symbol: "checkmark.circle.fill", delivered: true },
+  out_for_delivery: { label: "Out for delivery", symbol: "shippingbox.fill" },
+  in_transit: { label: "In transit", symbol: "shippingbox.fill" },
+  available_for_pickup: { label: "Ready for pickup", symbol: "shippingbox.fill" },
+  failed_attempt: { label: "Delivery attempted", symbol: "exclamationmark.triangle.fill" },
+  exception: { label: "Delivery issue", symbol: "exclamationmark.triangle.fill" },
+  info_received: { label: "Label created", symbol: "shippingbox.fill" },
+  pending: { label: "Tracking…", symbol: "shippingbox.fill" }
 };
 
 async function fetchShip24Status(number: string, carrier: string): Promise<{ line1: string; line2: string; symbol: string; delivered: boolean; eta: string } | null> {
@@ -379,7 +379,7 @@ export async function fetchPackageSnapshot(query: string): Promise<TrackerSnapsh
   }
   return {
     title: carrier || "Package",
-    symbol: "📦",
+    symbol: "shippingbox.fill",
     line1: SHIP24_KEY ? "Tracking…" : "Tap to track",
     line2: tail,
     trend: "flat",

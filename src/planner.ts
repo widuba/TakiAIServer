@@ -1200,7 +1200,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       action.trackKind = "package";
       action.trackQuery = q;
       action.liveTitle = pkg.carrier || "Package";
-      action.liveSymbol = snap?.symbol || "📦";
+      action.liveSymbol = snap?.symbol || "shippingbox.fill";
       action.line1 = snap?.line1 || "Tap to track";
       action.line2 = snap?.line2 || `#…${pkg.number.slice(-6)}`;
       action.trend = snap?.trend || "flat";

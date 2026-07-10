@@ -257,8 +257,12 @@ export function sendLiveActivityUpdate(
     const client = http2.connect(APNS_HOST);
     client.on("error", (err) => resolve({ token, ok: false, status: 0, reason: String(err) }));
 
-    const aps: Record<string, unknown> = { timestamp: Math.floor(Date.now() / 1000), event };
+    const now = Math.floor(Date.now() / 1000);
+    const aps: Record<string, unknown> = { timestamp: now, event };
     if (contentState) aps["content-state"] = contentState;
+    // If background updates stop reaching the phone, iOS can visually mark the
+    // information stale instead of presenting an old score, quote, or ETA as live.
+    if (event === "update") aps["stale-date"] = now + 10 * 60;
     if (event === "end") aps["dismissal-date"] = Math.floor(Date.now() / 1000);
     const payload = JSON.stringify({ aps });
 

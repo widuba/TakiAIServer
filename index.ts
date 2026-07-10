@@ -171,7 +171,9 @@ app.post("/api/unregister-la", (req, res) => {
 // Background engine: every minute, re-fetch each live tracker's data and push a
 // content-state update straight to its Live Activity — no app needed. Ends
 // activities past their max lifetime and prunes dead tokens.
-const LA_MAX_MS = 6 * 60 * 60 * 1000;
+// Stay just inside ActivityKit's eight-hour active lifetime while allowing a
+// full game, trading session, long flight, or delivery window to remain useful.
+const LA_MAX_MS = (7 * 60 + 45) * 60 * 1000;
 const deadToken = (r: { status: number; reason?: string }) =>
   r.status === 410 || r.reason === "BadDeviceToken" || r.reason === "Unregistered" || r.reason === "ExpiredProviderToken";
 
