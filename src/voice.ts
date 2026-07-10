@@ -77,7 +77,14 @@ export async function listVoices(): Promise<{ id: string; name: string }[]> {
 }
 
 // Synthesize text → base64 mp3. Returns "" on failure (caller falls back to text).
-export async function synthesize(text: string, voiceId?: string): Promise<string> {
+export function stabilityForVariability(variability?: number): number {
+  const v = Number.isFinite(variability) ? Math.max(0, Math.min(1, variability as number)) : 0.5;
+  // ElevenLabs stability is inverse to the user-facing control: lower stability
+  // yields a more expressive, variable delivery. Keep away from either extreme.
+  return Number((0.8 - v * 0.6).toFixed(2));
+}
+
+export async function synthesize(text: string, voiceId?: string, variability?: number): Promise<string> {
   if (!ELEVEN_KEY || !text.trim()) return "";
   const vid = voiceId && voiceId.trim() ? voiceId.trim() : VOICE_ID;
   try {
@@ -88,7 +95,7 @@ export async function synthesize(text: string, voiceId?: string): Promise<string
         body: JSON.stringify({
           text: text.slice(0, 2500),
           model_id: TTS_MODEL,
-          voice_settings: { stability: 0.5, similarity_boost: 0.75 }
+          voice_settings: { stability: stabilityForVariability(variability), similarity_boost: 0.75 }
         })
       }),
       20000, "TTS"

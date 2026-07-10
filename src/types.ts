@@ -314,6 +314,9 @@ export type ConversationState = {
   eventTranscriptText: string;
   // Full transcript text — used for general Q&A about earlier statements.
   fullTranscriptText: string;
+  // A tiny recency-oriented digest used to resolve elliptical follow-ups without
+  // making the model hunt through the whole transcript.
+  conversationFocusText: string;
   nowIso: string;
   timeZone: string;
 

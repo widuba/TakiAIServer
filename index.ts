@@ -819,7 +819,7 @@ app.post("/api/iap/notifications", async (req, res) => {
 });
 
 // User feedback on an answer / composed message / the app. Stored durably so the
-// owner can review what people flag. kind = "answer" | "message" | "app".
+// owner can review what people flag. kind = "answer" | "message" | "app" | "report".
 app.post("/api/feedback", async (req, res) => {
   const b = req.body || {};
   const entry = {
@@ -829,7 +829,12 @@ app.post("/api/feedback", async (req, res) => {
     rating: b.rating === "up" || b.rating === "down" ? b.rating : null,
     note: typeof b.note === "string" ? b.note.slice(0, 1000) : "",
     message: typeof b.message === "string" ? b.message.slice(0, 500) : "",
-    answer: typeof b.answer === "string" ? b.answer.slice(0, 1000) : ""
+    answer: typeof b.answer === "string" ? b.answer.slice(0, 1000) : "",
+    category: typeof b.category === "string" ? b.category.slice(0, 100) : "",
+    reportMessageId: typeof b.reportMessageId === "string" ? b.reportMessageId.slice(0, 100) : "",
+    chatId: typeof b.chatId === "string" ? b.chatId.slice(0, 100) : "",
+    chatTranscript: b.consent === true && typeof b.chatTranscript === "string" ? b.chatTranscript.slice(0, 20000) : "",
+    consent: b.consent === true
   };
   try {
     const list = await storeGet<any[]>("feedback", []);
@@ -1020,7 +1025,10 @@ async function runAssistant(state: ReturnType<typeof buildConversationState>, de
   }
   const plan = await withTimeout(planAssistantResponse(state), 45000, "Assistant plan");
   const finalized = finalizeResponse(plan, state);
-  if (finalized.spokenText && (finalized.action || finalized.memory?.pendingClarification)) {
+  // Voice action confirmations already come from the capability-aware planner.
+  // A second model call used only to restyle that fixed line added a full network
+  // round trip between understanding the request and starting TTS.
+  if (!voiceMode && finalized.spokenText && (finalized.action || finalized.memory?.pendingClarification)) {
     finalized.spokenText = await styleInCharacter(finalized.spokenText, state.userProfile, voiceMode);
   }
   // Voice replies must be SUPER short — clamp here so it applies to every answer
@@ -1101,15 +1109,19 @@ app.post("/api/assistant", async (req, res) => {
 app.post("/api/voice", async (req, res) => {
   if (!isVoiceConfigured()) { res.status(503).json({ error: "voice not configured (set ELEVENLABS_API_KEY)" }); return; }
   const audioBase64 = typeof req.body?.audioBase64 === "string" ? req.body.audioBase64 : "";
+  const deviceTranscript = typeof req.body?.transcript === "string" ? req.body.transcript.trim().slice(0, 4000) : "";
   const mime = typeof req.body?.mime === "string" ? req.body.mime : "audio/m4a";
   const rawContext = typeof req.body?.context === "string" ? req.body.context : "";
   const timeZone: string | undefined = typeof req.body?.timeZone === "string" ? req.body.timeZone : undefined;
   const deviceLocation: DeviceLocation | undefined = req.body?.deviceLocation;
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   const voiceId = typeof req.body?.voiceId === "string" ? req.body.voiceId : undefined;
+  const voiceVariability = typeof req.body?.voiceVariability === "number"
+    ? Math.max(0, Math.min(1, req.body.voiceVariability))
+    : 0.5;
   const styleProfiles = parseIncomingStyleProfiles(req.body?.styleProfiles);
   const userProfile = parseUserPersona(req.body?.profile, req.body?.addressUser);
-  if (!audioBase64) { res.status(400).json({ error: "audioBase64 required" }); return; }
+  if (!audioBase64 && !deviceTranscript) { res.status(400).json({ error: "audioBase64 or transcript required" }); return; }
 
   // Free tier: hard cap of voice questions regardless of credits.
   let freeTier = false;
@@ -1123,7 +1135,10 @@ app.post("/api/voice", async (req, res) => {
   }
 
   try {
-    const transcript = await transcribe(audioBase64, mime);
+    // Prefer Apple's on-device transcription when the phone supplied one. This
+    // removes an entire sequential cloud STT request from normal voice turns;
+    // audio remains the fallback for unsupported devices or uncertain results.
+    const transcript = deviceTranscript || await transcribe(audioBase64, mime);
     if (!transcript) {
       // Nothing intelligible (silence) — let the device re-listen or end.
       res.json({ transcript: "", spokenText: "", action: null, actions: null, empty: true });
@@ -1139,8 +1154,8 @@ app.post("/api/voice", async (req, res) => {
     if (freeTier && deviceId) voiceUsed = await noteVoiceQuestion(deviceId);
     const state = buildConversationState(transcript, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, true, deviceId);
     const result = await runAssistant(state, deviceId, true); // voice → surcharge applies
-    const audio = await synthesize(result.spokenText || "", voiceId);
-    res.json({ ...result, transcript, audioBase64: audio, mime: "audio/mpeg", voiceUsed });
+    const audio = await synthesize(result.spokenText || "", voiceId, voiceVariability);
+    res.json({ ...result, transcript, transcriptionSource: deviceTranscript ? "device" : "cloud", audioBase64: audio, mime: "audio/mpeg", voiceUsed });
   } catch (error) {
     console.error("Voice route error:", error);
     res.status(502).json({ error: "voice unavailable" });

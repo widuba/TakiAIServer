@@ -1,0 +1,155 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { capabilityAnswerFor } from "../src/capabilities.js";
+import { buildConversationState } from "../src/context.js";
+import { auditPlannerOutput } from "../src/plannerAudit.js";
+import { fastVoiceReply, looksLikePlainVoiceKnowledgeQuestion } from "../src/planner.js";
+import type { PlannerModelOutput } from "../src/types.js";
+import { blankAction } from "../src/types.js";
+import { resolveCalendarUpdateDates, validateAction } from "../src/validators.js";
+import { stabilityForVariability } from "../src/voice.js";
+
+function stateFor(message: string, turns: { role: "user" | "assistant"; text: string }[] = []) {
+  return buildConversationState(message, JSON.stringify({ chatMessages: turns }), undefined, "America/New_York");
+}
+
+function plan(overrides: Partial<PlannerModelOutput>): PlannerModelOutput {
+  return {
+    intent: "answer_only",
+    spokenText: "",
+    confidence: 0.95,
+    needsClarification: false,
+    clarifyingQuestion: null,
+    missing: [],
+    webQuery: null,
+    researchQuery: null,
+    wantsCalendar: false,
+    event: null,
+    action: null,
+    contact: null,
+    place: null,
+    ...overrides
+  };
+}
+
+test("conversation state keeps a recency digest and removes a duplicate current turn", () => {
+  const state = stateFor("What about Friday?", [
+    { role: "user", text: "How many steps did I walk yesterday?" },
+    { role: "assistant", text: "You walked 4,200 steps yesterday." },
+    { role: "user", text: "What about Friday?" }
+  ]);
+
+  assert.equal(state.transcript.length, 2);
+  assert.match(state.conversationFocusText, /How many steps did I walk yesterday/);
+  assert.match(state.conversationFocusText, /4,200 steps yesterday/);
+  assert.doesNotMatch(state.fullTranscriptText, /What about Friday/);
+});
+
+test("context preserves more than the old forty-turn window while staying bounded", () => {
+  const turns = Array.from({ length: 55 }, (_, i) => ({
+    role: (i % 2 ? "assistant" : "user") as "user" | "assistant",
+    text: `turn-${i}`
+  }));
+  const state = stateFor("continue", turns);
+  assert.equal(state.transcript.length, 55);
+  assert.match(state.fullTranscriptText, /turn-0/);
+  assert.match(state.fullTranscriptText, /turn-54/);
+});
+
+test("capability questions use the shipping contract but concrete commands keep planning", () => {
+  assert.match(capabilityAnswerFor("Are you able to control music?") || "", /^Yes\./);
+  assert.match(capabilityAnswerFor("What can Taki do?") || "", /HealthKit/);
+  assert.equal(capabilityAnswerFor("Can you call Mom?"), null);
+  assert.equal(capabilityAnswerFor("Can you set an alarm for 7?"), null);
+});
+
+test("low-confidence executable model plans are clarified instead of executed", () => {
+  const action = blankAction("maps_directions");
+  action.mapsDestination = "the restaurant";
+  const issue = auditPlannerOutput(
+    plan({ intent: "maps_directions", confidence: 0.42, action }),
+    stateFor("Take me there", [
+      { role: "user", text: "I am deciding where to eat." },
+      { role: "assistant", text: "What kind of food?" }
+    ])
+  );
+  assert.equal(issue?.reason, "low-confidence executable plan");
+  assert.match(issue?.question || "", /Where/);
+});
+
+test("an invented recipient is blocked even when the planner claims confidence", () => {
+  const action = blankAction("compose_message");
+  action.recipientName = "Jordan";
+  action.contactQuery = "Jordan";
+  action.body = "I'm running late.";
+  const issue = auditPlannerOutput(
+    plan({ intent: "compose_message", confidence: 0.99, action }),
+    stateFor("Tell him I'm running late", [{ role: "assistant", text: "Where are you headed?" }])
+  );
+  assert.equal(issue?.reason, "recipient was not grounded in user context");
+  assert.equal(issue?.question, "Who do you mean?");
+});
+
+test("a recipient from recent conversation is accepted", () => {
+  const action = blankAction("compose_message");
+  action.recipientName = "Chris";
+  action.contactQuery = "Chris";
+  action.body = "I'm running late.";
+  const issue = auditPlannerOutput(
+    plan({ intent: "compose_message", confidence: 0.95, action }),
+    stateFor("Tell him I'm running late", [{ role: "user", text: "I need to meet Chris downtown." }])
+  );
+  assert.equal(issue, null);
+});
+
+test("final action validation rejects impossible dates and unknown device values", () => {
+  const calendar = blankAction("calendar_create");
+  calendar.title = "Dentist";
+  calendar.startDate = "2026-07-10T15:00:00-04:00";
+  calendar.endDate = "2026-07-10T14:00:00-04:00";
+  assert.match(validateAction(calendar) || "", /exact date and time/);
+
+  const health = blankAction("health_query");
+  health.metric = "mood-vibes";
+  assert.match(validateAction(health) || "", /health measurement/);
+
+  const home = blankAction("home_control");
+  home.homeAction = "teleport";
+  assert.match(validateAction(home) || "", /control in your home/);
+});
+
+test("weekday calendar edits anchor to the event being edited", () => {
+  const resolved = resolveCalendarUpdateDates(
+    "Move it to Friday at 5 PM",
+    {
+      title: "Dentist appointment",
+      startDate: "2026-07-16T15:00:00-04:00",
+      endDate: "2026-07-16T16:00:00-04:00",
+      confidence: 1
+    },
+    "America/New_York",
+    "2026-07-10T17:00:00-04:00",
+    "2026-07-10T18:00:00-04:00"
+  );
+  assert.equal(resolved.startDate, "2026-07-17T17:00:00-04:00");
+  assert.equal(resolved.endDate, "2026-07-17T18:00:00-04:00");
+});
+
+test("simple voice turns bypass model planning", () => {
+  const state = buildConversationState("Thank you", "", undefined, "America/New_York", undefined, undefined, true);
+  assert.equal(fastVoiceReply(state), "You're welcome.");
+  assert.equal(fastVoiceReply(stateFor("Thank you")), null);
+});
+
+test("voice variability maps inversely to safe TTS stability", () => {
+  assert.equal(stabilityForVariability(0), 0.8);
+  assert.equal(stabilityForVariability(0.5), 0.5);
+  assert.equal(stabilityForVariability(1), 0.2);
+});
+
+test("obvious voice knowledge questions bypass action planning safely", () => {
+  const knowledge = buildConversationState("Why is the sky blue?", "", undefined, "America/New_York", undefined, undefined, true);
+  const calendar = buildConversationState("What is on my calendar?", "", undefined, "America/New_York", undefined, undefined, true);
+  assert.equal(looksLikePlainVoiceKnowledgeQuestion(knowledge), true);
+  assert.equal(looksLikePlainVoiceKnowledgeQuestion(calendar), false);
+});

@@ -45,7 +45,10 @@ export function buildConversationState(
   if (structured && Array.isArray(structured.chatMessages)) {
     for (const m of structured.chatMessages) {
       const role: "user" | "assistant" = m?.role === "assistant" ? "assistant" : "user";
-      const text = String(m?.text || "").trim();
+      // Bound individual turns so pasted documents cannot crowd every useful
+      // recent exchange out of the planner prompt.
+      const rawText = String(m?.text || "").trim();
+      const text = rawText.length > 4000 ? `${rawText.slice(0, 4000)}...` : rawText;
       if (text) transcript.push({ role, text });
     }
   }
@@ -60,14 +63,38 @@ export function buildConversationState(
     transcript.pop();
   }
 
-  const recent = transcript.slice(-40);
-  const lines = recent.map((t) => `${t.role === "assistant" ? "Assistant" : "User"}: ${t.text}`);
+  const maxTurns = voiceMode ? 40 : 64;
+  const maxChars = voiceMode ? 14000 : 28000;
+  const recent: TranscriptTurn[] = [];
+  let usedChars = 0;
+  for (let i = transcript.length - 1; i >= 0 && recent.length < maxTurns; i -= 1) {
+    const turn = transcript[i];
+    const cost = turn.text.length + 16;
+    if (recent.length >= 6 && usedChars + cost > maxChars) break;
+    recent.unshift(turn);
+    usedChars += cost;
+  }
+
+  const lines = recent.map((t, index) =>
+    `Turn ${index + 1} ${t.role === "assistant" ? "Assistant" : "User"}: ${t.text}`
+  );
 
   const fullTranscriptText = lines.join("\n").trim();
-  const eventTranscriptText = lines
-    .filter((line) => !isCalendarConfirmationLine(line))
+  const eventTranscriptText = recent
+    .filter((turn) => !isCalendarConfirmationLine(`${turn.role === "assistant" ? "Assistant" : "User"}: ${turn.text}`))
+    .map((turn, index) => `Turn ${index + 1} ${turn.role === "assistant" ? "Assistant" : "User"}: ${turn.text}`)
     .join("\n")
     .trim();
+
+  const lastUser = [...recent].reverse().find((turn) => turn.role === "user")?.text || "";
+  const lastAssistant = [...recent].reverse().find((turn) => turn.role === "assistant")?.text || "";
+  const recentUsers = recent.filter((turn) => turn.role === "user");
+  const previousUser = recentUsers.length > 1 ? recentUsers[recentUsers.length - 2].text : "";
+  const conversationFocusText = [
+    previousUser ? `Previous user request: ${previousUser}` : "",
+    lastUser ? `Most recent user request: ${lastUser}` : "",
+    lastAssistant ? `Most recent assistant response: ${lastAssistant}` : ""
+  ].filter(Boolean).join("\n");
 
   const decoded = decodeSavedMemory(structured);
 
@@ -76,6 +103,7 @@ export function buildConversationState(
     transcript: recent,
     eventTranscriptText,
     fullTranscriptText,
+    conversationFocusText,
     nowIso: new Date().toISOString(),
     // Prefer the user's device timezone so "Thursday at 4" lands on the user's
     // calendar, not the server's. Fall back to the server default.

@@ -72,8 +72,10 @@ import {
   parsePhotosCommand,
   parsePhotosSearch
 } from "./tools.js";
-import { buildCalendarCreateAction } from "./validators.js";
+import { buildCalendarCreateAction, resolveCalendarUpdateDates } from "./validators.js";
 import { personaPromptBlock, GUARDRAILS } from "./persona.js";
+import { capabilityAnswerFor, capabilityPromptBlock } from "./capabilities.js";
+import { auditPlannerOutput } from "./plannerAudit.js";
 import { parseTrackCommand, fetchTrackerSnapshot, fetchAssetPrice, extractFlightCode } from "./tracker.js";
 import { looksLikePlanDay, generateDayPlan } from "./dayplan.js";
 import { looksLikeCookingRequest, generateRecipe, parseRecipeImport, importRecipeFromUrl } from "./cooking.js";
@@ -152,6 +154,37 @@ function wantsRealAnswer(message: string): boolean {
   if (m.includes("?")) return true;
   if (/^(what|why|how|who|whom|whose|when|where|which|is|are|was|were|do|does|did|can|could|would|will|should|explain|define|describe|tell me|give me|list|compare|calculate|solve|convert|translate|summarize|summarise|what's|whats|who's|whos|name|find|help me|teach me|recommend|suggest)\b/.test(m)) return true;
   return m.split(/\s+/).length > 6;
+}
+
+export function fastVoiceReply(state: ConversationState): string | null {
+  if (!state.voiceMode) return null;
+  const m = state.message.trim().toLowerCase().replace(/[.!?]+$/, "").trim();
+  if (/^(hi|hello|hey|hey taki|hi taki|hello taki|good morning|good afternoon|good evening)$/.test(m)) {
+    return "Hey! What can I help with?";
+  }
+  if (/^(thanks|thank you|thanks taki|thank you taki|appreciate it)$/.test(m)) return "You're welcome.";
+  if (/^(ok|okay|got it|cool|sounds good|all right|alright)$/.test(m)) return "Got it.";
+  if (/^(how are you|how's it going|hows it going)$/.test(m)) return "I'm doing well. What can I help with?";
+
+  const now = new Date(state.nowIso);
+  if (/^(what time is it|what's the time|whats the time|tell me the time|current time)$/.test(m)) {
+    const time = new Intl.DateTimeFormat("en-US", { timeZone: state.timeZone, hour: "numeric", minute: "2-digit" }).format(now);
+    return `It's ${time}.`;
+  }
+  if (/^(what day is it|what's the date|whats the date|what is today's date|what is todays date)$/.test(m)) {
+    const date = new Intl.DateTimeFormat("en-US", { timeZone: state.timeZone, weekday: "long", month: "long", day: "numeric" }).format(now);
+    return `It's ${date}.`;
+  }
+  return null;
+}
+
+export function looksLikePlainVoiceKnowledgeQuestion(state: ConversationState): boolean {
+  if (!state.voiceMode) return false;
+  const m = state.message.trim().toLowerCase();
+  if (!/^(why\b|explain\b|define\b|what (?:is|are|does)\b|how (?:does|do|is|are|can)\b)/.test(m)) return false;
+  // These terms can describe phone-side actions or personal data. They keep the
+  // full planner even when phrased as a question, preserving capability routing.
+  return !/\b(calendar|events?|appointments?|reminders?|text|message|email|call|contacts?|maps?|directions?|navigate|get to|weather|location|near me|health|healthkit|steps?|sleep|heart rate|weight|blood pressure|photos?|pictures?|music|songs?|homekit|lights?|locks?|thermostat|alarms?|timers?|stopwatch|apps?|lists?|expenses?|habits?|routines?|automations?|track|alerts?|flight|score|price|stock|crypto|current|latest)\b/.test(m);
 }
 
 function actionPlan(
@@ -296,6 +329,11 @@ ${JSON.stringify(memorySummary, null, 2)}
 Current user message:
 "${state.message.replace(/"/g, '\\"')}"
 
+RECENT CONVERSATION FOCUS (use this first for short follow-ups):
+${state.conversationFocusText || "(none)"}
+
+${capabilityPromptBlock()}
+
 GENERAL RULES
 - Prefer meaning over literal words.
 - Resolve pronouns from the transcript/memory: "it/that/the game/the event" -> the most
@@ -304,12 +342,21 @@ GENERAL RULES
 - Current transcript outranks saved memory. Only fall back to memory if the transcript
   has nothing relevant.
 - Never invent live/current facts (sports schedules, scores, prices, news, releases).
+- A short follow-up usually continues the most recent unresolved subject. Resolve it from
+  the recent focus, then the transcript, then structured memory. If two plausible subjects
+  remain, ask which one; do not silently pick one.
+- Confidence is the probability that BOTH the intent and every action detail are supported
+  by the user's words, transcript, device context, or structured memory. Use below 0.68 when
+  any required detail is ambiguous. Never raise confidence just because an invented detail
+  sounds plausible.
 
 MESSAGES / EMAILS — write the ACTUAL body a person would send (never the command):
 - "Text Chris and tell him I love him" -> body "I love you."
 - "Ask Chris if he's ready to go" -> body "Are you ready to go?"
 - "Tell Chris I'm proud of what he's done" -> body "I'm proud of what you've done."
 - "Text Mom I'll be late" -> body "I'll be late."
+- "Tell him I am running late" is already a complete message body. Do NOT ask how
+  late, why, or for any detail the user did not request; only resolve who "him" is.
 Put the resolved person in contact { name } and the action recipientName/contactQuery.
 
 RESEARCH-BACKED messages/emails — when the user wants to text/email/tell someone ABOUT
@@ -475,7 +522,7 @@ Return exactly:
   return {
     intent: (parsed.intent || "answer_only") as PlannerIntent,
     spokenText: String(parsed.spokenText || ""),
-    confidence: Number(parsed.confidence ?? 0.5),
+    confidence: Math.max(0, Math.min(1, Number(parsed.confidence ?? 0.5))),
     needsClarification: Boolean(parsed.needsClarification),
     clarifyingQuestion: parsed.clarifyingQuestion ? String(parsed.clarifyingQuestion) : null,
     missing: Array.isArray(parsed.missing) ? parsed.missing.map((m: any) => String(m)) : [],
@@ -631,6 +678,16 @@ async function researchMessageBody(
 export async function planAssistantResponse(state: ConversationState): Promise<AssistantPlan> {
   if (!state.message.trim()) {
     return answerPlan("What would you like me to do?");
+  }
+
+  const instantVoiceReply = fastVoiceReply(state);
+  if (instantVoiceReply) {
+    return answerPlan(instantVoiceReply, { lastIntent: "answer_only" });
+  }
+
+  const capabilityAnswer = capabilityAnswerFor(state.message);
+  if (capabilityAnswer) {
+    return answerPlan(capabilityAnswer, { lastIntent: "answer_only" });
   }
 
   // Bare command verb with no details -> ask for the missing info directly.
@@ -1415,6 +1472,14 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
   const pendingDone = tryCompletePendingCalendar(state);
   if (pendingDone) return pendingDone;
 
+  // Most common device actions have already been handled above. An obvious,
+  // static knowledge question can now go straight to the answer model instead
+  // of paying for a planner request first. This measured about twice as fast in
+  // the live voice path while capability-shaped questions still keep planning.
+  if (looksLikePlainVoiceKnowledgeQuestion(state)) {
+    return answerPlan(await getGeneralAnswer(state), { lastIntent: "answer_only" });
+  }
+
   let plan: PlannerModelOutput;
   try {
     plan = await runPlannerModel(state);
@@ -1437,6 +1502,11 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       createdAt: state.nowIso
     };
     return clarifyPlan(question, pending);
+  }
+
+  const auditIssue = auditPlannerOutput(plan, state);
+  if (auditIssue) {
+    return clarifyPlan(auditIssue.question, auditIssue.pending);
   }
 
   switch (plan.intent) {
@@ -1614,14 +1684,25 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         location = state.priorEvent.location;
       }
 
+      // A weekday-only edit is relative to the event being edited, not blindly
+      // relative to today. "Move Thursday's event to Friday" means the Friday
+      // beside that event; a time-only edit keeps the event's original date.
+      const updateDates = resolveCalendarUpdateDates(
+        state.message,
+        state.priorEvent,
+        state.timeZone,
+        a.startDate ? String(a.startDate) : null,
+        a.endDate ? String(a.endDate) : null
+      );
+
       const action: AssistantAction = {
         ...blankAction("calendar_update"),
         calendarQuery: query,
         title: newTitle,
         location,
         notes: a.notes ? String(a.notes) : null,
-        startDate: a.startDate ? String(a.startDate) : null,
-        endDate: a.endDate ? String(a.endDate) : null
+        startDate: updateDates.startDate,
+        endDate: updateDates.endDate
       };
       return actionPlan(`I'll update ${query}.`, action, { lastIntent: "calendar_update" });
     }
@@ -1948,7 +2029,13 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       // For a real question/request, generate a strong, grounded answer
       // (gemini-2.5-pro + search) instead of the planner's quick flash line.
       // Keep the quick line only for trivial chit-chat / acks.
-      const spoken = inline && !wantsRealAnswer(state.message) ? inline : await getGeneralAnswer(state);
+      // In voice mode, the planner's answer is already concise and in character.
+      // Reusing it removes a second sequential Gemini request from ordinary
+      // questions. Current/live requests have already been routed to grounded
+      // tools above, so this shortcut does not bypass freshness checks.
+      const spoken = inline && (state.voiceMode || !wantsRealAnswer(state.message))
+        ? inline
+        : await getGeneralAnswer(state);
       return answerPlan(spoken, { lastIntent: "answer_only" });
     }
   }

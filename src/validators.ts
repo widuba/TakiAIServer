@@ -14,6 +14,7 @@ import {
 } from "./memory.js";
 import {
   addMinutesToIsoLocal,
+  addDaysToYmd,
   extractCalendarLocation,
   extractCalendarTitle,
   formatEventDateTime,
@@ -51,6 +52,11 @@ export function validateAction(action: AssistantAction | null): string | null {
     if (looksLikeCommandGarbageTitle(action.title)) {
       return "I did not understand the event title well enough. What should I call the calendar event?";
     }
+    const start = Date.parse(action.startDate);
+    const end = Date.parse(action.endDate);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      return "What exact date and time should I use for that event?";
+    }
   }
 
   if (action.type === "calendar_update") {
@@ -79,11 +85,48 @@ export function validateAction(action: AssistantAction | null): string | null {
 
   if (action.type === "reminder_create") {
     if (!action.title || !action.title.trim()) return "What should I remind you about?";
+    if (action.dueDate && !Number.isFinite(Date.parse(action.dueDate))) return "When should I remind you?";
   }
 
   if (action.type === "maps_search" && !action.mapsQuery) return "What should I search for in Maps?";
   if (action.type === "maps_directions" && !action.mapsDestination) return "Where do you want directions to?";
   if (action.type === "open_app" && !action.appUrl && !action.appName) return "Which app should I open?";
+
+  if (action.type === "alarm_set" || action.type === "timer_set") {
+    if (!action.startDate || !Number.isFinite(Date.parse(action.startDate))) {
+      return action.type === "alarm_set" ? "What time should I set the alarm for?" : "How long should the timer run for?";
+    }
+  }
+
+  if (action.type === "health_query") {
+    const allowed = new Set([
+      "steps", "distance", "cycling", "energy", "restingenergy", "dietaryenergy", "exercise", "stand",
+      "flights", "water", "heartrate", "restingheartrate", "walkingheartrate", "hrv", "vo2max", "weight",
+      "bmi", "bodyfat", "leanmass", "height", "oxygen", "respiratory", "temperature", "glucose",
+      "bloodpressure", "sleep"
+    ]);
+    if (!action.metric || !allowed.has(action.metric.toLowerCase())) return "Which health measurement should I check?";
+  }
+
+  if (action.type === "music_control") {
+    const allowed = new Set(["play", "pause", "resume", "next", "previous"]);
+    if (!action.musicAction || !allowed.has(action.musicAction)) return "What should I play or control?";
+  }
+
+  if (action.type === "home_control") {
+    const allowed = new Set(["lightsOn", "lightsOff", "lock", "unlock", "thermostat"]);
+    if (!action.homeAction || !allowed.has(action.homeAction)) return "What should I control in your home?";
+    if (action.homeAction === "thermostat" && !Number.isFinite(action.homeValue)) return "What temperature should I set?";
+  }
+
+  if (action.type === "photos_search" && !action.photoQuery?.trim()) return "What should I search for in your photos?";
+
+  if (action.type === "contact_create") {
+    if (!action.recipientName?.trim()) return "What is the contact's name?";
+    if (!action.recipientPhone?.trim() && !action.emailAddress?.trim()) return "What is their phone number or email?";
+  }
+
+  if (action.type === "memory_save" && !action.memoryFact?.trim()) return "What would you like me to remember?";
 
   return null;
 }
@@ -135,6 +178,78 @@ export function buildCalendarCreateAction(
     location: a?.location ? String(a.location) : extractCalendarLocation(message) || null,
     notes: a?.notes ? String(a.notes) : null
   };
+}
+
+function localEventParts(iso: string, timeZone: string): { ymd: string; hour: number; minute: number } | null {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return null;
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23"
+    }).formatToParts(date);
+    const value = (type: string) => parts.find((part) => part.type === type)?.value || "";
+    const year = value("year"), month = value("month"), day = value("day");
+    const hour = Number(value("hour")), minute = Number(value("minute"));
+    if (!year || !month || !day || !Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+    return { ymd: `${year}-${month}-${day}`, hour, minute };
+  } catch {
+    return null;
+  }
+}
+
+const WEEKDAYS: Record<string, number> = {
+  sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6
+};
+
+// Resolve calendar edits against the event itself. This avoids moving a future
+// Thursday event backward to "this Friday" when the user says "move it to
+// Friday", and preserves the original date for a time-only change.
+export function resolveCalendarUpdateDates(
+  message: string,
+  priorEvent: EventMemory | null,
+  timeZone: string,
+  modelStartDate: string | null,
+  modelEndDate: string | null
+): { startDate: string | null; endDate: string | null } {
+  if (!priorEvent) return { startDate: modelStartDate, endDate: modelEndDate };
+  const original = localEventParts(priorEvent.startDate, timeZone);
+  if (!original) return { startDate: modelStartDate, endDate: modelEndDate };
+
+  const weekdayMatch = message.toLowerCase().match(/\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
+  const hasOtherDate = /\b(today|tomorrow|tonight|yesterday|\d{1,2}[/-]\d{1,2}|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2})\b/i.test(message);
+  let targetYmd: string | null = null;
+
+  if (weekdayMatch && !hasOtherDate) {
+    const originalDay = new Date(`${original.ymd}T12:00:00Z`).getUTCDay();
+    let delta = (WEEKDAYS[weekdayMatch[1]] - originalDay + 7) % 7;
+    if (/\bnext\s+(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i.test(message) && delta === 0) delta = 7;
+    targetYmd = addDaysToYmd(original.ymd, delta);
+  } else {
+    targetYmd = resolveRelativeYmd(message, timeZone);
+  }
+
+  const requestedTime = resolveTimeFromMessage(message);
+  const changesTime = !!requestedTime;
+  const changesDate = !!targetYmd;
+  if (!changesDate && !changesTime) return { startDate: modelStartDate, endDate: modelEndDate };
+
+  const ymd = targetYmd || original.ymd;
+  const hour = requestedTime?.hour ?? original.hour;
+  const minute = requestedTime?.minute ?? original.minute;
+  const startDate = isoFromYmdTime(ymd, hour, minute, timeZone);
+
+  const oldStart = Date.parse(priorEvent.startDate);
+  const oldEnd = Date.parse(priorEvent.endDate);
+  const durationMinutes = Number.isFinite(oldStart) && Number.isFinite(oldEnd) && oldEnd > oldStart
+    ? Math.max(1, Math.round((oldEnd - oldStart) / 60000))
+    : 60;
+  return { startDate, endDate: addMinutesToIsoLocal(startDate, durationMinutes) };
 }
 
 /* ---- Spoken/action synchronization -------------------------------------- */
