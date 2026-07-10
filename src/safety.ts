@@ -129,9 +129,12 @@ export async function recordViolation(identity: string, v: Violation): Promise<S
 /* ---- Associations + ban list (for cascade bans) ------------------------- */
 interface Assoc { devices: string[]; ips: string[]; }
 interface BanList { identities: string[]; devices: string[]; ips: string[]; }
+export interface BanImpact { identities: string[]; devices: string[]; ips: string[]; }
+interface TestRestriction { identity: string; expiresAt: number; }
 const BAN_KEY = "safety:banlist";
 function assocKey(id: string): string { return `safety:assoc:${keyify(id)}`; }
 function devKey(dev: string): string { return `safety:dev:${keyify(dev)}`; } // device -> identities seen on it
+function testRestrictionKey(identity: string): string { return `safety:test-restriction:${keyify(identity)}`; }
 
 export async function recordAssoc(identity: string, deviceId?: string, ip?: string): Promise<void> {
   const a = await storeGet<Assoc>(assocKey(identity), { devices: [], ips: [] });
@@ -177,6 +180,30 @@ export async function isBanned(identity: string, deviceId?: string, ip?: string)
   return false;
 }
 
+// Reversible, identity-only block for testing the complete banned-account app
+// experience. It never writes to the permanent identity/device/IP ban lists.
+export async function setTestRestriction(identity: string, minutes = 5): Promise<TestRestriction> {
+  const safeMinutes = Math.max(1, Math.min(30, Math.round(minutes)));
+  const restriction = { identity, expiresAt: Date.now() + safeMinutes * 60_000 };
+  await storeSet(testRestrictionKey(identity), restriction);
+  return restriction;
+}
+
+export async function clearTestRestriction(identity: string): Promise<void> {
+  await storeSet(testRestrictionKey(identity), null);
+}
+
+export async function isTestRestricted(identity: string): Promise<boolean> {
+  if (!identity) return false;
+  const restriction = await storeGet<TestRestriction | null>(testRestrictionKey(identity), null);
+  if (!restriction || restriction.identity !== identity) return false;
+  if (restriction.expiresAt <= Date.now()) {
+    await clearTestRestriction(identity);
+    return false;
+  }
+  return true;
+}
+
 export async function reinstate(identity: string): Promise<void> {
   const a = await getSafetyAccount(identity);
   a.status = "active"; a.strikes = 0; a.violations = [];
@@ -184,9 +211,8 @@ export async function reinstate(identity: string): Promise<void> {
   await indexRemove(identity);
 }
 
-// Terminate + permanently ban the identity, its devices/IPs, and any other
-// identities seen on those devices. No appeal.
-export async function terminateAndBan(identity: string): Promise<{ identities: string[]; devices: string[]; ips: string[] }> {
+// Calculate the exact permanent-ban cascade without modifying any account.
+export async function previewTermination(identity: string): Promise<BanImpact> {
   const assoc = await storeGet<Assoc>(assocKey(identity), { devices: [], ips: [] });
   const idset = new Set<string>([identity]);
   const devset = new Set<string>(assoc.devices);
@@ -201,17 +227,24 @@ export async function terminateAndBan(identity: string): Promise<{ identities: s
   // Apple ID (identity is a device number; devices stay separate but linked).
   const sub = await appleForDevice(identity);
   if (sub) for (const d of await devicesForApple(sub)) { devset.add(d); idset.add(d); }
+  return { identities: Array.from(idset), devices: Array.from(devset), ips: Array.from(ipset) };
+}
+
+// Terminate + permanently ban the identity, its devices/IPs, and any other
+// identities seen on those devices. No appeal.
+export async function terminateAndBan(identity: string): Promise<BanImpact> {
+  const impact = await previewTermination(identity);
   const b = await getBanList();
-  b.identities = Array.from(new Set([...b.identities, ...idset]));
-  b.devices = Array.from(new Set([...b.devices, ...devset]));
-  b.ips = Array.from(new Set([...b.ips, ...ipset]));
+  b.identities = Array.from(new Set([...b.identities, ...impact.identities]));
+  b.devices = Array.from(new Set([...b.devices, ...impact.devices]));
+  b.ips = Array.from(new Set([...b.ips, ...impact.ips]));
   await storeSet(BAN_KEY, b);
-  for (const i of idset) {
+  for (const i of impact.identities) {
     const a = await getSafetyAccount(i);
     a.status = "terminated"; await saveSafetyAccount(a);
     await indexRemove(i);
   }
-  return { identities: Array.from(idset), devices: Array.from(devset), ips: Array.from(ipset) };
+  return impact;
 }
 
 // The admin review queue: every currently-suspended account + its retained

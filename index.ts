@@ -24,7 +24,7 @@ import { isDurable, storeGet, storeSet } from "./src/store.js";
 import { summary as creditSummary, spend, reset as resetCredits, costForRequest, isFreeVoice, paidVoiceCost, noteFreeVoice, tierCatalog, grantForTransaction, downgradeToFree, revokeSubscription, noteVoiceQuestion, grantCredits, topupPriceCents, topupCentsPerCredit, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, type Tier } from "./src/credits.js";
 import { verifyTransaction, linkTransactionIdentity, getTransactionIdentity, verifyNotification } from "./src/iap.js";
 import { verifyAppleIdentityToken } from "./src/appleauth.js";
-import { recordAssoc, isBanned, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, linkApple, devicesForApple, SUSPENDED_MSG, BANNED_MSG, promptExtractionMessageForMode } from "./src/safety.js";
+import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, linkApple, devicesForApple, SUSPENDED_MSG, BANNED_MSG, promptExtractionMessageForMode } from "./src/safety.js";
 import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, identitiesForIp, allUsers, deleteUser } from "./src/users.js";
 import { TIERS, CREDIT_USD } from "./src/credits.js";
 import { transcribe, synthesize, listVoices, isVoiceConfigured } from "./src/voice.js";
@@ -509,7 +509,7 @@ app.get("/api/credits", async (req, res) => {
     const dev = deviceId.startsWith("apple:") ? undefined : deviceId;
     await recordAssoc(deviceId, dev, ip);
     const acct = await getSafetyAccount(deviceId);
-    if (acct.status === "terminated" || (await isBanned(deviceId, dev, ip))) { access = "banned"; accessMessage = BANNED_MSG; }
+    if (acct.status === "terminated" || (await isBanned(deviceId, dev, ip)) || (await isTestRestricted(deviceId))) { access = "banned"; accessMessage = BANNED_MSG; }
     else if (acct.status === "suspended") { access = "suspended"; accessMessage = SUSPENDED_MSG; }
   } catch (e) { console.error("credits access check:", e); }
   res.json({ ...(await creditSummary(deviceId)), tiers: tierCatalog(), access, accessMessage });
@@ -881,6 +881,31 @@ app.post("/api/admin/reinstate", async (req, res) => {
   res.json({ ok: true, identity, status: "active" });
 });
 
+// Read-only preview of the exact permanent-ban cascade.
+app.post("/api/admin/terminate-preview", async (req, res) => {
+  if (req.body?.secret !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return; }
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  res.json({ ok: true, identity, impact: await previewTermination(identity) });
+});
+
+// Temporary identity-only restriction for safely testing the blocked app state.
+app.post("/api/admin/test-restrict", async (req, res) => {
+  if (req.body?.secret !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return; }
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  const restriction = await setTestRestriction(identity, Number(req.body?.minutes) || 5);
+  res.json({ ok: true, identity, testOnly: true, expiresAt: restriction.expiresAt });
+});
+
+app.post("/api/admin/test-restrict-clear", async (req, res) => {
+  if (req.body?.secret !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return; }
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  await clearTestRestriction(identity);
+  res.json({ ok: true, identity, testOnly: true, cleared: true });
+});
+
 // Terminate + permanently ban the identity, its devices/IPs, and any other
 // identities seen on the same device(s). No appeal.
 app.post("/api/admin/terminate", async (req, res) => {
@@ -991,7 +1016,7 @@ async function safetyGate(identity: string, message: string, req: any, voiceMode
   try {
     await recordAssoc(identity, dev, ip);
     await noteUser(identity, ip, String(req.headers?.["user-agent"] || ""));
-    if (await isBanned(identity, dev, ip)) return { message: BANNED_MSG, block: "banned" };
+    if ((await isBanned(identity, dev, ip)) || (await isTestRestricted(identity))) return { message: BANNED_MSG, block: "banned" };
     const acct = await getSafetyAccount(identity);
     if (acct.status !== "active") return { message: SUSPENDED_MSG, block: "suspended" };
     // Prompt/instruction extraction: never help, break character with a fixed
