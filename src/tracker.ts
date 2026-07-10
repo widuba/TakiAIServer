@@ -1,5 +1,5 @@
 import { ai, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, TIME_ZONE } from "./ai.js";
-import { withTimeout } from "./util.js";
+import { safeParseJsonObject, withTimeout } from "./util.js";
 import {
   extractFlightCode,
   hasExplicitFinanceCue,
@@ -244,9 +244,9 @@ If it hasn't started yet, set line1 to the matchup abbreviations with no scores 
       ai.models.generateContent({ model: RESEARCH_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }] } } as any),
       RESEARCH_TIMEOUT_MS, "Sports score"
     );
-    let text = (res.text || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+    const text = (res.text || "").trim();
     if (/^null$/i.test(text)) return null;
-    const obj = JSON.parse(text);
+    const obj = safeParseJsonObject(text);
     if (!obj || typeof obj.line1 !== "string") return null;
     return {
       title: String(obj.title || query).slice(0, 40),
@@ -287,10 +287,14 @@ Use the user's local timezone (${timeZone}). Always include the '|note' part. If
       ai.models.generateContent({ model: RESEARCH_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }] } } as any),
       RESEARCH_TIMEOUT_MS, "Flight status"
     );
-    let text = (res.text || "").trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+    const text = (res.text || "").trim();
     if (/^null$/i.test(text)) return null;
-    const obj = JSON.parse(text);
+    const obj = safeParseJsonObject(text);
     if (!obj || (typeof obj.dep !== "string" && typeof obj.status !== "string")) return null;
+    // Grounded search still needs entity validation. Never attach another
+    // flight's times to the requested code.
+    const normalizedTitle = String(obj.title || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (!normalizedTitle.includes(flight)) return null;
     const trend = obj.trend === "up" || obj.trend === "down" ? obj.trend : "flat";
     const color = (c: any) => (c === "green" || c === "yellow" || c === "red" ? c : "green");
     return {

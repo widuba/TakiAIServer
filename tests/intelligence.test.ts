@@ -8,6 +8,7 @@ import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
 import { resolveCalendarUpdateDates, validateAction } from "../src/validators.js";
 import { stabilityForVariability } from "../src/voice.js";
+import { safeParseJsonObject } from "../src/util.js";
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
 import { parseTrackCommand } from "../src/tracker.js";
 import { looksLikeFlightQuestion } from "../src/tools.js";
@@ -197,4 +198,11 @@ test("flight status questions work without requiring the word flight", () => {
   assert.equal(looksLikeFlightQuestion("Where is DL 456?"), true);
   assert.equal(looksLikeFlightQuestion("When does United 123 land?"), true);
   assert.equal(normalizeTrackerKind("finance", "UA123"), "flight");
+});
+
+test("grounded tracker JSON survives prose and markdown wrappers", () => {
+  assert.deepEqual(safeParseJsonObject("Result:\n```json\n{\"title\":\"UA123\",\"status\":\"On time\"}\n```"), {
+    title: "UA123",
+    status: "On time"
+  });
 });
