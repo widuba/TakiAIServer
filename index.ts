@@ -17,6 +17,7 @@ import {
   registerLiveActivity, unregisterLiveActivity, getLiveActivities, sendLiveActivityUpdate
 } from "./src/push.js";
 import { cachedTrackerSnapshot } from "./src/tracker.js";
+import { extractFlightCode, normalizeTrackerKind } from "./src/entityClassifier.js";
 import { setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
 import { isDurable, storeGet, storeSet } from "./src/store.js";
@@ -153,10 +154,13 @@ app.post("/api/register-la", (req, res) => {
     res.status(400).json({ error: "id and token required" });
     return;
   }
+  const meta = req.body?.meta && typeof req.body.meta === "object" ? req.body.meta : {};
+  const requestedKind = typeof req.body?.kind === "string" ? req.body.kind : "finance";
+  const query = typeof meta?.query === "string" ? meta.query : "";
   registerLiveActivity({
     id,
-    kind: typeof req.body?.kind === "string" ? req.body.kind : "finance",
-    meta: req.body?.meta && typeof req.body.meta === "object" ? req.body.meta : {},
+    kind: normalizeTrackerKind(requestedKind, query),
+    meta,
     token
   });
   res.json({ ok: true, configured: isPushConfigured() });
@@ -299,15 +303,17 @@ setInterval(() => { void tickNudges(); }, 60 * 1000);
 // Live finance/sports snapshot for an active Live Activity. The device polls
 // this to keep the lock-screen / Dynamic Island tracker fresh.
 app.get("/api/track", async (req, res) => {
-  const kind = typeof req.query.kind === "string" ? req.query.kind : "";
+  const requestedKind = typeof req.query.kind === "string" ? req.query.kind : "";
   const query = typeof req.query.q === "string" ? req.query.q : "";
+  const kind = normalizeTrackerKind(requestedKind, query);
   const tz = typeof req.query.tz === "string" ? req.query.tz : undefined;
   if ((kind !== "finance" && kind !== "sports" && kind !== "flight" && kind !== "package") || !query) {
     res.status(400).json({ error: "kind (finance|sports|flight|package) and q are required" });
     return;
   }
   try {
-    const snap = await withTimeout(cachedTrackerSnapshot(kind, query, tz), 25000, "Track snapshot");
+    const safeQuery = kind === "flight" ? extractFlightCode(query) || query : query;
+    const snap = await withTimeout(cachedTrackerSnapshot(kind, safeQuery, tz), 25000, "Track snapshot");
     if (!snap) {
       res.status(502).json({ error: "tracker unavailable" });
       return;

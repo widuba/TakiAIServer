@@ -8,6 +8,9 @@ import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
 import { resolveCalendarUpdateDates, validateAction } from "../src/validators.js";
 import { stabilityForVariability } from "../src/voice.js";
+import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
+import { parseTrackCommand } from "../src/tracker.js";
+import { looksLikeFlightQuestion } from "../src/tools.js";
 
 function stateFor(message: string, turns: { role: "user" | "assistant"; text: string }[] = []) {
   return buildConversationState(message, JSON.stringify({ chatMessages: turns }), undefined, "America/New_York");
@@ -152,4 +155,46 @@ test("obvious voice knowledge questions bypass action planning safely", () => {
   const calendar = buildConversationState("What is on my calendar?", "", undefined, "America/New_York", undefined, undefined, true);
   assert.equal(looksLikePlainVoiceKnowledgeQuestion(knowledge), true);
   assert.equal(looksLikePlainVoiceKnowledgeQuestion(calendar), false);
+});
+
+test("flight-number shapes outrank bare ticker detection", () => {
+  for (const text of [
+    "Track UA 123",
+    "track ua123",
+    "Follow UAL-123",
+    "Track United 123",
+    "Track United Airlines flight 123",
+    "Track flight 123 on United",
+    "Monitor B6 12"
+  ]) {
+    const parsed = parseTrackCommand(text);
+    assert.equal(parsed?.kind, "flight", text);
+  }
+  assert.equal(parseTrackCommand("Track UA 123")?.query, "UA123");
+  assert.equal(extractFlightCode("flight 123 on United"), "UA123");
+});
+
+test("explicit finance language still outranks a code-number collision", () => {
+  assert.equal(parseTrackCommand("Track BA 123 stock price")?.kind, "finance");
+  assert.equal(parseTrackCommand("Track AAPL")?.kind, "finance");
+  assert.equal(normalizeTrackerKind("finance", "BA 123 stock"), "finance");
+});
+
+test("explicit entity words resolve collisions before bare identifier shape", () => {
+  assert.equal(parseTrackCommand("Track UA 123 game")?.kind, "sports");
+  assert.equal(parseTrackCommand("Track flight UA 123 game")?.kind, "flight");
+  assert.equal(parseTrackCommand("Track UA 123 stock")?.kind, "finance");
+});
+
+test("ordinary words followed by years are not mistaken for flights", () => {
+  assert.equal(extractFlightCode("Track my progress in 2024"), null);
+  assert.equal(parseTrackCommand("Track my progress in 2024"), null);
+  assert.equal(parseTrackCommand("Track my steps in 2024"), null);
+});
+
+test("flight status questions work without requiring the word flight", () => {
+  assert.equal(looksLikeFlightQuestion("Is UA123 on time?"), true);
+  assert.equal(looksLikeFlightQuestion("Where is DL 456?"), true);
+  assert.equal(looksLikeFlightQuestion("When does United 123 land?"), true);
+  assert.equal(normalizeTrackerKind("finance", "UA123"), "flight");
 });

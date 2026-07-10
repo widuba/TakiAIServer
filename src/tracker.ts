@@ -1,5 +1,13 @@
 import { ai, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, TIME_ZONE } from "./ai.js";
 import { withTimeout } from "./util.js";
+import {
+  extractFlightCode,
+  hasExplicitFinanceCue,
+  hasExplicitFlightCue,
+  isStrongFlightReference,
+  normalizeTrackerKind
+} from "./entityClassifier.js";
+export { extractFlightCode } from "./entityClassifier.js";
 
 /* ============================================================================
  * Finance + sports Live Activity tracking.
@@ -60,14 +68,6 @@ const SPORTS_CUE =
 const FINANCE_CUE =
   /\b(stock|shares?|ticker|price|nasdaq|nyse|crypto|coin)\b/i;
 
-// Extract a flight code ("UA123", "DL 456", "B6 12") → "UA123"/"DL456"/"B612".
-// Airline code = 2-char IATA (incl. digit codes B6/F9) or 3-letter ICAO, + a
-// 1-4 digit flight number. Returns null if none found.
-export function extractFlightCode(message: string): string | null {
-  const code = message.match(/\b([A-Z][A-Z0-9]|[A-Z]{3})\s?(\d{1,4})\b/i);
-  return code ? (code[1] + code[2]).toUpperCase() : null;
-}
-
 // Detect a "track X" command and classify it. Returns null for everything else
 // (including "track my steps", which has no finance/sports cue).
 export function parseTrackCommand(message: string): { kind: "finance" | "sports" | "flight"; query: string } | null {
@@ -80,16 +80,19 @@ export function parseTrackCommand(message: string): { kind: "finance" | "sports"
     .replace(/\s+/g, " ")
     .trim();
 
-  // Flight: "track flight UA123" / "follow flight DL 456". Needs the word
-  // "flight" AND an airline-code+number, so it never grabs a stock ticker.
-  if (/\bflight\b/i.test(message)) {
-    const code = extractFlightCode(message);
-    if (code) return { kind: "flight", query: code };
-  }
-
+  // A carrier code/name plus a flight number is stronger evidence than a bare
+  // uppercase ticker. Explicit finance wording still lets users request a stock.
+  const flightCode = extractFlightCode(message);
+  if (flightCode && hasExplicitFlightCue(message)) return { kind: "flight", query: flightCode };
   if (SPORTS_CUE.test(message)) return { kind: "sports", query: query || message };
-  if (CRYPTO_WORD.test(m) || FINANCE_CUE.test(m) || /\$[A-Za-z]{1,5}\b/.test(message) || /\b[A-Z]{2,5}\b/.test(message)) {
-    return { kind: "finance", query: query || message };
+  if (flightCode && isStrongFlightReference(message)) return { kind: "flight", query: flightCode };
+  if (CRYPTO_WORD.test(m) || FINANCE_CUE.test(m) || hasExplicitFinanceCue(message) || /\$[A-Za-z]{1,5}\b/.test(message) || /\b[A-Z]{2,5}\b/.test(message)) {
+    // Preserve the finance cue when a code+number also appears, so downstream
+    // normalization cannot reinterpret an explicitly requested stock as a flight.
+    const financeQuery = flightCode && hasExplicitFinanceCue(message)
+      ? message.replace(TRACK_VERB, " ").trim()
+      : query || message;
+    return { kind: "finance", query: financeQuery };
   }
   return null;
 }
@@ -388,9 +391,10 @@ export async function fetchPackageSnapshot(query: string): Promise<TrackerSnapsh
 }
 
 export async function fetchTrackerSnapshot(kind: string, query: string, timeZone: string = TIME_ZONE): Promise<TrackerSnapshot | null> {
-  if (kind === "sports") return fetchSportsScore(query, timeZone);
-  if (kind === "flight") return fetchFlightStatus(query, timeZone);
-  if (kind === "package") return fetchPackageSnapshot(query);
+  const safeKind = normalizeTrackerKind(kind, query);
+  if (safeKind === "sports") return fetchSportsScore(query, timeZone);
+  if (safeKind === "flight") return fetchFlightStatus(extractFlightCode(query) || query, timeZone);
+  if (safeKind === "package") return fetchPackageSnapshot(query);
   // finance: crypto first (CoinGecko), then stocks (Yahoo).
   return (await fetchCryptoQuote(query)) || (await fetchStockQuote(query));
 }

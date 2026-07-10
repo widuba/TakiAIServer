@@ -1341,7 +1341,14 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
             : `Tracking ${title}. I'll keep the score live on your lock screen and Dynamic Island.`;
         return actionPlan(spoken, action, { lastIntent: "live_activity" });
       }
-      // Couldn't fetch the data — fall through to a normal answer.
+      // A recognized tracker must never fall through into another classifier or
+      // the model. Be explicit and start nothing when verified data is unavailable.
+      const unavailable = track.kind === "flight"
+        ? `I recognized ${track.query} as a flight, but I couldn't get a verified current status right now, so I didn't start a tracker.`
+        : track.kind === "sports"
+        ? `I recognized that as a sports tracker, but I couldn't verify a current game, so I didn't start one.`
+        : `I recognized that as a financial tracker, but I couldn't verify the asset, so I didn't start one.`;
+      return answerPlan(unavailable, { lastIntent: "live_activity" });
     }
   }
 
