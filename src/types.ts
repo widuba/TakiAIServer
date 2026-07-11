@@ -56,7 +56,8 @@ export type AssistantActionType =
   | "alert_create"
   | "alert_cancel"
   | "recurring_reminder"
-  | "memory_save";
+  | "memory_save"
+  | "share_content";
 
 export type AssistantAction = {
   type: AssistantActionType;
@@ -171,6 +172,10 @@ export type AssistantAction = {
   automationAction: string | null;
   // memory_save: a long-term fact to append to the user's profile.
   memoryFact: string | null;
+  // share_content: native iOS share sheet. Calendar shares resolve the event on
+  // device; researched/current answers carry ready-to-share text.
+  shareKind: string | null; // "calendar" | "calendar_list" | "text"
+  shareText: string | null;
   // scheduled_message ("remind me to text Mom happy birthday at 9am") reuses
   // recipientName/contactQuery (who), body (the pre-written message), dueDate
   // (ISO fire time), and title (notification headline). No dedicated fields.
@@ -373,6 +378,7 @@ export type PlannerIntent =
   | "music_control"
   | "home_control"
   | "photos_show"
+  | "share_content"
   | "clarify";
 
 // Raw structured output from the planner model. Everything is best-effort and
@@ -493,6 +499,8 @@ export function blankAction(type: AssistantActionType): AssistantAction {
     automationPlace: null,
     automationAction: null,
     memoryFact: null,
+    shareKind: null,
+    shareText: null,
     recipe: null,
     alertKind: null,
     alertQuery: null,

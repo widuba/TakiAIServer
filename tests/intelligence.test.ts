@@ -3,7 +3,7 @@ import test from "node:test";
 import { capabilityAnswerFor } from "../src/capabilities.js";
 import { buildConversationState } from "../src/context.js";
 import { auditPlannerOutput } from "../src/plannerAudit.js";
-import { fastVoiceReply, looksLikePlainVoiceKnowledgeQuestion } from "../src/planner.js";
+import { fastVoiceReply, looksLikePlainVoiceKnowledgeQuestion, planAssistantResponse, planShareRequest } from "../src/planner.js";
 import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
 import { resolveCalendarUpdateDates, validateAction } from "../src/validators.js";
@@ -138,6 +138,20 @@ test("weekday calendar edits anchor to the event being edited", () => {
   );
   assert.equal(resolved.startDate, "2026-07-17T17:00:00-04:00");
   assert.equal(resolved.endDate, "2026-07-17T18:00:00-04:00");
+});
+
+test("calendar share commands become native share actions with a requested day", async () => {
+  const result = await planAssistantResponse(stateFor("Share my calendar events tomorrow"));
+  assert.equal(result.action?.type, "share_content");
+  assert.equal(result.action?.shareKind, "calendar_list");
+  assert.equal(result.action?.calendarQuery, "");
+  assert.ok(result.action?.startDate);
+  assert.ok(result.action?.endDate);
+  assert.ok(Date.parse(result.action!.endDate!) > Date.parse(result.action!.startDate!));
+});
+
+test("send-to-contact phrasing remains a message command, not a generic share", async () => {
+  assert.equal(await planShareRequest(stateFor("Send Bill the score")), null);
 });
 
 test("simple voice turns bypass model planning", () => {

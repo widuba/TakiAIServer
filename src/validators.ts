@@ -128,6 +128,11 @@ export function validateAction(action: AssistantAction | null): string | null {
 
   if (action.type === "memory_save" && !action.memoryFact?.trim()) return "What would you like me to remember?";
 
+  if (action.type === "share_content") {
+    if (action.shareKind === "calendar" || action.shareKind === "calendar_list") return null;
+    if (!action.shareText?.trim()) return "What would you like me to share?";
+  }
+
   return null;
 }
 
@@ -299,7 +304,9 @@ export function finalizeResponse(plan: AssistantPlan, state: ConversationState):
         actions: good,
         memory,
         followUpEvent: eventMemoryToFollowUp(lastEvt),
-        messageAnalysis: null,
+        messageAnalysis: good.some((action) => action.type === "compose_message")
+          ? plan.messageAnalysis ?? null
+          : null,
         debug: plan.debug
       };
     }

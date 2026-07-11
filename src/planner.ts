@@ -115,6 +115,7 @@ import {
 } from "./messageStyle.js";
 import type { MessageAnalysis, MessageStyleVector } from "./messageStyle.js";
 import {
+  addDaysToYmd,
   extractCalendarTitle,
   extractReminderTitle,
   formatEventDateTime,
@@ -677,6 +678,78 @@ async function researchMessageBody(
   return { body: (res.spokenText || "").trim(), event: null };
 }
 
+export async function planShareRequest(state: ConversationState): Promise<AssistantPlan | null> {
+  const message = state.message.trim();
+  const shareVerb = /^(?:please\s+)?share\b/i.test(message)
+    || /^(?:can|could|would|will)\s+you\s+(?:please\s+)?share\b/i.test(message);
+  const sendShareObject = /^(?:please\s+)?send\s+(?:this|that|it|the answer|those details|that information|my (?:calendar|event)|https?:\/\/)/i.test(message)
+    || /^(?:can|could|would|will)\s+you\s+(?:please\s+)?send\s+(?:this|that|it|the answer|those details|that information|my (?:calendar|event)|https?:\/\/)/i.test(message);
+  const isShareCommand = shareVerb || sendShareObject;
+  if (!isShareCommand) return null;
+
+  const action = blankAction("share_content");
+  const refersToPrior = /\b(?:this|that|it|the answer|those details|that information)\b/i.test(message);
+  const refersToPriorEvent = /\b(?:that|this|the)\s+(?:calendar\s+)?event\b/i.test(message);
+  const isCalendarShare = /\bcalendar\b|\bappointment\b|\bmeeting\b|\bmy\s+(?:next\s+|upcoming\s+)?event\b/i.test(message)
+    || (refersToPriorEvent && !!state.priorEvent);
+
+  if (isCalendarShare) {
+    const requestedYmd = resolveRelativeYmd(message, state.timeZone);
+    let query = refersToPriorEvent && state.priorEvent?.title
+      ? state.priorEvent.title
+      : message
+          .replace(/^(?:please\s+)?(?:can|could|would|will)?\s*(?:you\s+)?(?:please\s+)?(?:share|send)\s*/i, "")
+          .replace(/\b(?:my|the|next|upcoming|calendar|events?|appointments?)\b/gi, " ")
+          .replace(/\b(?:details|information|info)\b/gi, " ")
+          .replace(/\b(?:today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, " ")
+          .replace(/\s+with\s+[^,]+$/i, "")
+          .replace(/\s+/g, " ")
+          .trim();
+    if (/^(?:it|this|that)$/i.test(query)) query = state.priorEvent?.title || "";
+    action.shareKind = /\b(?:events|appointments|meetings)\b/i.test(message) ? "calendar_list" : "calendar";
+    action.calendarQuery = query;
+    action.daysAhead = 365;
+    if (requestedYmd) {
+      action.startDate = isoFromYmdTime(requestedYmd, 0, 0, state.timeZone);
+      action.endDate = isoFromYmdTime(addDaysToYmd(requestedYmd, 1), 0, 0, state.timeZone);
+    }
+    return actionPlan("Opening the share sheet for that calendar event.", action, {
+      lastIntent: "share_content"
+    });
+  }
+
+  if (refersToPrior && state.priorMemory.lastAnswer) {
+    action.shareKind = "text";
+    action.shareText = state.priorMemory.lastAnswer;
+    return actionPlan("Opening the share sheet.", action, { lastIntent: "share_content" });
+  }
+
+  const url = message.match(/https?:\/\/\S+/i)?.[0];
+  if (url) {
+    action.shareKind = "text";
+    action.shareText = url;
+    return actionPlan("Opening the share sheet.", action, { lastIntent: "share_content" });
+  }
+
+  const query = message
+    .replace(/^(?:please\s+)?(?:can|could|would|will)?\s*(?:you\s+)?(?:please\s+)?(?:share|send)\s*/i, "")
+    .replace(/^(?:information|info|details)\s+(?:about|on)\s+/i, "")
+    .replace(/\s+with\s+[^,]+$/i, "")
+    .trim();
+  if (!query) return answerPlan("What would you like me to share?", { lastIntent: "share_content" });
+
+  const researched = await researchMessageBody(query, state.timeZone);
+  if (!researched.body) {
+    return answerPlan("I couldn't verify anything reliable to share yet.", { lastIntent: "share_content" });
+  }
+  action.shareKind = "text";
+  action.shareText = researched.body;
+  return actionPlan("Opening the share sheet with what I found.", action, {
+    lastMentionedEvent: researched.event || undefined,
+    lastIntent: "share_content"
+  });
+}
+
 /* ============================================================================
  * planAssistantResponse — the central planner.
  * ==========================================================================*/
@@ -690,6 +763,9 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
   if (instantVoiceReply) {
     return answerPlan(instantVoiceReply, { lastIntent: "answer_only" });
   }
+
+  const sharePlan = await planShareRequest(state);
+  if (sharePlan) return sharePlan;
 
   const capabilityAnswer = capabilityAnswerFor(state.message);
   if (capabilityAnswer) {
