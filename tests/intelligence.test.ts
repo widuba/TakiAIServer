@@ -6,7 +6,7 @@ import { auditPlannerOutput } from "../src/plannerAudit.js";
 import { fastVoiceReply, looksLikePlainVoiceKnowledgeQuestion, planAssistantResponse, planShareRequest } from "../src/planner.js";
 import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
-import { resolveCalendarUpdateDates, validateAction } from "../src/validators.js";
+import { finalizeResponse, resolveCalendarUpdateDates, validateAction } from "../src/validators.js";
 import { stabilityForVariability } from "../src/voice.js";
 import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
@@ -152,6 +152,19 @@ test("calendar share commands become native share actions with a requested day",
 
 test("send-to-contact phrasing remains a message command, not a generic share", async () => {
   assert.equal(await planShareRequest(stateFor("Send Bill the score")), null);
+});
+
+test("actions that open another app or system sheet confirm with Done", () => {
+  const action = blankAction("open_app");
+  action.appName = "Maps";
+  action.appUrl = "maps://";
+  const response = finalizeResponse({
+    spokenText: "Opening Maps.",
+    action,
+    memoryPatch: { pendingClarification: null },
+    needsExecution: true
+  }, stateFor("Open Maps"));
+  assert.equal(response.spokenText, "Done.");
 });
 
 test("simple voice turns bypass model planning", () => {

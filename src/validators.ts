@@ -136,6 +136,20 @@ export function validateAction(action: AssistantAction | null): string | null {
   return null;
 }
 
+function actionOpensAppOrSystemSheet(action: AssistantAction | null): boolean {
+  return !!action && new Set<AssistantAction["type"]>([
+    "compose_message",
+    "compose_email",
+    "call_phone",
+    "open_app",
+    "maps_search",
+    "maps_directions",
+    "email_connect",
+    "service_handoff",
+    "share_content"
+  ]).has(action.type);
+}
+
 // Build a calendar_create action from a partial action + the raw message.
 // When the message itself contains an explicit date AND time, trust the
 // deterministic local (timezone-correct) resolution over the model's ISO,
@@ -286,7 +300,9 @@ export function finalizeResponse(plan: AssistantPlan, state: ConversationState):
 
     if (good.length) {
       const lastEvt = plan.memoryPatch.lastMentionedEvent || null;
-      const spoken = plan.spokenText || `Added ${good.length} events to your calendar.`;
+      const spoken = good.some(actionOpensAppOrSystemSheet)
+        ? "Done."
+        : plan.spokenText || `Added ${good.length} events to your calendar.`;
       const memory: AssistantMemory = {
         ...state.priorMemory,
         lastTopic: state.message,
@@ -346,6 +362,8 @@ export function finalizeResponse(plan: AssistantPlan, state: ConversationState):
     const cleaned = stripFalsePromises(spokenText);
     if (cleaned !== spokenText) spokenText = cleaned || "Okay.";
   }
+
+  if (actionOpensAppOrSystemSheet(action)) spokenText = "Done.";
 
   if (!spokenText.trim()) spokenText = action ? "Okay." : "Done.";
 
