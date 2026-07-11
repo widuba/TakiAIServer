@@ -79,6 +79,12 @@ export function validateAction(action: AssistantAction | null): string | null {
     if (!action.body || !action.body.trim()) return "What do you want the email to say?";
   }
 
+  if (action.type === "calendar_forward") {
+    const email = action.shareKind?.startsWith("email");
+    if (email && !action.emailAddress && !action.contactQuery && !action.recipientName) return "Who should I email that calendar information to?";
+    if (!email && !action.recipientPhone && !action.contactQuery && !action.recipientName) return "Who should I text that calendar information to?";
+  }
+
   if (action.type === "call_phone") {
     if (!action.recipientPhone && !action.contactQuery && !action.recipientName) return "Who should I call?";
   }
@@ -146,7 +152,8 @@ function actionOpensAppOrSystemSheet(action: AssistantAction | null): boolean {
     "maps_directions",
     "email_connect",
     "service_handoff",
-    "share_content"
+    "share_content",
+    "calendar_forward"
   ]).has(action.type);
 }
 

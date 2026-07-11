@@ -24,7 +24,8 @@ const EXECUTABLE_MODEL_INTENTS = new Set<PlannerIntent>([
   "health_query",
   "music_control",
   "home_control",
-  "photos_show"
+  "photos_show",
+  "calendar_forward"
 ]);
 
 export type PlannerAuditIssue = {
@@ -75,6 +76,7 @@ function questionFor(intent: PlannerIntent, action: Partial<AssistantAction> | n
   switch (intent) {
     case "compose_message": return "Who should I text, and what should the message say?";
     case "compose_email": return "Who should I email, and what should the email say?";
+    case "calendar_forward": return "Which calendar event should I share, and who should receive it?";
     case "call_phone": return "Who should I call?";
     case "calendar_create":
     case "calendar_create_from_context": return "Which event do you mean, and what date and time should I use?";
@@ -128,7 +130,7 @@ export function auditPlannerOutput(plan: PlannerModelOutput, state: Conversation
   }
 
   const checks: { value: unknown; question: string; reason: string }[] = [];
-  if (plan.intent === "calendar_update" || plan.intent === "calendar_delete" || plan.intent === "calendar_search") {
+  if (plan.intent === "calendar_update" || plan.intent === "calendar_delete" || plan.intent === "calendar_search" || plan.intent === "calendar_forward") {
     checks.push({ value: a.calendarQuery || a.title, question: "Which calendar event do you mean?", reason: "calendar subject was not grounded" });
   }
   if (plan.intent === "calendar_create_from_context") {

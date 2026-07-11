@@ -16,14 +16,14 @@ export type Capability = {
 export const CAPABILITIES: Capability[] = [
   {
     id: "communication",
-    summary: "draft texts and emails, place calls, save contacts, and prepare scheduled messages",
-    examples: "text Mom, email Chris, call Alex, save a phone number, remind me to text someone later",
+    summary: "draft texts and emails, forward calendar information to contacts or direct addresses, place calls, save contacts, and prepare scheduled messages",
+    examples: "text Mom my next event, email tomorrow's calendar, call Alex, save a phone number, remind me to text someone later",
     questionPatterns: [/\b(text|message|email|call|phone|contacts?|scheduled messages?)\b/i]
   },
   {
     id: "calendar-reminders",
-    summary: "create, find, update, and remove calendar events and create or search reminders",
-    examples: "add dinner Friday at 7, move the meeting, delete the game, remind me when I get home",
+    summary: "create, find, update, remove, and forward calendar events and create or search reminders",
+    examples: "add dinner Friday at 7, text Bill my meeting details, move the meeting, remind me when I get home",
     questionPatterns: [/\b(calendar|events?|appointments?|reminders?)\b/i]
   },
   {

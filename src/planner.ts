@@ -377,6 +377,18 @@ Examples:
 - "text Chris about when and where the next Braves game is" -> compose_message, recipientName "Chris", researchQuery "next Atlanta Braves game date, time, and venue".
 - "email mom the date of the next SpaceX launch and add it to my calendar" -> compose_email, recipientName "Mom", researchQuery "next SpaceX launch date and time", wantsCalendar true.
 
+FORWARD INFORMATION FROM THE USER'S OWN CALENDAR:
+- When the user asks to find/read an existing calendar event and text, message, email,
+  send, forward, or share its details with someone, intent = "calendar_forward".
+- action.type = "calendar_forward". Set action.shareKind to "message" or "email"
+  (append "_list" when they asked for multiple events). Set calendarQuery to title
+  keywords only, or "" for the next/all events. Set recipientName/contactQuery for a
+  contact, recipientPhone for a literal phone number, or emailAddress for a literal email.
+- Set startDate/endDate to the requested day's ISO boundaries when they specify a day.
+- Do NOT invent event details or put them in body. The iPhone reads Calendar first.
+- Examples: "text Bill my dentist appointment details" -> calendar_forward/message;
+  "email tomorrow's calendar to pat@example.com" -> calendar_forward/email_list.
+
 LEARNED WRITING STYLE per recipient (apply to the compose_message / compose_email
 body for the matching person ONLY). This is important: fully REWRITE the body in this
 voice — commit hard, don't just barely tilt it. When a direction says "very", go all
@@ -431,7 +443,7 @@ PLACES / DIRECTIONS:
 - "how long to get there / directions to X" -> "maps_directions" (action.mapsDestination, set place).
 
 LOCAL ACTIONS when enough info exists:
-  compose_message, compose_email, call_phone, calendar_create (explicit date/time),
+  compose_message, compose_email, calendar_forward, call_phone, calendar_create (explicit date/time),
   reminder_create, reminder_search, calendar_search, open_app, contact_create,
   health_query, music_control, home_control, photos_show.
 
@@ -485,11 +497,11 @@ example action. If you're unsure what the user wants, intent="answer_only" or
 Otherwise plain conversation / answerable from transcript -> "answer_only".
 
 ACTION FIELD SCHEMA (include only what applies):
-  type, recipientPhone, recipientName, contactQuery, body, calendarQuery, daysAhead,
+  type, recipientPhone, recipientName, contactQuery, body, calendarQuery, daysAhead, shareKind,
   title, startDate, endDate, location, notes, reminderQuery, dueDate, emailAddress,
   emailSubject, appName, mapsQuery, mapsDestination, recurrence, triggerLocation, triggerOnArrival,
   metric, musicAction, musicQuery, homeAction, homeTarget, homeValue, photoDays
-Allowed action "type": compose_message, compose_email, call_phone, calendar_create,
+Allowed action "type": compose_message, compose_email, calendar_forward, call_phone, calendar_create,
   calendar_search, reminder_create, reminder_search, open_app, maps_search, maps_directions,
   contact_create, health_query, music_control, home_control, photos_show
 
@@ -1810,6 +1822,45 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       };
       // Spoken stays generic — the device reports how many it actually removed.
       return actionPlan(`I'll remove ${query} from your calendar.`, action, { lastIntent: "calendar_delete" });
+    }
+
+    case "calendar_forward": {
+      const a = plan.action || {};
+      const explicitEmail = (state.message.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i) || [])[0] || "";
+      const explicitPhone = (state.message.match(/(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}/) || [])[0] || "";
+      const requestedYmd = resolveRelativeYmd(state.message, state.timeZone);
+      const wantsEmail = Boolean(explicitEmail) || /\b(?:email|e-mail|mail)\b/i.test(state.message)
+        || String(a.shareKind || "").startsWith("email");
+      const wantsList = /\b(?:all|every|events|appointments|meetings|schedule)\b/i.test(state.message)
+        || (/\bcalendar\b/i.test(state.message) && !/\b(?:event|appointment|meeting)\b/i.test(state.message));
+      const name = a.recipientName || a.contactQuery || plan.contact?.name || state.priorContact?.name || null;
+      const emailAddress = explicitEmail || a.emailAddress || plan.contact?.email || null;
+      const recipientPhone = explicitPhone || a.recipientPhone || plan.contact?.phone || null;
+      if (wantsEmail ? (!emailAddress && !name) : (!recipientPhone && !name)) {
+        return answerPlan(wantsEmail ? "Who should I email that calendar information to?" : "Who should I text that calendar information to?", {
+          lastIntent: "calendar_forward"
+        });
+      }
+      const action = blankAction("calendar_forward");
+      action.shareKind = `${wantsEmail ? "email" : "message"}${wantsList ? "_list" : ""}`;
+      action.calendarQuery = String(a.calendarQuery || a.title || "").trim();
+      action.daysAhead = typeof a.daysAhead === "number" ? a.daysAhead : 365;
+      action.recipientName = name;
+      action.contactQuery = a.contactQuery || name;
+      action.recipientPhone = recipientPhone;
+      action.emailAddress = emailAddress;
+      action.emailSubject = String(a.emailSubject || "Calendar details").trim();
+      if (requestedYmd) {
+        action.startDate = isoFromYmdTime(requestedYmd, 0, 0, state.timeZone);
+        action.endDate = isoFromYmdTime(addDaysToYmd(requestedYmd, 1), 0, 0, state.timeZone);
+      } else {
+        action.startDate = a.startDate ? String(a.startDate) : null;
+        action.endDate = a.endDate ? String(a.endDate) : null;
+      }
+      return actionPlan("Done.", action, {
+        lastMentionedContact: contactFromAction(action, plan.contact),
+        lastIntent: "calendar_forward"
+      });
     }
 
     case "compose_message": {

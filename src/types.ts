@@ -57,7 +57,8 @@ export type AssistantActionType =
   | "alert_cancel"
   | "recurring_reminder"
   | "memory_save"
-  | "share_content";
+  | "share_content"
+  | "calendar_forward";
 
 export type AssistantAction = {
   type: AssistantActionType;
@@ -379,6 +380,7 @@ export type PlannerIntent =
   | "home_control"
   | "photos_show"
   | "share_content"
+  | "calendar_forward"
   | "clarify";
 
 // Raw structured output from the planner model. Everything is best-effort and

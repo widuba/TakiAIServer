@@ -167,6 +167,30 @@ test("actions that open another app or system sheet confirm with Done", () => {
   assert.equal(response.spokenText, "Done.");
 });
 
+test("calendar forwarding accepts grounded contacts and direct addresses", () => {
+  const messageAction = blankAction("calendar_forward");
+  messageAction.shareKind = "message";
+  messageAction.calendarQuery = "dentist";
+  messageAction.recipientName = "Bill";
+  messageAction.contactQuery = "Bill";
+  const messageState = stateFor("Text Bill the details from my dentist calendar event");
+  assert.equal(auditPlannerOutput(plan({ intent: "calendar_forward", action: messageAction }), messageState), null);
+  assert.equal(validateAction(messageAction), null);
+
+  const emailAction = blankAction("calendar_forward");
+  emailAction.shareKind = "email";
+  emailAction.calendarQuery = "tomorrow";
+  emailAction.emailAddress = "pat@example.com";
+  assert.equal(validateAction(emailAction), null);
+  const response = finalizeResponse({
+    spokenText: "Emailing the event.",
+    action: emailAction,
+    memoryPatch: { pendingClarification: null },
+    needsExecution: true
+  }, stateFor("Email tomorrow's calendar to pat@example.com"));
+  assert.equal(response.spokenText, "Done.");
+});
+
 test("simple voice turns bypass model planning", () => {
   const state = buildConversationState("Thank you", "", undefined, "America/New_York", undefined, undefined, true);
   assert.equal(fastVoiceReply(state), "You're welcome.");
