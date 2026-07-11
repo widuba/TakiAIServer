@@ -1203,6 +1203,45 @@ app.get("/api/voices", async (_req, res) => {
   res.json({ voices: await listVoices() });
 });
 
+// Re-synthesize a corrected voice result after the phone attempts an action.
+// Used when native execution returns a more accurate success line or an error.
+const correctionSynthWindows = new Map<string, { startedAt: number; count: number }>();
+app.post("/api/voice/synthesize", async (req, res) => {
+  if (!isVoiceConfigured()) { res.status(503).json({ error: "voice not configured" }); return; }
+  const text = typeof req.body?.text === "string" ? req.body.text.trim().slice(0, 600) : "";
+  const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
+  const voiceId = typeof req.body?.voiceId === "string" ? req.body.voiceId : undefined;
+  const variability = typeof req.body?.voiceVariability === "number"
+    ? Math.max(0, Math.min(1, req.body.voiceVariability))
+    : 0.5;
+  if (!text || !deviceId) { res.status(400).json({ error: "text and deviceId required" }); return; }
+  try {
+    const ip = clientIp(req);
+    if ((await isBanned(deviceId, deviceId, ip)) || (await isTestRestricted(deviceId))) {
+      res.status(403).json({ error: "access restricted" }); return;
+    }
+    const now = Date.now();
+    const rateKey = `${deviceId}:${ip}`;
+    const prior = correctionSynthWindows.get(rateKey);
+    const windowState = !prior || now - prior.startedAt >= 60_000
+      ? { startedAt: now, count: 0 }
+      : prior;
+    if (windowState.count >= 12) { res.status(429).json({ error: "voice correction limit reached" }); return; }
+    windowState.count += 1;
+    correctionSynthWindows.set(rateKey, windowState);
+    if (correctionSynthWindows.size > 5_000) {
+      for (const [key, value] of correctionSynthWindows) {
+        if (now - value.startedAt >= 60_000) correctionSynthWindows.delete(key);
+      }
+    }
+    const audio = await synthesize(text, voiceId, variability);
+    res.json({ audioBase64: audio, mime: "audio/mpeg" });
+  } catch (error) {
+    console.error("Voice correction synthesis error:", error);
+    res.status(502).json({ error: "voice unavailable" });
+  }
+});
+
 // Voice preview for the full-screen picker: each voice speaks one fixed sample
 // line. Cached per voice id (the line never changes) so swiping back and forth
 // costs ElevenLabs exactly once per voice, not once per swipe.

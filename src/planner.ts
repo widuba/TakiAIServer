@@ -198,13 +198,19 @@ function actionPlan(
 }
 
 // A plan that runs several actions (e.g. add multiple calendar events at once).
-function actionsPlan(spokenText: string, actions: AssistantAction[], patch: MemoryPatch = {}): AssistantPlan {
+function actionsPlan(
+  spokenText: string,
+  actions: AssistantAction[],
+  patch: MemoryPatch = {},
+  messageAnalysis: MessageAnalysis | null = null
+): AssistantPlan {
   return {
     spokenText,
     action: actions[0] || null,
     actions,
     memoryPatch: { pendingClarification: null, ...patch },
-    needsExecution: true
+    needsExecution: true,
+    messageAnalysis
   };
 }
 
@@ -1754,29 +1760,45 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         if (!r.body) {
           return answerPlan(`I couldn't find that information to send to ${name}.`, { lastIntent: "compose_message" });
         }
+        const matched = matchStyleProfile(state.styleProfiles, name);
+        const styleVectorUsed = matched ? matched.vector : { ...NEUTRAL_VECTOR };
+        const researchedBody = matched && hasStyle(styleVectorUsed)
+          ? await restyleMessageBody(r.body, styleVectorUsed, name, state.userProfile?.teen)
+          : r.body;
         const msgAction: AssistantAction = {
           ...blankAction("compose_message"),
           recipientName: name,
           contactQuery: a.contactQuery || name,
           recipientPhone: a.recipientPhone || plan.contact?.phone || null,
-          body: r.body
+          body: researchedBody
+        };
+        const messageAnalysis: MessageAnalysis = {
+          recipientKey: matched?.recipientKey || normalizeRecipientKey({ name }),
+          recipientName: name,
+          generatedBody: researchedBody,
+          styleVectorUsed,
+          estimatedVector: estimateVectorFromText(researchedBody),
+          explanation: matched
+            ? `Written in ${name}'s learned style.`
+            : `No saved style for ${name} yet — using a neutral voice.`
         };
         if (plan.wantsCalendar && r.event) {
           // Two actions at once: add to calendar AND text the details.
           return actionsPlan(
-            `Added ${r.event.title} to your calendar and texting ${name} the details.`,
+            `Added ${r.event.title} to your calendar and opening a text draft to ${name} with the details.`,
             [eventToCalendarAction(r.event), msgAction],
             {
               lastMentionedEvent: r.event,
               lastMentionedContact: contactFromAction(msgAction, plan.contact),
               lastIntent: "compose_message"
-            }
+            },
+            messageAnalysis
           );
         }
-        return actionPlan(`Texting ${name} the details.`, msgAction, {
+        return actionPlan(`Opening a text draft to ${name} with the details.`, msgAction, {
           lastMentionedContact: contactFromAction(msgAction, plan.contact),
           lastIntent: "compose_message"
-        });
+        }, messageAnalysis);
       }
 
       if (!body) {
@@ -1822,7 +1844,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
           : `No saved style for ${name} yet — using a neutral voice.`
       };
 
-      return actionPlan(`I'll text ${name}.`, action, {
+      return actionPlan(`Opening a text draft to ${name}.`, action, {
         lastMentionedContact: contactFromAction(action, plan.contact),
         lastIntent: "compose_message"
       }, messageAnalysis);
