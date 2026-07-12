@@ -335,7 +335,7 @@ test("all common YouTube links route through video input", () => {
 
 test("usage limits add purchased credits to both plan windows", () => {
   assert.deepEqual(usageLimitsFor("plus", 5_000), { daily: 5_150, monthly: 8_000 });
-  assert.deepEqual(usageLimitsFor("plus_voice", 0), { daily: 225, monthly: 4_500 });
+  assert.deepEqual(usageLimitsFor("plus_voice", 0), { daily: 200, monthly: 4_000 });
   assert.deepEqual(usageLimitsFor("pro", 0), { daily: 750, monthly: 15_000 });
   assert.deepEqual(usageLimitsFor("free", 0), { daily: 5, monthly: 100 });
 });

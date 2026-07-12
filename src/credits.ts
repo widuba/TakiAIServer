@@ -37,7 +37,7 @@ export interface TierConfig {
 export const TIERS: Record<Tier, TierConfig> = {
   free:       { label: "Free",       creditsPerCycle: 0,     priceUsd: 0,     voiceIncluded: false, extraCreditDiscount: 0 },
   plus:       { label: "Plus",       creditsPerCycle: 3000,  priceUsd: 9.99,  voiceIncluded: false, extraCreditDiscount: 0 },
-  plus_voice: { label: "Plus Voice", creditsPerCycle: 4500,  priceUsd: 14.99, voiceIncluded: true,  extraCreditDiscount: 0 },
+  plus_voice: { label: "Plus Voice", creditsPerCycle: 4000,  priceUsd: 14.99, voiceIncluded: true,  extraCreditDiscount: 0 },
   // Pro now includes voice (on base credits only, like Plus Voice).
   pro:        { label: "Pro",        creditsPerCycle: 15000, priceUsd: 29.99, voiceIncluded: true,  extraCreditDiscount: 0.2 }
 };
