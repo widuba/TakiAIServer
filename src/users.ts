@@ -25,6 +25,7 @@ export interface UserRecord {
   apple?: { sub?: string; email?: string; name?: string };
   revenueUsd: number;                // cumulative gross paid
   purchases: Purchase[];
+  device?: { name?: string; model?: string; identifier?: string; takiName?: string; lastSeenAt: number };
 }
 
 const USERS_INDEX = "users:index";
@@ -111,6 +112,26 @@ export async function noteRevenue(identity: string, p: Purchase): Promise<void> 
 export async function noteApple(identity: string, apple: { sub?: string; email?: string; name?: string }): Promise<void> {
   if (!identity) return;
   try { const u = await loadUser(identity); u.apple = { ...(u.apple || {}), ...apple }; await saveUser(u); await addToIndex(identity); } catch (e) { console.error("noteApple:", e); }
+}
+
+export async function noteDevice(identity: string, device: { name?: string; model?: string; identifier?: string; takiName?: string }): Promise<void> {
+  if (!identity) return;
+  try {
+    const u = await loadUser(identity);
+    u.device = {
+      name: String(device.name || "").trim().slice(0, 80) || undefined,
+      model: String(device.model || "").trim().slice(0, 80) || undefined,
+      identifier: String(device.identifier || "").trim().slice(0, 40) || undefined,
+      takiName: String(device.takiName || "").trim().slice(0, 60) || undefined,
+      lastSeenAt: Date.now()
+    };
+    await saveUser(u);
+    await addToIndex(identity);
+  } catch (e) { console.error("noteDevice:", e); }
+}
+
+export async function userForIdentity(identity: string): Promise<UserRecord> {
+  return loadUser(identity);
 }
 
 export async function identitiesForIp(ip: string): Promise<string[]> {

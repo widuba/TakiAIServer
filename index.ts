@@ -25,8 +25,8 @@ import { summary as creditSummary, spendUsageUsd, reset as resetCredits, isFreeV
 import { measureUsage, totalUsageUsd, ttsCostUsd } from "./src/metering.js";
 import { verifyTransaction, linkTransactionIdentity, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
 import { verifyAppleIdentityToken } from "./src/appleauth.js";
-import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, linkApple, devicesForApple, SUSPENDED_MSG, BANNED_MSG, promptExtractionMessageForMode } from "./src/safety.js";
-import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, identitiesForIp, allUsers, deleteUser } from "./src/users.js";
+import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, linkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG, promptExtractionMessageForMode } from "./src/safety.js";
+import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, userForIdentity, identitiesForIp, allUsers, deleteUser } from "./src/users.js";
 import { TIERS } from "./src/credits.js";
 import { transcribe, synthesize, listVoices, isVoiceConfigured } from "./src/voice.js";
 import { emailProviderConfigured, createOAuthState, buildAuthUrl, completeOAuth, loadConnection, disconnectEmail, sendEmail, saveDraft, searchConnectedEmail, type EmailProvider } from "./src/email.js";
@@ -588,6 +588,22 @@ app.post("/api/register-device", async (req, res) => {
   }
 });
 
+app.post("/api/device/info", async (req, res) => {
+  const b = req.body || {};
+  const deviceId = typeof b.deviceId === "string" ? normalizeTopupIdentity(b.deviceId) : "";
+  if (!/^\d{8}$/.test(deviceId)) { res.status(400).json({ error: "valid deviceId required" }); return; }
+  if (!(await storeGet<boolean>(`devnum:used:${deviceId}`, false)) && !(await hasCreditsAccount(deviceId))) {
+    res.status(404).json({ error: "unknown device" }); return;
+  }
+  await noteDevice(deviceId, {
+    name: typeof b.name === "string" ? b.name : "",
+    model: typeof b.model === "string" ? b.model : "",
+    identifier: typeof b.identifier === "string" ? b.identifier : "",
+    takiName: typeof b.takiName === "string" ? b.takiName : ""
+  });
+  res.json({ ok: true });
+});
+
 app.get("/api/credits", async (req, res) => {
   const deviceId = typeof req.query.deviceId === "string" ? req.query.deviceId.trim() : "";
   if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
@@ -615,7 +631,8 @@ app.get("/api/credits/topup-config", (_req, res) => {
     min: CREDIT_TOPUP_MIN,
     max: CREDIT_TOPUP_MAX,
     centsPerCredit: topupCentsPerCredit(false),
-    proCentsPerCredit: topupCentsPerCredit(true)
+    proCentsPerCredit: topupCentsPerCredit(true),
+    plans: (["plus", "plus_voice", "pro"] as Tier[]).map((key) => ({ key, ...TIERS[key] }))
   });
 });
 
@@ -632,36 +649,77 @@ async function hasCreditsAccount(identity: string): Promise<boolean> {
   return !!acct && acct.deviceId === identity && Number(acct.updatedAt || 0) > 0;
 }
 
-// Validate a top-up account: must be an 8-digit device id. Older deploys used a
-// fragile issued-id marker; if that marker is missing, accept the ID and restore
-// the marker so a real user's copied Account ID does not get blocked by server
-// storage churn. Stripe metadata still pins the purchase to this exact ID.
-async function validateTopupAccount(identity: string): Promise<{ valid: boolean; reason?: string; isPro: boolean; tier: Tier }> {
+type PurchaseAccount = {
+  valid: boolean;
+  reason?: string;
+  publicId: string;
+  ledgerIdentity: string;
+  isPro: boolean;
+  tier: Tier;
+  appleSynced: boolean;
+  email: string;
+  displayName: string;
+  devices: string[];
+};
+
+function maskedEmail(value: string): string {
+  const [local, domain] = value.split("@");
+  if (!local || !domain) return "";
+  return `${local.slice(0, 1)}${"•".repeat(Math.min(5, Math.max(2, local.length - 1)))}@${domain}`;
+}
+
+async function validateTopupAccount(identity: string): Promise<PurchaseAccount> {
   const id = normalizeTopupIdentity(identity);
   if (!/^\d{8}$/.test(id)) {
-    return { valid: false, reason: "That doesn't look like a valid 8-digit Account ID. You'll find it in the app under Settings → Account ID.", isPro: false, tier: "free" };
+    return { valid: false, reason: "That doesn't look like a valid 8-digit Account ID. You'll find it in the app under Settings → Account ID.", publicId: id, ledgerIdentity: id, isPro: false, tier: "free", appleSynced: false, email: "", displayName: "", devices: [] };
   }
   const issued = await storeGet<boolean>(`devnum:used:${id}`, false);
-  if (!issued && !(await hasCreditsAccount(id))) {
-    await storeSet(`devnum:used:${id}`, true);
+  const deviceUser = await userForIdentity(id);
+  const appleSub = await appleForDevice(id);
+  if (!issued && !(await hasCreditsAccount(id)) && !deviceUser.firstSeenAt && !appleSub) {
+    return { valid: false, reason: "We couldn't find an account with that ID.", publicId: id, ledgerIdentity: id, isPro: false, tier: "free", appleSynced: false, email: "", displayName: "", devices: [] };
   }
+  const ledgerIdentity = appleSub ? `apple:${appleSub}` : id;
   // Restrict any account that's flagged, suspended, terminated, or banned.
   try {
-    const safety = await getSafetyAccount(id);
-    const restricted = safety.status !== "active" || (safety.strikes || 0) > 0 || (await isBanned(id, id));
+    const safety = await getSafetyAccount(ledgerIdentity);
+    const restricted = safety.status !== "active" || (safety.strikes || 0) > 0 || (await isBanned(ledgerIdentity, id));
     if (restricted) {
-      return { valid: false, reason: "This account isn't eligible for credit purchases. If you believe this is a mistake, contact Taki AI Support.", isPro: false, tier: "free" };
+      return { valid: false, reason: "This account isn't eligible for purchases. If you believe this is a mistake, contact Taki AI Support.", publicId: id, ledgerIdentity, isPro: false, tier: "free", appleSynced: !!appleSub, email: "", displayName: "", devices: [] };
     }
   } catch (e) {
     console.error("topup account safety check:", e);
-    return { valid: false, reason: "We couldn't verify that account right now — please try again.", isPro: false, tier: "free" };
+    return { valid: false, reason: "We couldn't verify that account right now — please try again.", publicId: id, ledgerIdentity, isPro: false, tier: "free", appleSynced: !!appleSub, email: "", displayName: "", devices: [] };
   }
-  const summary = await creditSummary(id);
-  return { valid: true, isPro: summary.tier === "pro", tier: summary.tier };
+  const deviceIds = appleSub ? await devicesForApple(appleSub) : [id];
+  const records = await Promise.all(deviceIds.map((deviceId) => userForIdentity(deviceId)));
+  const apple = records.map((record) => record.apple).find((value) => value?.sub === appleSub) || deviceUser.apple;
+  const devices = records.map((record) => record.device?.model || record.device?.name || record.deviceType || "Taki device");
+  const summary = await creditSummary(ledgerIdentity);
+  return {
+    valid: true,
+    publicId: id,
+    ledgerIdentity,
+    isPro: summary.tier === "pro",
+    tier: summary.tier,
+    appleSynced: !!appleSub,
+    email: maskedEmail(apple?.email || ""),
+    displayName: (appleSub ? apple?.name : deviceUser.device?.takiName) || "Taki user",
+    devices: [...new Set(devices)].slice(0, 8)
+  };
 }
 
-// Step 1 of the buy flow: check an Account ID and return validity + Pro pricing.
+const purchaseLookupWindows = new Map<string, { at: number; count: number }>();
+
+// Step 1 of the buy flow: check an Account ID and return a limited confirmation
+// summary. Email is masked because an eight-digit ID is not authentication.
 app.post("/api/credits/account-check", async (req, res) => {
+  const ip = clientIp(req);
+  const prior = purchaseLookupWindows.get(ip);
+  const windowState = !prior || Date.now() - prior.at > 5 * 60_000 ? { at: Date.now(), count: 0 } : prior;
+  if (windowState.count >= 12) { res.status(429).json({ valid: false, reason: "Too many account checks. Try again in a few minutes." }); return; }
+  windowState.count += 1;
+  purchaseLookupWindows.set(ip, windowState);
   const identity = typeof req.body?.identity === "string" ? normalizeTopupIdentity(req.body.identity) : "";
   if (!identity) { res.status(400).json({ valid: false, reason: "Enter your Account ID." }); return; }
   const v = await validateTopupAccount(identity);
@@ -670,6 +728,10 @@ app.post("/api/credits/account-check", async (req, res) => {
     reason: v.reason || "",
     isPro: v.isPro,
     tier: v.tier,
+    appleSynced: v.appleSynced,
+    email: v.email,
+    displayName: v.displayName,
+    devices: v.devices,
     min: CREDIT_TOPUP_MIN,
     max: CREDIT_TOPUP_MAX,
     centsPerCredit: topupCentsPerCredit(v.isPro)
@@ -692,14 +754,83 @@ app.post("/api/credits/checkout", async (req, res) => {
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       line_items: [{ quantity: 1, price_data: { currency: "usd", unit_amount: cents, product_data: { name: `${credits.toLocaleString()} Taki AI credits${v.isPro ? " (Pro price)" : ""}` } } }],
-      metadata: { identity, credits: String(credits) },
-      success_url: `${WEB_BASE_URL}/buy?status=success`,
+      metadata: { identity: v.ledgerIdentity, publicId: identity, credits: String(credits), purchaseType: "credits" },
+      success_url: `${WEB_BASE_URL}/buy?status=success&kind=credits&account=${encodeURIComponent(identity)}`,
       cancel_url: `${WEB_BASE_URL}/buy?status=canceled`
     });
     res.json({ url: session.url, priceUsd: (cents / 100).toFixed(2) });
   } catch (e) {
     console.error("Stripe checkout error:", e);
     res.status(502).json({ error: "could not start checkout" });
+  }
+});
+
+type WebSubscription = { id: string; identity: string; publicId: string; tier: Tier; active: boolean; updatedAt: number };
+const webSubKey = (id: string) => `stripe:subscription:${id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+const webSubsForIdentityKey = (identity: string) => `stripe:identity-subs:${identity.replace(/[^a-zA-Z0-9_:-]/g, "_")}`;
+
+async function saveWebSubscription(record: WebSubscription): Promise<void> {
+  await storeSet(webSubKey(record.id), record);
+  const key = webSubsForIdentityKey(record.identity);
+  const list = await storeGet<{ ids: string[] }>(key, { ids: [] });
+  if (!list.ids.includes(record.id)) { list.ids.push(record.id); await storeSet(key, list); }
+}
+
+async function hasOtherActiveWebSubscription(identity: string, excluding: string): Promise<boolean> {
+  const list = await storeGet<{ ids: string[] }>(webSubsForIdentityKey(identity), { ids: [] });
+  for (const id of list.ids) {
+    if (id === excluding) continue;
+    const record = await storeGet<WebSubscription | null>(webSubKey(id), null);
+    if (record?.active) return true;
+  }
+  return false;
+}
+
+async function retireOtherWebSubscriptions(identity: string, keeping: string): Promise<void> {
+  if (!stripe) return;
+  const list = await storeGet<{ ids: string[] }>(webSubsForIdentityKey(identity), { ids: [] });
+  for (const id of list.ids) {
+    if (id === keeping) continue;
+    const record = await storeGet<WebSubscription | null>(webSubKey(id), null);
+    if (!record?.active) continue;
+    try { await stripe.subscriptions.cancel(id); } catch (error) { console.error("retire prior Stripe subscription:", error); }
+    record.active = false;
+    record.updatedAt = Date.now();
+    await storeSet(webSubKey(id), record);
+  }
+}
+
+app.post("/api/plans/checkout", async (req, res) => {
+  if (!stripe) { res.status(503).json({ error: "subscriptions are not available yet" }); return; }
+  const publicId = typeof req.body?.identity === "string" ? normalizeTopupIdentity(req.body.identity) : "";
+  const tier = String(req.body?.tier || "") as Tier;
+  if (!(["plus", "plus_voice", "pro"] as string[]).includes(tier)) { res.status(400).json({ error: "choose a valid plan" }); return; }
+  const account = await validateTopupAccount(publicId);
+  if (!account.valid) { res.status(403).json({ error: account.reason || "This account can't purchase a plan." }); return; }
+  const config = TIERS[tier];
+  const unitAmount = Math.round(config.priceUsd * 100);
+  const metadata = { identity: account.ledgerIdentity, publicId, tier, purchaseType: "plan" };
+  try {
+    const session = await stripe.checkout.sessions.create({
+      mode: "subscription",
+      line_items: [{
+        quantity: 1,
+        price_data: {
+          currency: "usd",
+          unit_amount: unitAmount,
+          recurring: { interval: "month" },
+          product_data: { name: `Taki AI ${config.label}`, description: `${config.creditsPerCycle.toLocaleString()} credits each month` }
+        }
+      }],
+      metadata,
+      subscription_data: { metadata },
+      success_url: `${WEB_BASE_URL}/buy?status=plan-success&account=${encodeURIComponent(publicId)}&plan=${encodeURIComponent(tier)}`,
+      cancel_url: `${WEB_BASE_URL}/buy?status=canceled`
+    });
+    res.json({ url: session.url, priceUsd: config.priceUsd.toFixed(2) });
+  } catch (e) {
+    console.error("Stripe subscription checkout error:", e);
+    res.status(502).json({ error: "could not start subscription checkout" });
   }
 });
 
@@ -718,6 +849,26 @@ app.post("/api/stripe/webhook", async (req, res) => {
   if (event.type === "checkout.session.completed") {
     const s = event.data.object as Stripe.Checkout.Session;
     const identity = s.metadata?.identity || "";
+    const purchaseType = s.metadata?.purchaseType || "credits";
+    if (purchaseType === "plan") {
+      const tier = String(s.metadata?.tier || "") as Tier;
+      const subscriptionId = typeof s.subscription === "string" ? s.subscription : s.subscription?.id || "";
+      const dedupeKey = `stripe:session:${s.id}`;
+      try {
+        if (identity && subscriptionId && (["plus", "plus_voice", "pro"] as string[]).includes(tier) && !(await storeGet<boolean>(dedupeKey, false))) {
+          await saveWebSubscription({ id: subscriptionId, identity, publicId: s.metadata?.publicId || "", tier, active: true, updatedAt: Date.now() });
+          await retireOtherWebSubscriptions(identity, subscriptionId);
+          const granted = await grantForTransaction(identity, tier, `stripe:first:${s.id}`);
+          await storeSet(dedupeKey, true);
+          if (granted.granted) {
+            await noteTier(identity, tier, "stripe_subscription");
+            await noteRevenue(identity, { at: Date.now(), kind: "web_subscription", amountUsd: (s.amount_total || TIERS[tier].priceUsd * 100) / 100, credits: TIERS[tier].creditsPerCycle, tier });
+          }
+        }
+      } catch (e) { console.error("Stripe subscription grant error:", e); }
+      res.json({ received: true });
+      return;
+    }
     const credits = parseInt(s.metadata?.credits || "0", 10);
     const dedupeKey = `stripe:session:${s.id}`;
     try {
@@ -728,6 +879,39 @@ app.post("/api/stripe/webhook", async (req, res) => {
       }
     } catch (e) {
       console.error("Stripe grant error:", e);
+    }
+  }
+  if (event.type === "invoice.paid") {
+    const invoice: any = event.data.object;
+    const billingReason = String(invoice.billing_reason || "");
+    if (billingReason !== "subscription_create") {
+      const rawSub = invoice.subscription || invoice.parent?.subscription_details?.subscription;
+      const subscriptionId = typeof rawSub === "string" ? rawSub : rawSub?.id || "";
+      const dedupeKey = `stripe:invoice:${invoice.id}`;
+      try {
+        const record = subscriptionId ? await storeGet<WebSubscription | null>(webSubKey(subscriptionId), null) : null;
+        if (record?.active && !(await storeGet<boolean>(dedupeKey, false))) {
+          const granted = await grantForTransaction(record.identity, record.tier, `stripe:renewal:${invoice.id}`);
+          await storeSet(dedupeKey, true);
+          if (granted.granted) {
+            await noteTier(record.identity, record.tier, "stripe_renewal");
+            await noteRevenue(record.identity, { at: Date.now(), kind: "web_subscription", amountUsd: Number(invoice.amount_paid || 0) / 100, credits: TIERS[record.tier].creditsPerCycle, tier: record.tier });
+          }
+        }
+      } catch (e) { console.error("Stripe renewal grant error:", e); }
+    }
+  }
+  if (event.type === "customer.subscription.deleted") {
+    const subscription: any = event.data.object;
+    const record = await storeGet<WebSubscription | null>(webSubKey(String(subscription.id || "")), null);
+    if (record) {
+      record.active = false;
+      record.updatedAt = Date.now();
+      await storeSet(webSubKey(record.id), record);
+      if (!(await hasOtherActiveWebSubscription(record.identity, record.id)) && !(await primarySubscriptionForIdentity(record.identity))) {
+        await downgradeToFree(record.identity);
+        await noteTier(record.identity, "free", "stripe_subscription_ended");
+      }
     }
   }
   res.json({ received: true });
@@ -1092,7 +1276,9 @@ app.post("/api/admin/users", async (req, res) => {
     const costUsd = Math.round(u.creditsUsed * CREDIT_USD * 100) / 100;
     // Net revenue estimate (subscriptions ≈ 85% after Apple; top-ups ≈ Stripe fee).
     let netUsd = 0;
-    for (const p of u.purchases) netUsd += p.kind === "topup" ? Math.max(0, p.amountUsd * 0.971 - 0.30) : p.amountUsd * 0.85;
+    for (const p of u.purchases) netUsd += p.kind === "topup" || p.kind === "web_subscription"
+      ? Math.max(0, p.amountUsd * 0.971 - 0.30)
+      : p.amountUsd * 0.85;
     netUsd = Math.round(netUsd * 100) / 100;
     const neighbors = new Set<string>();
     for (const ip of u.ips) for (const i of await identitiesForIp(ip)) if (i !== u.identity) neighbors.add(i);
