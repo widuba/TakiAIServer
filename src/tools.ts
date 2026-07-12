@@ -2579,7 +2579,32 @@ export function assessAnswerConfidence(text: string, opts: { grounded?: boolean 
   return hedged ? 6 : 8;
 }
 
-export async function getGeneralAnswer(state: ConversationState): Promise<{ text: string; confidence: number }> {
+// Whether the message asks for OBJECTIVE, checkable information (a fact, number,
+// definition, date, live datum) rather than an opinion, recommendation, creative
+// task, or chit-chat. The confidence meter is only meaningful for the former —
+// there is no "correctness" to rate for a poem, a preference, or "hey".
+export function looksLikeObjectiveInfoQuestion(message: string): boolean {
+  const m = message.trim().toLowerCase();
+  if (!m) return false;
+
+  // Subjective, creative, or advisory — no objective confidence to show.
+  if (/\b(should i|do you (think|reckon|feel|prefer|like)|what do you think|your (opinion|favorite|favourite|take|thoughts)|would you|i feel|feel about|recommend|recommendation|suggest|advice|advise|which (do you|should i)|what'?s the best|a good (idea|one|choice|movie|show|book|place|song|game|restaurant)|any good|worth it|write|compose|draft|rewrite|reword|paraphrase|make up|come up with|brainstorm|poem|joke|story|essay|caption|lyrics|\brap\b|song)\b/.test(m)) {
+    return false;
+  }
+  // Greetings / acknowledgements / feelings.
+  if (/^(hi|hello|hey|yo|sup|thanks|thank you|thx|ok|okay|cool|nice|great|awesome|got it|k|lol|haha|good (morning|night|afternoon|evening))\b/.test(m)) return false;
+
+  // Objective factual question shapes.
+  if (/^(what|what'?s|whats|when|when'?s|where|where'?s|who|who'?s|whom|which|whose|how many|how much|how (tall|far|long|old|big|deep|fast|hot|cold|heavy|wide|high))\b/.test(m)) return true;
+  if (/\b(define|definition of|meaning of|capital of|population of|how does .+ work|how do .+ work|convert|what year|what time|distance (from|between)|located|when (did|was|is)|who (is|was|were)|what is the|what are the)\b/.test(m)) return true;
+
+  return false;
+}
+
+export async function getGeneralAnswer(state: ConversationState): Promise<{ text: string; confidence?: number }> {
+  // Only objective, factual questions get a confidence meter; opinions, creative
+  // requests, and chit-chat get an answer with no meter.
+  const objective = looksLikeObjectiveInfoQuestion(state.message);
   const memoryText = state.fullTranscriptText
     ? `
 
@@ -2667,7 +2692,7 @@ ${memoryText}
     const text = stripMarkdown(String(response.text || "").trim());
     if (text) {
       const grounded = needsSearch && (() => { const g = getGroundingSourceCount(response); return g.chunks > 0 || g.webQueries > 0; })();
-      return { text: cap(text), confidence: assessAnswerConfidence(text, { grounded }) };
+      return { text: cap(text), confidence: objective ? assessAnswerConfidence(text, { grounded }) : undefined };
     }
     throw new Error("empty");
   } catch (error) {
@@ -2680,10 +2705,11 @@ ${memoryText}
         "General answer fast"
       );
       const fb = cap(stripMarkdown(String(r2.text || "").trim()));
-      if (fb) return { text: fb, confidence: assessAnswerConfidence(fb, {}) };
-      return { text: "I'm not sure how to answer that — can you say a bit more?", confidence: 3 };
+      if (fb) return { text: fb, confidence: objective ? assessAnswerConfidence(fb, {}) : undefined };
+      return { text: "I'm not sure how to answer that — can you say a bit more?" };
     } catch {
-      return { text: "I had trouble answering that — try me again?", confidence: 2 };
+      // An error is not an objective answer — no meter.
+      return { text: "I had trouble answering that — try me again?" };
     }
   }
 }

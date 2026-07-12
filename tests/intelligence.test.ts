@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { capabilityAnswerFor } from "../src/capabilities.js";
-import { assessAnswerConfidence } from "../src/tools.js";
+import { assessAnswerConfidence, looksLikeObjectiveInfoQuestion } from "../src/tools.js";
 import { buildConversationState } from "../src/context.js";
 import { auditPlannerOutput } from "../src/plannerAudit.js";
 import { fastVoiceReply, looksLikePlainVoiceKnowledgeQuestion, planAssistantResponse, planShareRequest } from "../src/planner.js";
@@ -321,4 +321,18 @@ test("answer confidence reflects certainty and grounding, not a constant", () =>
   assert.equal(assessAnswerConfidence("I'm not sure, it's hard to say.", {}), 4);
   assert.equal(assessAnswerConfidence("I couldn't find any results for that.", {}), 2);
   assert.equal(assessAnswerConfidence("I had trouble answering that — try me again?", {}), 2);
+});
+
+test("confidence meter is limited to objective, checkable questions", () => {
+  // Objective / factual → meter.
+  assert.equal(looksLikeObjectiveInfoQuestion("What's the capital of France?"), true);
+  assert.equal(looksLikeObjectiveInfoQuestion("How tall is Mount Everest"), true);
+  assert.equal(looksLikeObjectiveInfoQuestion("Who won the 2022 World Cup?"), true);
+  assert.equal(looksLikeObjectiveInfoQuestion("convert 10 miles to km"), true);
+  // Subjective / creative / chit-chat → no meter.
+  assert.equal(looksLikeObjectiveInfoQuestion("What should I have for dinner?"), false);
+  assert.equal(looksLikeObjectiveInfoQuestion("Write me a poem about the ocean"), false);
+  assert.equal(looksLikeObjectiveInfoQuestion("What do you think of my plan?"), false);
+  assert.equal(looksLikeObjectiveInfoQuestion("hey"), false);
+  assert.equal(looksLikeObjectiveInfoQuestion("what's a good movie to watch"), false);
 });
