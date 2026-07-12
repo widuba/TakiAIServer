@@ -118,11 +118,12 @@ export async function noteDevice(identity: string, device: { name?: string; mode
   if (!identity) return;
   try {
     const u = await loadUser(identity);
+    const prior = u.device || { lastSeenAt: 0 };
     u.device = {
-      name: String(device.name || "").trim().slice(0, 80) || undefined,
-      model: String(device.model || "").trim().slice(0, 80) || undefined,
-      identifier: String(device.identifier || "").trim().slice(0, 40) || undefined,
-      takiName: String(device.takiName || "").trim().slice(0, 60) || undefined,
+      name: String(device.name || "").trim().slice(0, 80) || prior.name,
+      model: String(device.model || "").trim().slice(0, 80) || prior.model,
+      identifier: String(device.identifier || "").trim().slice(0, 40) || prior.identifier,
+      takiName: String(device.takiName || "").trim().slice(0, 60) || prior.takiName,
       lastSeenAt: Date.now()
     };
     await saveUser(u);

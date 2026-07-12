@@ -604,6 +604,19 @@ app.post("/api/device/info", async (req, res) => {
   res.json({ ok: true });
 });
 
+async function captureRequestDeviceInfo(req: any, takiName: string): Promise<void> {
+  const deviceId = typeof req.body?.physicalDeviceId === "string" ? normalizeTopupIdentity(req.body.physicalDeviceId) : "";
+  if (!/^\d{8}$/.test(deviceId)) return;
+  if (!(await storeGet<boolean>(`devnum:used:${deviceId}`, false)) && !(await hasCreditsAccount(deviceId))) return;
+  const info = req.body?.deviceInfo || {};
+  await noteDevice(deviceId, {
+    name: typeof info.name === "string" ? info.name : "",
+    model: typeof info.model === "string" ? info.model : "",
+    identifier: typeof info.identifier === "string" ? info.identifier : "",
+    takiName
+  });
+}
+
 app.get("/api/credits", async (req, res) => {
   const deviceId = typeof req.query.deviceId === "string" ? req.query.deviceId.trim() : "";
   if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
@@ -671,12 +684,7 @@ function maskedEmail(value: string): string {
 function purchaseDeviceLabel(record: Awaited<ReturnType<typeof userForIdentity>>): string {
   const model = String(record.device?.model || "").trim();
   if (model && model !== "iPhone" && model !== "iPad") return model;
-  const known = `${model} ${record.deviceType || ""}`;
-  if (/iPad/i.test(known)) return "iPad";
-  if (/iPhone/i.test(known)) return "iPhone";
-  if (/Mac/i.test(known)) return "Mac";
-  if (/Android/i.test(known)) return "Android device";
-  return model || "Taki device";
+  return "";
 }
 
 function numberDuplicateDevices(labels: string[]): string[] {
@@ -726,7 +734,7 @@ async function validateTopupAccount(identity: string): Promise<PurchaseAccount> 
   const deviceIds = appleSub ? await devicesForApple(appleSub) : [id];
   const records = await Promise.all(deviceIds.map((deviceId) => userForIdentity(deviceId)));
   const apple = records.map((record) => record.apple).find((value) => value?.sub === appleSub) || deviceUser.apple;
-  const devices = numberDuplicateDevices(records.map(purchaseDeviceLabel));
+  const devices = numberDuplicateDevices(records.map(purchaseDeviceLabel).filter(Boolean));
   const takiName = records.map((record) => record.device?.takiName).find(Boolean) || deviceUser.device?.takiName || "";
   const deviceOwnerName = records.map((record) => ownerNameFromDeviceName(record.device?.name)).find(Boolean) || "";
   const summary = await creditSummary(ledgerIdentity);
@@ -1483,9 +1491,10 @@ app.post("/api/assistant", async (req, res) => {
   // Privacy: only the style vectors for recipients named in this message arrive
   // here — never a contact list or message history.
   const styleProfiles = parseIncomingStyleProfiles(req.body?.styleProfiles);
-  // Personalization (name / about / personality) lives on the device and is sent
-  // per request; the server stores none of it.
+  // Personalization lives on-device. The account-confirmation name is the only
+  // profile field retained, and only because the user opted to show it on /buy.
   const userProfile = parseUserPersona(req.body?.profile, req.body?.addressUser);
+  await captureRequestDeviceInfo(req, userProfile.name);
 
   const state = buildConversationState(userMessage, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, voiceMode, deviceId);
 
@@ -1543,6 +1552,7 @@ app.post("/api/voice", async (req, res) => {
     : 0.5;
   const styleProfiles = parseIncomingStyleProfiles(req.body?.styleProfiles);
   const userProfile = parseUserPersona(req.body?.profile, req.body?.addressUser);
+  await captureRequestDeviceInfo(req, userProfile.name);
   if (!audioBase64 && !deviceTranscript) { res.status(400).json({ error: "audioBase64 or transcript required" }); return; }
 
   // Free tier: hard cap of voice questions regardless of credits.
