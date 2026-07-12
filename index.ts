@@ -690,6 +690,11 @@ function numberDuplicateDevices(labels: string[]): string[] {
   });
 }
 
+function ownerNameFromDeviceName(value: string | undefined): string {
+  const match = String(value || "").trim().match(/^(.+?)[’']s\s+(?:iPhone|iPad|Mac)\b/i);
+  return match?.[1]?.trim().slice(0, 60) || "";
+}
+
 async function validateTopupAccount(identity: string): Promise<PurchaseAccount> {
   const id = normalizeTopupIdentity(identity);
   if (!/^\d{8}$/.test(id)) {
@@ -722,6 +727,8 @@ async function validateTopupAccount(identity: string): Promise<PurchaseAccount> 
   const records = await Promise.all(deviceIds.map((deviceId) => userForIdentity(deviceId)));
   const apple = records.map((record) => record.apple).find((value) => value?.sub === appleSub) || deviceUser.apple;
   const devices = numberDuplicateDevices(records.map(purchaseDeviceLabel));
+  const takiName = records.map((record) => record.device?.takiName).find(Boolean) || deviceUser.device?.takiName || "";
+  const deviceOwnerName = records.map((record) => ownerNameFromDeviceName(record.device?.name)).find(Boolean) || "";
   const summary = await creditSummary(ledgerIdentity);
   return {
     valid: true,
@@ -731,7 +738,7 @@ async function validateTopupAccount(identity: string): Promise<PurchaseAccount> 
     tier: summary.tier,
     appleSynced: !!appleSub,
     email: maskedEmail(apple?.email || ""),
-    displayName: (appleSub ? apple?.name : deviceUser.device?.takiName) || "Taki user",
+    displayName: (appleSub ? apple?.name : "") || takiName || deviceOwnerName || `Account ${id}`,
     devices: devices.slice(0, 8)
   };
 }
