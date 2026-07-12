@@ -9,6 +9,7 @@ import { blankAction } from "../src/types.js";
 import { finalizeResponse, resolveCalendarUpdateDates, validateAction } from "../src/validators.js";
 import { briefForVoice, VOICE_MAX_CHARS } from "../src/util.js";
 import { youtubeVideoInputURL } from "../src/tools.js";
+import { usageLimitsFor } from "../src/credits.js";
 import { stabilityForVariability } from "../src/voice.js";
 import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
@@ -329,4 +330,11 @@ test("all common YouTube links route through video input", () => {
   assert.equal(youtubeVideoInputURL("https://www.youtube.com/live/dQw4w9WgXcQ"), expected);
   assert.equal(youtubeVideoInputURL("https://www.youtube.com/embed/dQw4w9WgXcQ"), expected);
   assert.equal(youtubeVideoInputURL("https://example.com/shorts/dQw4w9WgXcQ"), null);
+});
+
+test("usage limits add purchased credits to both plan windows", () => {
+  assert.deepEqual(usageLimitsFor("plus", 5_000), { daily: 5_150, monthly: 8_000 });
+  assert.deepEqual(usageLimitsFor("plus_voice", 0), { daily: 225, monthly: 4_500 });
+  assert.deepEqual(usageLimitsFor("pro", 0), { daily: 750, monthly: 15_000 });
+  assert.deepEqual(usageLimitsFor("free", 0), { daily: 5, monthly: 100 });
 });

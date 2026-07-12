@@ -124,7 +124,17 @@ export interface CreditAccount {
   // FREE voice turns used THIS billing cycle (reset on renewal). Enforces the
   // per-cycle free-voice allowance for Plus Voice / Pro.
   voiceCycleCount?: number;
+  dailyUsage?: { key: string; used: number };
+  monthlyUsage?: { key: string; used: number };
+  topupAllowances?: { id: string; amount: number; expiresAt: number }[];
   updatedAt: number;
+}
+
+export interface UsageWindow {
+  used: number;
+  limit: number;
+  resetsAt: number;
+  percent: number;
 }
 
 export interface CreditSummary {
@@ -140,6 +150,11 @@ export interface CreditSummary {
   baseCredits: number;
   // FREE voice turns used this cycle (for the per-cycle allowance).
   voiceCycleUsed: number;
+  additionalCredits: number;
+  daily: UsageWindow;
+  monthly: UsageWindow;
+  limitReached: boolean;
+  limitReason: "daily" | "monthly" | null;
 }
 
 function keyFor(deviceId: string): string {
@@ -164,6 +179,14 @@ async function load(deviceId: string): Promise<CreditAccount> {
   // Drop fully-expired / emptied grants to keep the blob small.
   const now = Date.now();
   acct.grants = acct.grants.filter((g) => g.expiresAt > now && g.remaining > 0);
+  if (!Array.isArray(acct.topupAllowances)) acct.topupAllowances = [];
+  for (const grant of acct.grants) {
+    if (/topup/i.test(grant.source) && !acct.topupAllowances.some((item) => item.id === grant.id)) {
+      acct.topupAllowances.push({ id: grant.id, amount: grant.amount, expiresAt: grant.expiresAt });
+    }
+  }
+  acct.topupAllowances = acct.topupAllowances.filter((item) => item.expiresAt > now && item.amount > 0);
+  rollUsageWindows(acct, now);
   return acct;
 }
 
@@ -172,15 +195,17 @@ async function save(acct: CreditAccount): Promise<void> {
   await storeSet(keyFor(acct.deviceId), acct);
 }
 
-function addGrant(acct: CreditAccount, source: string, amount: number): void {
-  if (amount <= 0) return;
+function addGrant(acct: CreditAccount, source: string, amount: number): CreditGrant | null {
+  if (amount <= 0) return null;
   const now = Date.now();
-  acct.grants.push({
+  const grant: CreditGrant = {
     id: `g_${now}_${Math.random().toString(36).slice(2, 7)}`,
     amount, remaining: amount, grantedAt: now,
     expiresAt: now + GRANT_EXPIRY_DAYS * 86400000,
     source
-  });
+  };
+  acct.grants.push(grant);
+  return grant;
 }
 
 export function balanceOf(acct: CreditAccount): number {
@@ -195,11 +220,64 @@ function ensureStarter(acct: CreditAccount): boolean {
   return true;
 }
 
+function utcDayKey(now: number): string {
+  return new Date(now).toISOString().slice(0, 10);
+}
+
+function utcMonthKey(now: number): string {
+  return new Date(now).toISOString().slice(0, 7);
+}
+
+function nextUTCDay(now: number): number {
+  const d = new Date(now);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
+}
+
+function nextUTCMonth(now: number): number {
+  const d = new Date(now);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
+}
+
+function rollUsageWindows(acct: CreditAccount, now = Date.now()): void {
+  const day = utcDayKey(now);
+  const month = utcMonthKey(now);
+  if (acct.dailyUsage?.key !== day) acct.dailyUsage = { key: day, used: 0 };
+  if (acct.monthlyUsage?.key !== month) acct.monthlyUsage = { key: month, used: 0 };
+}
+
+export function usageLimitsFor(tier: Tier, additionalCredits: number): { daily: number; monthly: number } {
+  const base = tier === "free" ? FREE_STARTER_CREDITS : TIERS[tier].creditsPerCycle;
+  const additional = Math.max(0, Math.floor(additionalCredits));
+  return {
+    daily: Math.ceil(base * 0.05) + additional,
+    monthly: base + additional
+  };
+}
+
+function usageWindow(used: number, limit: number, resetsAt: number): UsageWindow {
+  const safeLimit = Math.max(0, limit);
+  const safeUsed = Math.max(0, Math.round(used));
+  return {
+    used: safeUsed,
+    limit: safeLimit,
+    resetsAt,
+    percent: safeLimit > 0 ? Math.min(100, Math.round((safeUsed / safeLimit) * 100)) : 100
+  };
+}
+
 function summarize(acct: CreditAccount): CreditSummary {
   const now = Date.now();
+  rollUsageWindows(acct, now);
   const live = acct.grants
     .filter((g) => g.expiresAt > now && g.remaining > 0)
     .sort((a, b) => a.expiresAt - b.expiresAt);
+  const additionalCredits = (acct.topupAllowances || [])
+    .filter((item) => item.expiresAt > now)
+    .reduce((sum, item) => sum + item.amount, 0);
+  const limits = usageLimitsFor(acct.tier, additionalCredits);
+  const daily = usageWindow(acct.dailyUsage?.used || 0, limits.daily, nextUTCDay(now));
+  const monthly = usageWindow(acct.monthlyUsage?.used || 0, limits.monthly, nextUTCMonth(now));
+  const limitReason = daily.used >= daily.limit ? "daily" : monthly.used >= monthly.limit ? "monthly" : null;
   return {
     tier: acct.tier,
     balance: balanceOf(acct),
@@ -208,7 +286,12 @@ function summarize(acct: CreditAccount): CreditSummary {
     durable: isDurable(),
     voiceUsed: acct.voiceCount || 0,
     baseCredits: live.filter((g) => g.source.startsWith("subscription:")).reduce((s, g) => s + g.remaining, 0),
-    voiceCycleUsed: acct.voiceCycleCount || 0
+    voiceCycleUsed: acct.voiceCycleCount || 0,
+    additionalCredits,
+    daily,
+    monthly,
+    limitReached: limitReason !== null,
+    limitReason
   };
 }
 
@@ -227,7 +310,11 @@ export async function noteFreeVoice(identity: string): Promise<number> {
 export async function grantCredits(identity: string, amount: number, source: string): Promise<CreditSummary> {
   return withLock(identity, async () => {
     const acct = await load(identity);
-    addGrant(acct, source, Math.max(0, Math.floor(amount)));
+    const grant = addGrant(acct, source, Math.max(0, Math.floor(amount)));
+    if (grant && /topup/i.test(source)) {
+      acct.topupAllowances = acct.topupAllowances || [];
+      acct.topupAllowances.push({ id: grant.id, amount: grant.amount, expiresAt: grant.expiresAt });
+    }
     acct.starterGiven = true;
     await save(acct);
     return summarize(acct);
@@ -290,7 +377,7 @@ export async function grantTier(deviceId: string, tier: Tier): Promise<CreditSum
 
 // Spend `cost` credits, consuming the SOONEST-expiring grants first. Clamps at 0
 // (a last question may slightly overspend rather than be blocked mid-answer).
-export async function spend(deviceId: string, cost: number): Promise<{ spent: number; balance: number; nextExpiry: number | null }> {
+export async function spend(deviceId: string, cost: number): Promise<CreditSummary & { spent: number }> {
   return withLock(deviceId, async () => {
     const acct = await load(deviceId);
     ensureStarter(acct);
@@ -306,9 +393,12 @@ export async function spend(deviceId: string, cost: number): Promise<{ spent: nu
       need -= take;
     }
     acct.grants = acct.grants.filter((g) => g.expiresAt > now && g.remaining > 0);
+    const actualSpent = Math.round(cost) - need;
+    rollUsageWindows(acct, now);
+    acct.dailyUsage!.used += actualSpent;
+    acct.monthlyUsage!.used += actualSpent;
     await save(acct);
-    const next = acct.grants.sort((a, b) => a.expiresAt - b.expiresAt)[0];
-    return { spent: Math.round(cost) - need, balance: balanceOf(acct), nextExpiry: next?.expiresAt ?? null };
+    return { ...summarize(acct), spent: actualSpent };
   });
 }
 
@@ -358,12 +448,14 @@ export async function mergeCredits(fromId: string, toId: string): Promise<Credit
     for (const g of from.grants) {
       if (g.expiresAt > now && g.remaining > 0) to.grants.push(g);
     }
+    to.topupAllowances = [...(to.topupAllowances || []), ...(from.topupAllowances || [])]
+      .filter((item, index, all) => all.findIndex((candidate) => candidate.id === item.id) === index);
     to.tier = higherTier(to.tier, from.tier);
     to.starterGiven = to.starterGiven || from.starterGiven;
     to.processedTx = [...(to.processedTx || []), ...(from.processedTx || [])].slice(-200);
     await save(to);
     // Empty the source so its credits can't be claimed again.
-    await save({ deviceId: fromId, tier: "free", grants: [], starterGiven: true, processedTx: [], updatedAt: Date.now() });
+    await save({ deviceId: fromId, tier: "free", grants: [], starterGiven: true, processedTx: [], topupAllowances: [], updatedAt: Date.now() });
     return summarize(to);
   });
 }
