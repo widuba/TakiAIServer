@@ -2,7 +2,7 @@ import { ai, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, LIST_RESEARCH_TIME
 import { personaPromptBlock, characterDirective, GUARDRAILS } from "./persona.js";
 import { capabilityPromptBlock } from "./capabilities.js";
 import type { UserPersona } from "./persona.js";
-import { isoFromYmdTime, addMinutesToIsoLocal, addDaysToYmd, ymdInTimeZone, extractJsonObject } from "./util.js";
+import { isoFromYmdTime, addMinutesToIsoLocal, addDaysToYmd, ymdInTimeZone, extractJsonObject, VOICE_MAX_CHARS, briefForVoice } from "./util.js";
 import { extractFlightCode } from "./entityClassifier.js";
 
 function isValidTimeZone(tz: string): boolean {
@@ -2034,16 +2034,15 @@ User request: ${JSON.stringify(String(message).slice(0, 2000))}`;
     })).filter((item: any) => item.name && item.values.length === criteria.length).slice(0, 4);
     const summary = String(parsed.summary || "").trim().slice(0, 500);
     const sources = getGroundingSources(response);
-    if (!criteria.length || items.length < 2) return { spokenText: summary || "What would you like me to compare?", action: null, confidence: 4 };
+    if (!criteria.length || items.length < 2) return { spokenText: summary || "What would you like me to compare?", action: null };
     return {
       spokenText: summary || `Here's a comparison of ${items.map((item: any) => item.name).join(" and ")}.`,
       action: null,
       comparison: { title: String(parsed.title || "Comparison").trim().slice(0, 80), criteria, items, summary },
-      sources,
-      confidence: sources.length ? 9 : 6
+      sources
     };
   } catch {
-    return { spokenText: "I couldn't build that comparison right now.", action: null, confidence: 3 };
+    return { spokenText: "I couldn't build that comparison right now.", action: null };
   }
 }
 
@@ -2192,7 +2191,7 @@ ${message}
     if (allowPrediction) {
       // Predictions are inherently tentative — return the grounded answer as-is.
       if (!answer) return { spokenText: "I couldn't find any predictions or odds for that yet.", action: null };
-      return { spokenText: answer, action: null, sources, confidence: sources.length ? 7 : 4 };
+      return { spokenText: answer, action: null, sources };
     }
 
     if (!answer || !grounded) return { spokenText: "I can't verify that right now.", action: null };
@@ -2203,7 +2202,7 @@ ${message}
       }
     }
 
-    return { spokenText: answer, action: null, sources, confidence: sources.length ? 9 : 5 };
+    return { spokenText: answer, action: null, sources };
   } catch (error) {
     console.error("Strict web error:", error);
     return {
@@ -2561,50 +2560,7 @@ export function eventQueryFromCalendarMessage(message: string) {
 
 /* ---- General conversational answer -------------------------------------- */
 
-// An honest confidence (1-10) derived from what we can actually observe: whether
-// the answer was backed by live search, and the certainty language the model used.
-// This is far more meaningful than a fixed number or an LLM self-rating (models
-// are poorly calibrated at rating their own certainty). The meter moves DOWN when
-// the answer hedges or admits it can't answer, and UP when it's grounded.
-export function assessAnswerConfidence(text: string, opts: { grounded?: boolean } = {}): number {
-  const t = (text || "").toLowerCase();
-  if (!t.trim()) return 5;
-  // Couldn't answer / refused / no data found.
-  if (/\b(can'?t verify|couldn'?t find|couldn'?t reach|had trouble|i don'?t (?:have|know)|not able to|i'?m not able|no information|isn'?t available|can'?t help with that)\b/.test(t)) return 2;
-  // Explicit strong uncertainty.
-  if (/\b(not sure|i'?m not certain|hard to say|it'?s unclear|no way to know|can only guess|difficult to say)\b/.test(t)) return 4;
-  // Soft hedging / estimation language.
-  const hedged = /\b(probably|likely|i think|i believe|might be|may be|maybe|should be|around|roughly|approximately|estimated?|expected|tends? to|typically|generally|usually|in most cases|as far as i know)\b/.test(t);
-  if (opts.grounded) return hedged ? 7 : 9;
-  return hedged ? 6 : 8;
-}
-
-// Whether the message asks for OBJECTIVE, checkable information (a fact, number,
-// definition, date, live datum) rather than an opinion, recommendation, creative
-// task, or chit-chat. The confidence meter is only meaningful for the former —
-// there is no "correctness" to rate for a poem, a preference, or "hey".
-export function looksLikeObjectiveInfoQuestion(message: string): boolean {
-  const m = message.trim().toLowerCase();
-  if (!m) return false;
-
-  // Subjective, creative, or advisory — no objective confidence to show.
-  if (/\b(should i|do you (think|reckon|feel|prefer|like)|what do you think|your (opinion|favorite|favourite|take|thoughts)|would you|i feel|feel about|recommend|recommendation|suggest|advice|advise|which (do you|should i)|what'?s the best|a good (idea|one|choice|movie|show|book|place|song|game|restaurant)|any good|worth it|write|compose|draft|rewrite|reword|paraphrase|make up|come up with|brainstorm|poem|joke|story|essay|caption|lyrics|\brap\b|song)\b/.test(m)) {
-    return false;
-  }
-  // Greetings / acknowledgements / feelings.
-  if (/^(hi|hello|hey|yo|sup|thanks|thank you|thx|ok|okay|cool|nice|great|awesome|got it|k|lol|haha|good (morning|night|afternoon|evening))\b/.test(m)) return false;
-
-  // Objective factual question shapes.
-  if (/^(what|what'?s|whats|when|when'?s|where|where'?s|who|who'?s|whom|which|whose|how many|how much|how (tall|far|long|old|big|deep|fast|hot|cold|heavy|wide|high))\b/.test(m)) return true;
-  if (/\b(define|definition of|meaning of|capital of|population of|how does .+ work|how do .+ work|convert|what year|what time|distance (from|between)|located|when (did|was|is)|who (is|was|were)|what is the|what are the)\b/.test(m)) return true;
-
-  return false;
-}
-
-export async function getGeneralAnswer(state: ConversationState): Promise<{ text: string; confidence?: number }> {
-  // Only objective, factual questions get a confidence meter; opinions, creative
-  // requests, and chit-chat get an answer with no meter.
-  const objective = looksLikeObjectiveInfoQuestion(state.message);
+export async function getGeneralAnswer(state: ConversationState): Promise<{ text: string }> {
   const memoryText = state.fullTranscriptText
     ? `
 
@@ -2691,8 +2647,7 @@ ${memoryText}
     );
     const text = stripMarkdown(String(response.text || "").trim());
     if (text) {
-      const grounded = needsSearch && (() => { const g = getGroundingSourceCount(response); return g.chunks > 0 || g.webQueries > 0; })();
-      return { text: cap(text), confidence: objective ? assessAnswerConfidence(text, { grounded }) : undefined };
+      return { text: cap(text) };
     }
     throw new Error("empty");
   } catch (error) {
@@ -2705,10 +2660,9 @@ ${memoryText}
         "General answer fast"
       );
       const fb = cap(stripMarkdown(String(r2.text || "").trim()));
-      if (fb) return { text: fb, confidence: objective ? assessAnswerConfidence(fb, {}) : undefined };
+      if (fb) return { text: fb };
       return { text: "I'm not sure how to answer that — can you say a bit more?" };
     } catch {
-      // An error is not an objective answer — no meter.
       return { text: "I had trouble answering that — try me again?" };
     }
   }
@@ -2748,4 +2702,109 @@ ${tz ? `The user's local time is ${nowInTimeZone(tz)}.\n` : ""}Question: "${q}"
     console.error("Vision answer failed:", error);
     return "I had trouble looking at that image — try again?";
   }
+}
+
+export async function fitVoiceResponse(text: string, persona?: UserPersona): Promise<string> {
+  const original = stripMarkdown(String(text || "").trim());
+  if (original.length <= VOICE_MAX_CHARS && !/[.…]+$/.test(original)) return original;
+  try {
+    const response: any = await withTimeout(
+      ai.models.generateContent({
+        model: MAIN_MODEL,
+        contents: `Rewrite the following answer for spoken playback. Preserve the most useful fact. Return one complete plain-text sentence of at most ${VOICE_MAX_CHARS - 5} characters. Do not use an ellipsis, markdown, a preface, or mention shortening.\n\nANSWER:\n${original}`,
+        config: { thinkingConfig: { thinkingBudget: 0 }, ...safetyConfig(persona?.teen) }
+      } as any),
+      5000,
+      "Voice response fit"
+    );
+    const rewritten = stripMarkdown(String(response.text || "").trim()).replace(/[.…]+$/g, "").trim();
+    if (rewritten && rewritten.length <= VOICE_MAX_CHARS - (/[.!?]$/.test(rewritten) ? 0 : 1)) {
+      return /[.!?]$/.test(rewritten) ? rewritten : `${rewritten}.`;
+    }
+  } catch {
+    // The deterministic fallback below still guarantees the display/TTS cap.
+  }
+  return briefForVoice(original);
+}
+
+export type TakiAttachment = {
+  kind: "image" | "file" | "url" | "text";
+  name?: string;
+  mime?: string;
+  base64?: string;
+  text?: string;
+  url?: string;
+};
+
+export async function answerAboutAttachments(
+  attachments: TakiAttachment[],
+  question: string,
+  persona?: UserPersona,
+  timeZone?: string
+): Promise<{ text: string; sources: { title: string; url: string }[] }> {
+  const q = question.trim() || "Summarize the attached sources.";
+  const parts: any[] = [];
+  const sources: { title: string; url: string }[] = [];
+  let needsURLContext = false;
+
+  for (const attachment of attachments.slice(0, 6)) {
+    const name = String(attachment.name || "Attachment").slice(0, 160);
+    if (attachment.kind === "url" && attachment.url) {
+      const url = attachment.url.trim();
+      if (!/^https?:\/\//i.test(url)) continue;
+      sources.push({ title: name || new URL(url).hostname, url });
+      if (/(?:youtube\.com\/watch|youtu\.be\/)/i.test(url)) {
+        parts.push({ fileData: { fileUri: url } });
+        parts.push({ text: `The preceding item is the public YouTube source ${url}.` });
+      } else {
+        needsURLContext = true;
+        parts.push({ text: `Use this public webpage as a primary source: ${url}` });
+      }
+      continue;
+    }
+    if (attachment.kind === "text" && attachment.text) {
+      parts.push({ text: `Attached text (${name}):\n${attachment.text.slice(0, 100_000)}` });
+      continue;
+    }
+    if ((attachment.kind === "image" || attachment.kind === "file") && attachment.base64) {
+      const mime = String(attachment.mime || "application/octet-stream").toLowerCase();
+      const bytes = Buffer.byteLength(attachment.base64, "base64");
+      if (bytes > 10 * 1024 * 1024) throw new Error(`${name} is larger than 10 MB.`);
+      if (mime.startsWith("text/") || mime === "application/json" || mime === "application/xml") {
+        const text = Buffer.from(attachment.base64, "base64").toString("utf8").slice(0, 100_000);
+        parts.push({ text: `Attached file (${name}, ${mime}):\n${text}` });
+      } else if (mime.startsWith("image/") || mime.startsWith("audio/") || mime.startsWith("video/") || mime === "application/pdf") {
+        parts.push({ inlineData: { mimeType: mime, data: attachment.base64 } });
+        parts.push({ text: `The preceding attachment is named ${name}.` });
+      } else {
+        parts.push({ text: `The user attached ${name}, but its ${mime} format is not readable by the current Gemini attachment input. Say that clearly if the question depends on its contents.` });
+      }
+    }
+  }
+
+  const tz = timeZone && isValidTimeZone(timeZone) ? timeZone : "";
+  parts.push({ text: `${GUARDRAILS}${personaPromptBlock(persona)}
+You are Taki AI answering from the attachments and sources supplied in this request.
+${tz ? `The user's local time is ${nowInTimeZone(tz)}.\n` : ""}Question: "${q}"
+
+- Lead with the answer and distinguish source facts from your inference.
+- Never guess about content you cannot access. State the exact limitation.
+- You can inspect supported inputs, but you cannot generate or return images, videos, audio, downloadable files, or other media.
+- Plain text only. Do not claim that an attachment or generated file was created.
+- Match the configured personality without sacrificing accuracy.` });
+
+  const response: any = await withTimeout(
+    ai.models.generateContent({
+      model: MAIN_MODEL,
+      contents: parts,
+      config: {
+        ...(needsURLContext ? { tools: [{ urlContext: {} }] } : {}),
+        ...safetyConfig(persona?.teen)
+      }
+    } as any),
+    40000,
+    "Attachments"
+  );
+  const text = stripMarkdown(String(response.text || "").trim()) || "I couldn't read enough from that attachment to answer.";
+  return { text, sources };
 }

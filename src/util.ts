@@ -381,13 +381,17 @@ export function extractReminderTitle(message: string) {
 // bounds the per-answer TTS cost (so included-voice tiers can't run up the bill).
 export const VOICE_MAX_CHARS = 140;
 export function briefForVoice(text: string): string {
-  const t = String(text || "").trim();
+  const t = String(text || "").trim().replace(/[.…]+$/g, "").trim();
   if (!t) return t;
   const sentences = t.match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g) || [t];
   // One sentence if it covers the gist; a second only if the first is very short.
   let out = sentences[0]?.trim() || t;
   if (out.length < 70 && sentences[1]) out = (out + " " + sentences[1].trim()).trim();
-  // Hard cap — truncate cleanly on a word boundary.
-  if (out.length > VOICE_MAX_CHARS) out = out.slice(0, VOICE_MAX_CHARS).replace(/\s+\S*$/, "").trim() + "…";
-  return out || t.slice(0, VOICE_MAX_CHARS);
+  // Safety fallback only. The primary voice path asks Gemini to rewrite before
+  // synthesis; this guarantees even a failed rewrite never exposes an ellipsis.
+  if (out.length > VOICE_MAX_CHARS) {
+    out = out.slice(0, VOICE_MAX_CHARS - 1).replace(/\s+\S*$/, "").replace(/[,:;\-\s]+$/g, "").trim();
+    if (out && !/[.!?]$/.test(out)) out += ".";
+  }
+  return out || "I don't have a short answer yet.";
 }

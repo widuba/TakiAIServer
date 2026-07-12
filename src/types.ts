@@ -295,7 +295,6 @@ export type AssistantMemory = {
 export type AssistantResponse = {
   spokenText: string;
   action: AssistantAction | null;
-  confidence?: number;
   sources?: AssistantSource[];
   comparison?: AssistantComparison;
   // Present (length > 1) when the request produced several actions to run.

@@ -298,15 +298,6 @@ function stripFalsePromises(spokenText: string): string {
  * ==========================================================================*/
 
 export function finalizeResponse(plan: AssistantPlan, state: ConversationState): AssistantResponse {
-  // The confidence meter is only for objective informational answers. It is
-  // emitted ONLY when the answer path attached a real confidence (or the answer
-  // is grounded by live sources) — never for actions, clarifying questions, or
-  // subjective/creative/chit-chat replies (those carry no confidence, so no meter).
-  const hasAction = !!(plan.action || (plan.actions && plan.actions.length));
-  const rawConfidence = hasAction ? undefined : (plan.confidence ?? (plan.sources?.length ? 9 : undefined));
-  const confidence = typeof rawConfidence === "number"
-    ? Math.max(1, Math.min(10, Math.round(rawConfidence)))
-    : undefined;
   // ---- Multi-action plans (e.g. "add the next 3 games") ------------------
   if (plan.actions && plan.actions.length > 1) {
     const good = plan.actions
@@ -335,7 +326,6 @@ export function finalizeResponse(plan: AssistantPlan, state: ConversationState):
         action: good[0],
         actions: good,
         sources: plan.sources,
-        confidence,
         comparison: plan.comparison,
         memory,
         followUpEvent: eventMemoryToFollowUp(lastEvt),
@@ -440,7 +430,6 @@ export function finalizeResponse(plan: AssistantPlan, state: ConversationState):
     spokenText,
     action: finalAction,
     sources: plan.sources,
-    confidence,
     comparison: plan.comparison,
     memory,
     followUpEvent: eventMemoryToFollowUp(lastEvent),

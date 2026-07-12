@@ -46,9 +46,9 @@ export const CAPABILITIES: Capability[] = [
   },
   {
     id: "photos",
-    summary: "show recent photos, search the photo library on device, and answer questions about a selected image",
-    examples: "show this weekend's photos, find beach photos, what is in this picture",
-    questionPatterns: [/\b(photos?|pictures?|images?|camera)\b/i]
+    summary: "show recent photos, search the photo library on device, and analyze attached photos, supported files, pasted text, public webpages, and public YouTube videos",
+    examples: "show this weekend's photos, what is in this picture, summarize this PDF, use this webpage as a source",
+    questionPatterns: [/\b(photos?|pictures?|images?|camera|attachments?|files?|pdfs?|webpages?|youtube)\b/i]
   },
   {
     id: "organization",
@@ -78,7 +78,7 @@ export const CAPABILITIES: Capability[] = [
 
 export function capabilityPromptBlock(): string {
   const lines = CAPABILITIES.map((cap) => `- ${cap.summary}. Examples: ${cap.examples}.`);
-  return `TAKI'S SHIPPING CAPABILITIES (authoritative; these are implemented now):\n${lines.join("\n")}\n- Some capabilities still require device permission, a configured account, supported hardware/app, or user confirmation. State that specific requirement when relevant; never turn it into a blanket claim that Taki cannot do the task.\n- Do not claim any ability outside this list or imply that an action completed unless an executable action is returned.`;
+  return `TAKI'S SHIPPING CAPABILITIES (authoritative; these are implemented now):\n${lines.join("\n")}\n- Some capabilities still require device permission, a configured account, supported hardware/app, or user confirmation. State that specific requirement when relevant; never turn it into a blanket claim that Taki cannot do the task.\n- Taki can analyze supported attachments but cannot generate or return photos, videos, audio, downloadable files, or other media. Never claim that it created one.\n- Do not claim any ability outside this list or imply that an action completed unless an executable action is returned.`;
 }
 
 function isGenericCapabilityQuestion(message: string): boolean {

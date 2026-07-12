@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { capabilityAnswerFor } from "../src/capabilities.js";
-import { assessAnswerConfidence, looksLikeObjectiveInfoQuestion } from "../src/tools.js";
 import { buildConversationState } from "../src/context.js";
 import { auditPlannerOutput } from "../src/plannerAudit.js";
 import { fastVoiceReply, looksLikePlainVoiceKnowledgeQuestion, planAssistantResponse, planShareRequest } from "../src/planner.js";
 import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
 import { finalizeResponse, resolveCalendarUpdateDates, validateAction } from "../src/validators.js";
+import { briefForVoice, VOICE_MAX_CHARS } from "../src/util.js";
 import { stabilityForVariability } from "../src/voice.js";
 import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
@@ -293,7 +293,6 @@ test("grounded sources survive response finalization", () => {
     needsExecution: false
   }, stateFor("what is current?"));
   assert.deepEqual(response.sources, sources);
-  assert.equal(response.confidence, 9);
 });
 
 test("chat titles are short and stripped of model formatting", () => {
@@ -313,26 +312,10 @@ test("personal rules are bounded and clearly labeled in the persona prompt", () 
   assert.match(personaPromptBlock(persona), /USER RULES/);
 });
 
-test("answer confidence reflects certainty and grounding, not a constant", () => {
-  // Confident plain fact vs grounded live fact vs hedged vs refusal must differ.
-  assert.equal(assessAnswerConfidence("The capital of France is Paris.", {}), 8);
-  assert.equal(assessAnswerConfidence("The price is $172.40.", { grounded: true }), 9);
-  assert.equal(assessAnswerConfidence("It's roughly a 10 minute drive.", {}), 6);
-  assert.equal(assessAnswerConfidence("I'm not sure, it's hard to say.", {}), 4);
-  assert.equal(assessAnswerConfidence("I couldn't find any results for that.", {}), 2);
-  assert.equal(assessAnswerConfidence("I had trouble answering that — try me again?", {}), 2);
-});
-
-test("confidence meter is limited to objective, checkable questions", () => {
-  // Objective / factual → meter.
-  assert.equal(looksLikeObjectiveInfoQuestion("What's the capital of France?"), true);
-  assert.equal(looksLikeObjectiveInfoQuestion("How tall is Mount Everest"), true);
-  assert.equal(looksLikeObjectiveInfoQuestion("Who won the 2022 World Cup?"), true);
-  assert.equal(looksLikeObjectiveInfoQuestion("convert 10 miles to km"), true);
-  // Subjective / creative / chit-chat → no meter.
-  assert.equal(looksLikeObjectiveInfoQuestion("What should I have for dinner?"), false);
-  assert.equal(looksLikeObjectiveInfoQuestion("Write me a poem about the ocean"), false);
-  assert.equal(looksLikeObjectiveInfoQuestion("What do you think of my plan?"), false);
-  assert.equal(looksLikeObjectiveInfoQuestion("hey"), false);
-  assert.equal(looksLikeObjectiveInfoQuestion("what's a good movie to watch"), false);
+test("voice fallback always fits without an ellipsis", () => {
+  const text = "This is a deliberately long spoken answer with enough detail to exceed the voice display limit, followed by additional context that should never be shown as a cut off fragment or with trailing dots in the interface.";
+  const result = briefForVoice(text);
+  assert.ok(result.length <= VOICE_MAX_CHARS);
+  assert.doesNotMatch(result, /(?:\.\.\.|…)/);
+  assert.match(result, /[.!?]$/);
 });
