@@ -680,10 +680,15 @@ async function validateTopupAccount(identity: string): Promise<PurchaseAccount> 
     return { valid: false, reason: "We couldn't find an account with that ID.", publicId: id, ledgerIdentity: id, isPro: false, tier: "free", appleSynced: false, email: "", displayName: "", devices: [] };
   }
   const ledgerIdentity = appleSub ? `apple:${appleSub}` : id;
-  // Restrict any account that's flagged, suspended, terminated, or banned.
+  // Warnings/strikes alone do not block payment. Only an active suspension,
+  // temporary test restriction, termination, or permanent ban does.
   try {
-    const safety = await getSafetyAccount(ledgerIdentity);
-    const restricted = safety.status !== "active" || (safety.strikes || 0) > 0 || (await isBanned(ledgerIdentity, id));
+    const identities = [...new Set([id, ledgerIdentity])];
+    const safetyAccounts = await Promise.all(identities.map((value) => getSafetyAccount(value)));
+    const temporarilyRestricted = (await Promise.all(identities.map((value) => isTestRestricted(value)))).some(Boolean);
+    const restricted = safetyAccounts.some((account) => account.status !== "active")
+      || temporarilyRestricted
+      || (await isBanned(ledgerIdentity, id));
     if (restricted) {
       return { valid: false, reason: "This account isn't eligible for purchases. If you believe this is a mistake, contact Taki AI Support.", publicId: id, ledgerIdentity, isPro: false, tier: "free", appleSynced: !!appleSub, email: "", displayName: "", devices: [] };
     }
