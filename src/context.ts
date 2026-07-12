@@ -96,6 +96,14 @@ export function buildConversationState(
     lastAssistant ? `Most recent assistant response: ${lastAssistant}` : ""
   ].filter(Boolean).join("\n");
 
+  const correctionsText = structured && Array.isArray(structured.corrections)
+    ? structured.corrections.slice(-12).map((item: any, index: number) => {
+        const wrong = String(item?.misunderstoodAnswer || "").trim().slice(0, 800);
+        const correction = String(item?.userCorrection || "").trim().slice(0, 800);
+        return correction ? `Correction ${index + 1}: Assistant misunderstood: ${wrong}\nUser clarified: ${correction}` : "";
+      }).filter(Boolean).join("\n")
+    : "";
+
   const decoded = decodeSavedMemory(structured);
 
   return {
@@ -104,6 +112,7 @@ export function buildConversationState(
     eventTranscriptText,
     fullTranscriptText,
     conversationFocusText,
+    correctionsText,
     nowIso: new Date().toISOString(),
     // Prefer the user's device timezone so "Thursday at 4" lands on the user's
     // calendar, not the server's. Fall back to the server default.

@@ -295,7 +295,9 @@ export type AssistantMemory = {
 export type AssistantResponse = {
   spokenText: string;
   action: AssistantAction | null;
+  confidence?: number;
   sources?: AssistantSource[];
+  comparison?: AssistantComparison;
   // Present (length > 1) when the request produced several actions to run.
   actions?: AssistantAction[] | null;
   memory?: AssistantMemory | null;
@@ -309,6 +311,13 @@ export type AssistantResponse = {
 export type AssistantSource = {
   title: string;
   url: string;
+};
+
+export type AssistantComparison = {
+  title: string;
+  criteria: string[];
+  items: { name: string; values: string[] }[];
+  summary: string;
 };
 
 /* ---- Conversation state (built per request) ----------------------------- */
@@ -329,6 +338,7 @@ export type ConversationState = {
   // A tiny recency-oriented digest used to resolve elliptical follow-ups without
   // making the model hunt through the whole transcript.
   conversationFocusText: string;
+  correctionsText: string;
   nowIso: string;
   timeZone: string;
 
@@ -422,7 +432,9 @@ export type MemoryPatch = {
 export type AssistantPlan = {
   spokenText: string;
   action: AssistantAction | null;
+  confidence?: number;
   sources?: AssistantSource[];
+  comparison?: AssistantComparison;
   // When a single request maps to several actions (e.g. "add the next 3 games"),
   // they go here. `action` mirrors actions[0] for back-compat.
   actions?: AssistantAction[] | null;

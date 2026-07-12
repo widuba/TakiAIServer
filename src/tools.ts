@@ -2,7 +2,7 @@ import { ai, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, LIST_RESEARCH_TIME
 import { personaPromptBlock, characterDirective, GUARDRAILS } from "./persona.js";
 import { capabilityPromptBlock } from "./capabilities.js";
 import type { UserPersona } from "./persona.js";
-import { isoFromYmdTime, addMinutesToIsoLocal, addDaysToYmd, ymdInTimeZone } from "./util.js";
+import { isoFromYmdTime, addMinutesToIsoLocal, addDaysToYmd, ymdInTimeZone, extractJsonObject } from "./util.js";
 import { extractFlightCode } from "./entityClassifier.js";
 
 function isValidTimeZone(tz: string): boolean {
@@ -2000,6 +2000,53 @@ function getGroundingSources(response: any) {
   return sources;
 }
 
+export function looksLikeComparisonRequest(message: string) {
+  return /\b(compare|comparison|versus|vs\.?|difference between|which (?:one )?is better|pros and cons of)\b/i.test(message);
+}
+
+export async function getComparisonAnswer(
+  message: string,
+  opts: { persona?: UserPersona; timeZone?: string } = {}
+): Promise<AssistantResponse> {
+  const prompt = `${GUARDRAILS}
+You are Taki AI. Build a compact, factual comparison using current Google Search when facts may have changed.
+${personaPromptBlock(opts.persona)}
+Return JSON only with this exact shape:
+{"title":"...","criteria":["Criterion"],"items":[{"name":"Option","values":["Value matching each criterion"]}],"summary":"one concise recommendation or bottom line"}
+Rules:
+- Compare only the options the user requested. Use 2-4 options and 2-6 useful criteria.
+- Every item's values array must exactly match the criteria length and order.
+- Use short plain-text values suitable for a phone table.
+- Do not invent specifications, prices, availability, or ratings.
+- If the request lacks two identifiable options, return {"title":"Comparison","criteria":[],"items":[],"summary":"What would you like me to compare?"}.
+User request: ${JSON.stringify(String(message).slice(0, 2000))}`;
+  try {
+    const response: any = await withTimeout(ai.models.generateContent({
+      model: RESEARCH_MODEL,
+      contents: prompt,
+      config: { temperature: 0, tools: [{ googleSearch: {} }], ...safetyConfig(opts.persona?.teen) }
+    } as any), RESEARCH_TIMEOUT_MS, "Comparison");
+    const parsed: any = extractJsonObject(String(response.text || "{}"));
+    const criteria = (Array.isArray(parsed.criteria) ? parsed.criteria : []).map((value: unknown) => String(value).trim().slice(0, 50)).filter(Boolean).slice(0, 6);
+    const items = (Array.isArray(parsed.items) ? parsed.items : []).map((item: any) => ({
+      name: String(item?.name || "").trim().slice(0, 60),
+      values: (Array.isArray(item?.values) ? item.values : []).map((value: unknown) => String(value).trim().slice(0, 180)).slice(0, criteria.length)
+    })).filter((item: any) => item.name && item.values.length === criteria.length).slice(0, 4);
+    const summary = String(parsed.summary || "").trim().slice(0, 500);
+    const sources = getGroundingSources(response);
+    if (!criteria.length || items.length < 2) return { spokenText: summary || "What would you like me to compare?", action: null, confidence: 4 };
+    return {
+      spokenText: summary || `Here's a comparison of ${items.map((item: any) => item.name).join(" and ")}.`,
+      action: null,
+      comparison: { title: String(parsed.title || "Comparison").trim().slice(0, 80), criteria, items, summary },
+      sources,
+      confidence: sources.length ? 9 : 6
+    };
+  } catch {
+    return { spokenText: "I couldn't build that comparison right now.", action: null, confidence: 3 };
+  }
+}
+
 // Predictive / opinion questions ("who's expected to win", "who's favored",
 // "what are the odds") are not hard facts — they are best answered with live
 // odds, recent form, and analyst consensus, framed as a prediction. We must
@@ -2145,7 +2192,7 @@ ${message}
     if (allowPrediction) {
       // Predictions are inherently tentative — return the grounded answer as-is.
       if (!answer) return { spokenText: "I couldn't find any predictions or odds for that yet.", action: null };
-      return { spokenText: answer, action: null, sources };
+      return { spokenText: answer, action: null, sources, confidence: sources.length ? 7 : 4 };
     }
 
     if (!answer || !grounded) return { spokenText: "I can't verify that right now.", action: null };
@@ -2156,7 +2203,7 @@ ${message}
       }
     }
 
-    return { spokenText: answer, action: null, sources };
+    return { spokenText: answer, action: null, sources, confidence: sources.length ? 9 : 5 };
   } catch (error) {
     console.error("Strict web error:", error);
     return {
@@ -2514,7 +2561,25 @@ export function eventQueryFromCalendarMessage(message: string) {
 
 /* ---- General conversational answer -------------------------------------- */
 
-export async function getGeneralAnswer(state: ConversationState): Promise<string> {
+// An honest confidence (1-10) derived from what we can actually observe: whether
+// the answer was backed by live search, and the certainty language the model used.
+// This is far more meaningful than a fixed number or an LLM self-rating (models
+// are poorly calibrated at rating their own certainty). The meter moves DOWN when
+// the answer hedges or admits it can't answer, and UP when it's grounded.
+export function assessAnswerConfidence(text: string, opts: { grounded?: boolean } = {}): number {
+  const t = (text || "").toLowerCase();
+  if (!t.trim()) return 5;
+  // Couldn't answer / refused / no data found.
+  if (/\b(can'?t verify|couldn'?t find|couldn'?t reach|had trouble|i don'?t (?:have|know)|not able to|i'?m not able|no information|isn'?t available|can'?t help with that)\b/.test(t)) return 2;
+  // Explicit strong uncertainty.
+  if (/\b(not sure|i'?m not certain|hard to say|it'?s unclear|no way to know|can only guess|difficult to say)\b/.test(t)) return 4;
+  // Soft hedging / estimation language.
+  const hedged = /\b(probably|likely|i think|i believe|might be|may be|maybe|should be|around|roughly|approximately|estimated?|expected|tends? to|typically|generally|usually|in most cases|as far as i know)\b/.test(t);
+  if (opts.grounded) return hedged ? 7 : 9;
+  return hedged ? 6 : 8;
+}
+
+export async function getGeneralAnswer(state: ConversationState): Promise<{ text: string; confidence: number }> {
   const memoryText = state.fullTranscriptText
     ? `
 
@@ -2558,6 +2623,8 @@ Current user message:
 ${state.message}
 Recent conversation focus:
 ${state.conversationFocusText || "(none)"}
+Explicit corrections from this chat:
+${state.correctionsText || "(none)"}
 ${memoryText}
 `;
 
@@ -2598,7 +2665,10 @@ ${memoryText}
       "General answer"
     );
     const text = stripMarkdown(String(response.text || "").trim());
-    if (text) return cap(text);
+    if (text) {
+      const grounded = needsSearch && (() => { const g = getGroundingSourceCount(response); return g.chunks > 0 || g.webQueries > 0; })();
+      return { text: cap(text), confidence: assessAnswerConfidence(text, { grounded }) };
+    }
     throw new Error("empty");
   } catch (error) {
     console.error("General answer (primary) failed, falling back to flash:", error);
@@ -2609,9 +2679,11 @@ ${memoryText}
         8000,
         "General answer fast"
       );
-      return cap(stripMarkdown(String(r2.text || "").trim())) || "I'm not sure how to answer that — can you say a bit more?";
+      const fb = cap(stripMarkdown(String(r2.text || "").trim()));
+      if (fb) return { text: fb, confidence: assessAnswerConfidence(fb, {}) };
+      return { text: "I'm not sure how to answer that — can you say a bit more?", confidence: 3 };
     } catch {
-      return "I had trouble answering that — try me again?";
+      return { text: "I had trouble answering that — try me again?", confidence: 2 };
     }
   }
 }

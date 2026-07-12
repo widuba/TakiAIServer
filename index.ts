@@ -30,6 +30,7 @@ import { TIERS, CREDIT_USD } from "./src/credits.js";
 import { transcribe, synthesize, listVoices, isVoiceConfigured } from "./src/voice.js";
 import { emailProviderConfigured, createOAuthState, buildAuthUrl, completeOAuth, loadConnection, disconnectEmail, sendEmail, saveDraft, type EmailProvider } from "./src/email.js";
 import { extractDurableMemories } from "./src/userMemory.js";
+import { createChatTitle } from "./src/chatTitle.js";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
 // Render. (The purchase-simulating grant endpoint was removed when real
@@ -1122,7 +1123,7 @@ app.post("/api/assistant", async (req, res) => {
       const general = await getGeneralAnswer(state);
       res.json(
         finalizeResponse(
-          { spokenText: general, action: null, memoryPatch: { pendingClarification: null }, needsExecution: false },
+          { spokenText: general.text, action: null, confidence: general.confidence, memoryPatch: { pendingClarification: null }, needsExecution: false },
           state
         )
       );
@@ -1217,6 +1218,24 @@ app.post("/api/memory/extract", async (req, res) => {
   memoryExtractWindows.set(rateKey, windowState);
   const currentFacts = Array.isArray(req.body?.currentFacts) ? req.body.currentFacts : [];
   res.json(await extractDurableMemories(message, currentFacts, req.body?.teen === true));
+});
+
+app.post("/api/chat/title", async (req, res) => {
+  const message = typeof req.body?.message === "string" ? req.body.message.trim().slice(0, 1200) : "";
+  const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
+  if (!message || !deviceId) { res.status(400).json({ error: "message and deviceId required" }); return; }
+  const ip = clientIp(req);
+  if ((await isBanned(deviceId, deviceId, ip)) || (await isTestRestricted(deviceId))) {
+    res.status(403).json({ error: "access restricted" }); return;
+  }
+  const rateKey = `title:${deviceId}:${ip}`;
+  const now = Date.now();
+  const prior = memoryExtractWindows.get(rateKey);
+  const windowState = !prior || now - prior.startedAt >= 60_000 ? { startedAt: now, count: 0 } : prior;
+  if (windowState.count >= 6) { res.status(429).json({ error: "chat title limit reached" }); return; }
+  windowState.count += 1;
+  memoryExtractWindows.set(rateKey, windowState);
+  res.json({ title: await createChatTitle(message, req.body?.teen === true) });
 });
 
 // The account's available voices, for the app's voice picker.

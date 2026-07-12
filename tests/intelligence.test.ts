@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { capabilityAnswerFor } from "../src/capabilities.js";
+import { assessAnswerConfidence } from "../src/tools.js";
 import { buildConversationState } from "../src/context.js";
 import { auditPlannerOutput } from "../src/plannerAudit.js";
 import { fastVoiceReply, looksLikePlainVoiceKnowledgeQuestion, planAssistantResponse, planShareRequest } from "../src/planner.js";
@@ -12,8 +13,9 @@ import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
 import { parseTrackCommand } from "../src/tracker.js";
-import { looksLikeFlightQuestion } from "../src/tools.js";
+import { looksLikeComparisonRequest, looksLikeFlightQuestion } from "../src/tools.js";
 import { parseUserPersona, personaPromptBlock } from "../src/persona.js";
+import { normalizeChatTitle } from "../src/chatTitle.js";
 
 function stateFor(message: string, turns: { role: "user" | "assistant"; text: string }[] = []) {
   return buildConversationState(message, JSON.stringify({ chatMessages: turns }), undefined, "America/New_York");
@@ -291,4 +293,32 @@ test("grounded sources survive response finalization", () => {
     needsExecution: false
   }, stateFor("what is current?"));
   assert.deepEqual(response.sources, sources);
+  assert.equal(response.confidence, 9);
+});
+
+test("chat titles are short and stripped of model formatting", () => {
+  assert.equal(normalizeChatTitle('**"Vacation Planning: Italy!"**'), "Vacation Planning Italy");
+  assert.equal(normalizeChatTitle("one two three four five six seven"), "one two three four five six");
+});
+
+test("comparison phrasing routes to structured compare mode", () => {
+  assert.equal(looksLikeComparisonRequest("Compare the iPhone and Pixel"), true);
+  assert.equal(looksLikeComparisonRequest("iPhone vs. Pixel"), true);
+  assert.equal(looksLikeComparisonRequest("Tell me about the iPhone"), false);
+});
+
+test("personal rules are bounded and clearly labeled in the persona prompt", () => {
+  const persona = parseUserPersona({ rules: ["Never schedule before 9 AM."] });
+  assert.deepEqual(persona.rules, ["Never schedule before 9 AM."]);
+  assert.match(personaPromptBlock(persona), /USER RULES/);
+});
+
+test("answer confidence reflects certainty and grounding, not a constant", () => {
+  // Confident plain fact vs grounded live fact vs hedged vs refusal must differ.
+  assert.equal(assessAnswerConfidence("The capital of France is Paris.", {}), 8);
+  assert.equal(assessAnswerConfidence("The price is $172.40.", { grounded: true }), 9);
+  assert.equal(assessAnswerConfidence("It's roughly a 10 minute drive.", {}), 6);
+  assert.equal(assessAnswerConfidence("I'm not sure, it's hard to say.", {}), 4);
+  assert.equal(assessAnswerConfidence("I couldn't find any results for that.", {}), 2);
+  assert.equal(assessAnswerConfidence("I had trouble answering that — try me again?", {}), 2);
 });

@@ -26,6 +26,7 @@ import {
   getGeneralAnswer,
   getLocationAnswer,
   getStrictWebAnswer,
+  getComparisonAnswer,
   getWeatherAnswer,
   getStockPrice,
   getCryptoPrice,
@@ -39,6 +40,7 @@ import {
   looksLikeFreshFactQuestion,
   looksLikeLiveInfoQuestion,
   looksLikePredictionQuestion,
+  looksLikeComparisonRequest,
   looksLikeLeaveTimeQuestion,
   looksLikeCountdownRequest,
   eventQueryFromLiveActivityMessage,
@@ -143,8 +145,8 @@ import {
  * spoken/action synchronization is finalized in validators.finalizeResponse.
  * ==========================================================================*/
 
-function answerPlan(spokenText: string, patch: MemoryPatch = {}, sources: AssistantPlan["sources"] = []): AssistantPlan {
-  return { spokenText, action: null, sources, memoryPatch: { pendingClarification: null, ...patch }, needsExecution: false };
+function answerPlan(spokenText: string, patch: MemoryPatch = {}, sources: AssistantPlan["sources"] = [], confidence?: number): AssistantPlan {
+  return { spokenText, action: null, sources, confidence, memoryPatch: { pendingClarification: null, ...patch }, needsExecution: false };
 }
 
 // A genuine question / request (deserves a strong, grounded answer) vs. trivial
@@ -338,6 +340,9 @@ Current user message:
 
 RECENT CONVERSATION FOCUS (use this first for short follow-ups):
 ${state.conversationFocusText || "(none)"}
+
+EXPLICIT CORRECTIONS IN THIS CHAT (never repeat these misunderstandings):
+${state.correctionsText || "(none)"}
 
 ${capabilityPromptBlock()}
 
@@ -1326,7 +1331,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       }
     }
     const res = await getStrictWebAnswer(state.message, { persona: state.userProfile, timeZone: state.timeZone, voiceMode: state.voiceMode });
-    return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
+    return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources, res.confidence);
   }
 
   // "Make this at 1pm: <recipe link>" -> import the user's OWN recipe from the
@@ -1475,7 +1480,20 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
   // never refused as "unverifiable."
   if (looksLikePredictionQuestion(state.message)) {
     const res = await getStrictWebAnswer(state.message, { allowPrediction: true, persona: state.userProfile, timeZone: state.timeZone, voiceMode: state.voiceMode });
-    return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
+    return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources, res.confidence);
+  }
+
+  if (looksLikeComparisonRequest(state.message)) {
+    const res = await getComparisonAnswer(state.message, { persona: state.userProfile, timeZone: state.timeZone });
+    return {
+      spokenText: res.spokenText,
+      action: null,
+      comparison: res.comparison,
+      sources: res.sources,
+      confidence: res.confidence,
+      memoryPatch: { pendingClarification: null, lastIntent: "web_search" },
+      needsExecution: false
+    };
   }
 
   // "Best/latest/newest" product or current-fact questions must use live search
@@ -1500,7 +1518,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
 
   if (!isActionCommand && (looksLikeFreshFactQuestion(state.message) || looksLikeLiveInfoQuestion(state.message))) {
     const res = await getStrictWebAnswer(state.message, { persona: state.userProfile, timeZone: state.timeZone, voiceMode: state.voiceMode });
-    return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
+    return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources, res.confidence);
   }
 
   // "Add the next World Cup game / next Braves game to my calendar" — look the
@@ -1578,7 +1596,8 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
   // of paying for a planner request first. This measured about twice as fast in
   // the live voice path while capability-shaped questions still keep planning.
   if (looksLikePlainVoiceKnowledgeQuestion(state)) {
-    return answerPlan(await getGeneralAnswer(state), { lastIntent: "answer_only" });
+    const ga = await getGeneralAnswer(state);
+    return answerPlan(ga.text, { lastIntent: "answer_only" }, [], ga.confidence);
   }
 
   let plan: PlannerModelOutput;
@@ -1586,7 +1605,8 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
     plan = await runPlannerModel(state);
   } catch (error) {
     console.error("Planner failed, using general answer:", error);
-    return answerPlan(await getGeneralAnswer(state));
+    const ga = await getGeneralAnswer(state);
+    return answerPlan(ga.text, {}, [], ga.confidence);
   }
 
   // Explicit clarification from the planner: park a pending clarification so the
@@ -1672,7 +1692,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         timeZone: state.timeZone,
         voiceMode: state.voiceMode
       });
-      return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
+      return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources, res.confidence);
     }
 
     case "event_lookup": {
@@ -2189,10 +2209,11 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       // Reusing it removes a second sequential Gemini request from ordinary
       // questions. Current/live requests have already been routed to grounded
       // tools above, so this shortcut does not bypass freshness checks.
-      const spoken = inline && (state.voiceMode || !wantsRealAnswer(state.message))
-        ? inline
-        : await getGeneralAnswer(state);
-      return answerPlan(spoken, { lastIntent: "answer_only" });
+      if (inline && (state.voiceMode || !wantsRealAnswer(state.message))) {
+        return answerPlan(inline, { lastIntent: "answer_only" });
+      }
+      const ga = await getGeneralAnswer(state);
+      return answerPlan(ga.text, { lastIntent: "answer_only" }, [], ga.confidence);
     }
   }
 }
