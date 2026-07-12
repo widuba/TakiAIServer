@@ -2736,6 +2736,29 @@ export type TakiAttachment = {
   url?: string;
 };
 
+export function youtubeVideoInputURL(rawURL: string): string | null {
+  try {
+    const parsed = new URL(rawURL);
+    const host = parsed.hostname.toLowerCase().replace(/^(?:www\.|m\.)/, "");
+    let videoId = "";
+    if (host === "youtu.be") {
+      videoId = parsed.pathname.split("/").filter(Boolean)[0] || "";
+    } else if (host === "youtube.com" || host === "youtube-nocookie.com") {
+      videoId = parsed.searchParams.get("v") || "";
+      if (!videoId) {
+        const parts = parsed.pathname.split("/").filter(Boolean);
+        if (["shorts", "live", "embed", "v"].includes((parts[0] || "").toLowerCase())) {
+          videoId = parts[1] || "";
+        }
+      }
+    }
+    if (!/^[A-Za-z0-9_-]{6,20}$/.test(videoId)) return null;
+    return `https://www.youtube.com/watch?v=${videoId}`;
+  } catch {
+    return null;
+  }
+}
+
 export async function answerAboutAttachments(
   attachments: TakiAttachment[],
   question: string,
@@ -2753,8 +2776,9 @@ export async function answerAboutAttachments(
       const url = attachment.url.trim();
       if (!/^https?:\/\//i.test(url)) continue;
       sources.push({ title: name || new URL(url).hostname, url });
-      if (/(?:youtube\.com\/watch|youtu\.be\/)/i.test(url)) {
-        parts.push({ fileData: { fileUri: url } });
+      const youtubeInputURL = youtubeVideoInputURL(url);
+      if (youtubeInputURL) {
+        parts.push({ fileData: { fileUri: youtubeInputURL } });
         parts.push({ text: `The preceding item is the public YouTube source ${url}.` });
       } else {
         needsURLContext = true;

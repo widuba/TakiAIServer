@@ -8,6 +8,7 @@ import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
 import { finalizeResponse, resolveCalendarUpdateDates, validateAction } from "../src/validators.js";
 import { briefForVoice, VOICE_MAX_CHARS } from "../src/util.js";
+import { youtubeVideoInputURL } from "../src/tools.js";
 import { stabilityForVariability } from "../src/voice.js";
 import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
@@ -318,4 +319,14 @@ test("voice fallback always fits without an ellipsis", () => {
   assert.ok(result.length <= VOICE_MAX_CHARS);
   assert.doesNotMatch(result, /(?:\.\.\.|…)/);
   assert.match(result, /[.!?]$/);
+});
+
+test("all common YouTube links route through video input", () => {
+  const expected = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+  assert.equal(youtubeVideoInputURL("https://www.youtube.com/shorts/dQw4w9WgXcQ?feature=share"), expected);
+  assert.equal(youtubeVideoInputURL("https://youtu.be/dQw4w9WgXcQ?si=abc"), expected);
+  assert.equal(youtubeVideoInputURL("https://m.youtube.com/watch?v=dQw4w9WgXcQ"), expected);
+  assert.equal(youtubeVideoInputURL("https://www.youtube.com/live/dQw4w9WgXcQ"), expected);
+  assert.equal(youtubeVideoInputURL("https://www.youtube.com/embed/dQw4w9WgXcQ"), expected);
+  assert.equal(youtubeVideoInputURL("https://example.com/shorts/dQw4w9WgXcQ"), null);
 });
