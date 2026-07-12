@@ -668,6 +668,28 @@ function maskedEmail(value: string): string {
   return `${local.slice(0, 1)}${"•".repeat(Math.min(5, Math.max(2, local.length - 1)))}@${domain}`;
 }
 
+function purchaseDeviceLabel(record: Awaited<ReturnType<typeof userForIdentity>>): string {
+  const model = String(record.device?.model || "").trim();
+  if (model && model !== "iPhone" && model !== "iPad") return model;
+  const known = `${model} ${record.deviceType || ""}`;
+  if (/iPad/i.test(known)) return "iPad";
+  if (/iPhone/i.test(known)) return "iPhone";
+  if (/Mac/i.test(known)) return "Mac";
+  if (/Android/i.test(known)) return "Android device";
+  return model || "Taki device";
+}
+
+function numberDuplicateDevices(labels: string[]): string[] {
+  const totals = new Map<string, number>();
+  const seen = new Map<string, number>();
+  for (const label of labels) totals.set(label, (totals.get(label) || 0) + 1);
+  return labels.map((label) => {
+    const number = (seen.get(label) || 0) + 1;
+    seen.set(label, number);
+    return (totals.get(label) || 0) > 1 && number > 1 ? `${label} ${number}` : label;
+  });
+}
+
 async function validateTopupAccount(identity: string): Promise<PurchaseAccount> {
   const id = normalizeTopupIdentity(identity);
   if (!/^\d{8}$/.test(id)) {
@@ -699,7 +721,7 @@ async function validateTopupAccount(identity: string): Promise<PurchaseAccount> 
   const deviceIds = appleSub ? await devicesForApple(appleSub) : [id];
   const records = await Promise.all(deviceIds.map((deviceId) => userForIdentity(deviceId)));
   const apple = records.map((record) => record.apple).find((value) => value?.sub === appleSub) || deviceUser.apple;
-  const devices = records.map((record) => record.device?.model || record.device?.name || record.deviceType || "Taki device");
+  const devices = numberDuplicateDevices(records.map(purchaseDeviceLabel));
   const summary = await creditSummary(ledgerIdentity);
   return {
     valid: true,
@@ -710,7 +732,7 @@ async function validateTopupAccount(identity: string): Promise<PurchaseAccount> 
     appleSynced: !!appleSub,
     email: maskedEmail(apple?.email || ""),
     displayName: (appleSub ? apple?.name : deviceUser.device?.takiName) || "Taki user",
-    devices: [...new Set(devices)].slice(0, 8)
+    devices: devices.slice(0, 8)
   };
 }
 
