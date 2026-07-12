@@ -140,12 +140,79 @@ export async function verifyTransaction(jws: string): Promise<TxInfo | null> {
 // subscription, and look it up when a renewal/refund notification arrives.
 export async function linkTransactionIdentity(originalTransactionId: string, identity: string): Promise<void> {
   if (!originalTransactionId || !identity) return;
-  await storeSet(`iapmap:${originalTransactionId}`, { identity });
+  const existing = await storeGet<{ identity: string; role?: "primary" | "secondary" }>(`iapmap:${originalTransactionId}`, { identity: "" });
+  await storeSet(`iapmap:${originalTransactionId}`, { identity, role: existing.role });
+  const reverseKey = `iapidentity:${identity.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  const reverse = await storeGet<{ transactionIds: string[] }>(reverseKey, { transactionIds: [] });
+  if (!reverse.transactionIds.includes(originalTransactionId)) {
+    reverse.transactionIds.push(originalTransactionId);
+    await storeSet(reverseKey, reverse);
+  }
 }
 
 export async function getTransactionIdentity(originalTransactionId: string): Promise<string> {
   const v = await storeGet<{ identity: string }>(`iapmap:${originalTransactionId}`, { identity: "" });
   return v?.identity || "";
+}
+
+export async function transactionIdsForIdentity(identity: string): Promise<string[]> {
+  const reverseKey = `iapidentity:${identity.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  return (await storeGet<{ transactionIds: string[] }>(reverseKey, { transactionIds: [] })).transactionIds;
+}
+
+export async function setTransactionRole(
+  originalTransactionId: string,
+  identity: string,
+  role: "primary" | "secondary"
+): Promise<void> {
+  if (!originalTransactionId || !identity) return;
+  await storeSet(`iapmap:${originalTransactionId}`, { identity, role });
+  const reverseKey = `iapidentity:${identity.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  const reverse = await storeGet<{ transactionIds: string[] }>(reverseKey, { transactionIds: [] });
+  if (!reverse.transactionIds.includes(originalTransactionId)) reverse.transactionIds.push(originalTransactionId);
+  await storeSet(reverseKey, reverse);
+}
+
+export async function getTransactionBinding(originalTransactionId: string): Promise<{
+  identity: string;
+  role: "primary" | "secondary";
+}> {
+  const value = await storeGet<{ identity: string; role?: "primary" | "secondary" }>(
+    `iapmap:${originalTransactionId}`,
+    { identity: "" }
+  );
+  return { identity: value.identity || "", role: value.role || "primary" };
+}
+
+function primaryKey(identity: string): string {
+  return `iapprimary:${identity.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+}
+
+export async function primarySubscriptionForIdentity(identity: string): Promise<string> {
+  return (await storeGet<{ originalTransactionId: string }>(primaryKey(identity), { originalTransactionId: "" })).originalTransactionId;
+}
+
+export async function claimPrimarySubscription(identity: string, originalTransactionId: string): Promise<"primary" | "secondary"> {
+  const existing = await primarySubscriptionForIdentity(identity);
+  if (!existing) {
+    await storeSet(primaryKey(identity), { originalTransactionId });
+    await setTransactionRole(originalTransactionId, identity, "primary");
+    return "primary";
+  }
+  const role = existing === originalTransactionId ? "primary" : "secondary";
+  await setTransactionRole(originalTransactionId, identity, role);
+  return role;
+}
+
+export function subscriptionMergeDecision(primary: string, deviceTransactions: string[]): {
+  mode: "keep" | "convert" | "discard";
+  secondaryTransactionId: string;
+} {
+  if (!primary || !deviceTransactions.length) return { mode: "keep", secondaryTransactionId: "" };
+  const secondaryTransactionId = deviceTransactions.find((transactionId) => transactionId !== primary) || "";
+  return secondaryTransactionId
+    ? { mode: "convert", secondaryTransactionId }
+    : { mode: "discard", secondaryTransactionId: "" };
 }
 
 export interface NotificationInfo {

@@ -21,8 +21,8 @@ import { extractFlightCode, normalizeTrackerKind } from "./src/entityClassifier.
 import { setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
 import { isDurable, storeGet, storeSet } from "./src/store.js";
-import { summary as creditSummary, spend, reset as resetCredits, costForRequest, isFreeVoice, paidVoiceCost, noteFreeVoice, tierCatalog, grantForTransaction, downgradeToFree, revokeSubscription, noteVoiceQuestion, grantCredits, topupPriceCents, topupCentsPerCredit, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, type Tier } from "./src/credits.js";
-import { verifyTransaction, linkTransactionIdentity, getTransactionIdentity, verifyNotification } from "./src/iap.js";
+import { summary as creditSummary, spend, reset as resetCredits, costForRequest, isFreeVoice, paidVoiceCost, noteFreeVoice, tierCatalog, grantForTransaction, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, noteVoiceQuestion, grantCredits, topupPriceCents, topupCentsPerCredit, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, type Tier } from "./src/credits.js";
+import { verifyTransaction, linkTransactionIdentity, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
 import { verifyAppleIdentityToken } from "./src/appleauth.js";
 import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, linkApple, devicesForApple, SUSPENDED_MSG, BANNED_MSG, promptExtractionMessageForMode } from "./src/safety.js";
 import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, identitiesForIp, allUsers, deleteUser } from "./src/users.js";
@@ -828,6 +828,13 @@ app.post("/api/iap/verify", async (req, res) => {
     await linkTransactionIdentity(info.originalTransactionId, identity);
     // Skip clearly-expired auto-renewables (a stale entitlement).
     if (info.expiresDate && info.expiresDate < Date.now()) continue;
+    const role = identity.startsWith("apple:")
+      ? await claimPrimarySubscription(identity, info.originalTransactionId)
+      : "primary";
+    if (role === "secondary") {
+      tier = (await creditSummary(identity)).tier;
+      continue;
+    }
     const r = await grantForTransaction(identity, info.tier, info.periodKey);
     if (r.granted) {
       // Analytics: record the plan + gross revenue for this billing period.
@@ -836,10 +843,10 @@ app.post("/api/iap/verify", async (req, res) => {
       if (conf) await noteRevenue(identity, { at: Date.now(), kind: "subscription", amountUsd: conf.priceUsd, credits: conf.creditsPerCycle, tier: info.tier });
     }
     anyGranted = anyGranted || r.granted;
-    tier = info.tier;
+    tier = r.summary.tier;
   }
   if (!tier) { res.status(400).json({ error: "no valid subscription transaction" }); return; }
-  res.json({ ...(await creditSummary(identity)), granted: anyGranted, tier });
+  res.json({ ...(await creditSummary(identity)), granted: anyGranted });
 });
 
 /* ---- Sign in with Apple (optional account) ------------------------------ */
@@ -854,17 +861,55 @@ app.post("/api/account/apple", async (req, res) => {
   if (!identdata) { res.status(401).json({ error: "invalid Apple identity token" }); return; }
   if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
   const fullName = typeof b.fullName === "string" ? b.fullName.trim() : "";
-  // The 8-digit device number stays the identity. Apple sign-in just LINKS this
-  // device to the account (for grouping in the dashboard + a ban cascade) and
-  // attaches the email/name to this device's record. No credit merge, no identity
-  // change — each device keeps its own number and its own balance.
+  const hasEntitlementSnapshot = Array.isArray(b.transactions);
+  const entitlementJWS: string[] = hasEntitlementSnapshot
+    ? b.transactions.filter((value: unknown) => typeof value === "string")
+    : [];
+  const accountId = `apple:${identdata.sub}`;
+  let duplicateSubscriptionNeedsCancellation = false;
   try {
     await linkApple(identdata.sub, deviceId);
     await noteApple(deviceId, { sub: identdata.sub, email: identdata.email, name: fullName || undefined });
     await noteUser(deviceId, clientIp(req), String(req.headers?.["user-agent"] || ""));
+    const activeTransactionIds: string[] = [];
+    for (const jws of entitlementJWS) {
+      const info = await verifyTransaction(jws);
+      if (!info || (info.expiresDate && info.expiresDate < Date.now())) continue;
+      activeTransactionIds.push(info.originalTransactionId);
+      await linkTransactionIdentity(info.originalTransactionId, deviceId);
+      await grantForTransaction(deviceId, info.tier, info.periodKey);
+    }
+    const deviceTransactions = hasEntitlementSnapshot
+      ? [...new Set(activeTransactionIds)]
+      : await transactionIdsForIdentity(deviceId);
+    if (hasEntitlementSnapshot) {
+      const historicalTransactions = await transactionIdsForIdentity(deviceId);
+      for (const transactionId of historicalTransactions) {
+        if (!deviceTransactions.includes(transactionId)) await clearRetiredSubscription(accountId, transactionId);
+      }
+    }
+    let primary = await primarySubscriptionForIdentity(accountId);
+    let subscriptionMode: "keep" | "convert" | "discard" = "keep";
+    let secondaryTransactionId = "";
+
+    if (!primary && deviceTransactions.length) {
+      primary = deviceTransactions[0];
+      await claimPrimarySubscription(accountId, primary);
+    } else {
+      const decision = subscriptionMergeDecision(primary, deviceTransactions);
+      subscriptionMode = decision.mode;
+      secondaryTransactionId = decision.secondaryTransactionId;
+      duplicateSubscriptionNeedsCancellation = decision.mode === "convert";
+    }
+
+    await mergeCredits(deviceId, accountId, { subscriptionMode, secondaryTransactionId });
+    for (const transactionId of deviceTransactions) {
+      const role = transactionId === primary ? "primary" : "secondary";
+      await setTransactionRole(transactionId, accountId, role);
+    }
   } catch (e) { console.error("apple link:", e); }
   const linkedDevices = (await devicesForApple(identdata.sub)).filter((d) => d !== deviceId);
-  res.json({ deviceId, email: identdata.email, linkedDevices, ...(await creditSummary(deviceId)), tiers: tierCatalog() });
+  res.json({ accountId, deviceId, email: identdata.email, linkedDevices, duplicateSubscriptionNeedsCancellation, ...(await creditSummary(accountId)), tiers: tierCatalog() });
 });
 
 // App Store Server Notifications V2 — Apple POSTs {signedPayload} on renewals,
@@ -880,10 +925,17 @@ app.post("/api/iap/notifications", async (req, res) => {
   try {
     const tx = note.tx;
     if (tx) {
-      const identity = await getTransactionIdentity(tx.originalTransactionId);
+      const binding = await getTransactionBinding(tx.originalTransactionId);
+      const identity = binding.identity;
       if (identity) {
         const t = note.notificationType;
-        if (t === "SUBSCRIBED" || t === "DID_RENEW" || t === "OFFER_REDEEMED") {
+        if (binding.role === "secondary") {
+          if (t === "REFUND" || t === "REVOKE") {
+            await revokeMergedSubscriptionCredits(identity, tx.originalTransactionId);
+          } else if (t === "EXPIRED" || t === "GRACE_PERIOD_EXPIRED") {
+            await clearRetiredSubscription(identity, tx.originalTransactionId);
+          }
+        } else if (t === "SUBSCRIBED" || t === "DID_RENEW" || t === "OFFER_REDEEMED") {
           await grantForTransaction(identity, tx.tier, tx.periodKey);
         } else if (t === "REFUND" || t === "REVOKE") {
           await revokeSubscription(identity);

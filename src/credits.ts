@@ -127,6 +127,7 @@ export interface CreditAccount {
   dailyUsage?: { key: string; used: number };
   monthlyUsage?: { key: string; used: number };
   topupAllowances?: { id: string; amount: number; expiresAt: number }[];
+  retiredSubscriptionIds?: string[];
   updatedAt: number;
 }
 
@@ -155,6 +156,7 @@ export interface CreditSummary {
   monthly: UsageWindow;
   limitReached: boolean;
   limitReason: "daily" | "monthly" | null;
+  duplicateSubscriptionNeedsCancellation: boolean;
 }
 
 function keyFor(deviceId: string): string {
@@ -291,7 +293,8 @@ function summarize(acct: CreditAccount): CreditSummary {
     daily,
     monthly,
     limitReached: limitReason !== null,
-    limitReason
+    limitReason,
+    duplicateSubscriptionNeedsCancellation: (acct.retiredSubscriptionIds || []).length > 0
   };
 }
 
@@ -367,7 +370,10 @@ export async function grantTier(deviceId: string, tier: Tier): Promise<CreditSum
   return withLock(deviceId, async () => {
     const acct = await load(deviceId);
     const conf = TIERS[tier];
-    if (conf) addGrant(acct, `subscription:${tier}`, conf.creditsPerCycle);
+    if (conf) {
+      acct.grants = acct.grants.filter((grant) => grant.source !== "free_starter");
+      addGrant(acct, `subscription:${tier}`, conf.creditsPerCycle);
+    }
     acct.tier = tier;
     acct.starterGiven = true;
     await save(acct);
@@ -423,7 +429,10 @@ export async function grantForTransaction(
       return { granted: false, summary: summarize(acct) };
     }
     const conf = TIERS[tier];
-    if (conf) addGrant(acct, `subscription:${tier}`, conf.creditsPerCycle);
+    if (conf) {
+      acct.grants = acct.grants.filter((grant) => grant.source !== "free_starter");
+      addGrant(acct, `subscription:${tier}`, conf.creditsPerCycle);
+    }
     acct.tier = tier;
     acct.starterGiven = true;
     acct.voiceCycleCount = 0; // new cycle → reset the free-voice allowance
@@ -439,18 +448,44 @@ export async function grantForTransaction(
 // Merge one identity's live credits/tier into another (used when a user signs in
 // with Apple: their device's credits follow them to the account). The source is
 // emptied so nothing is double-counted. Idempotent-ish: only live grants move.
-export async function mergeCredits(fromId: string, toId: string): Promise<CreditSummary> {
+export async function mergeCredits(
+  fromId: string,
+  toId: string,
+  options: { subscriptionMode?: "keep" | "convert" | "discard"; secondaryTransactionId?: string } = {}
+): Promise<CreditSummary> {
   if (!fromId || !toId || fromId === toId) return summary(toId);
   return withLock(toId, async () => {
     const from = await load(fromId);
     const to = await load(toId);
     const now = Date.now();
+    const mode = options.subscriptionMode || "keep";
     for (const g of from.grants) {
-      if (g.expiresAt > now && g.remaining > 0) to.grants.push(g);
+      if (g.expiresAt <= now || g.remaining <= 0) continue;
+      if (g.source === "free_starter" && (to.tier !== "free" || to.grants.some((grant) => grant.source === "free_starter"))) continue;
+      if (g.source.startsWith("subscription:")) {
+        if (mode === "discard") continue;
+        if (mode === "convert") {
+          const converted: CreditGrant = {
+            ...g,
+            id: `merged_${g.id}`,
+            amount: g.remaining,
+            source: `topup:merged_subscription:${options.secondaryTransactionId || "duplicate"}`
+          };
+          to.grants.push(converted);
+          to.topupAllowances = to.topupAllowances || [];
+          to.topupAllowances.push({ id: converted.id, amount: converted.remaining, expiresAt: converted.expiresAt });
+          to.retiredSubscriptionIds = to.retiredSubscriptionIds || [];
+          if (options.secondaryTransactionId && !to.retiredSubscriptionIds.includes(options.secondaryTransactionId)) {
+            to.retiredSubscriptionIds.push(options.secondaryTransactionId);
+          }
+          continue;
+        }
+      }
+      to.grants.push(g);
     }
     to.topupAllowances = [...(to.topupAllowances || []), ...(from.topupAllowances || [])]
       .filter((item, index, all) => all.findIndex((candidate) => candidate.id === item.id) === index);
-    to.tier = higherTier(to.tier, from.tier);
+    if (mode === "keep") to.tier = higherTier(to.tier, from.tier);
     to.starterGiven = to.starterGiven || from.starterGiven;
     to.processedTx = [...(to.processedTx || []), ...(from.processedTx || [])].slice(-200);
     await save(to);
@@ -481,6 +516,26 @@ export async function revokeSubscription(identity: string): Promise<void> {
     }
     const now = Date.now();
     acct.grants = acct.grants.filter((g) => g.remaining > 0 && g.expiresAt > now);
+    await save(acct);
+  });
+}
+
+export async function revokeMergedSubscriptionCredits(identity: string, originalTransactionId: string): Promise<void> {
+  return withLock(identity, async () => {
+    const acct = await load(identity);
+    const source = `topup:merged_subscription:${originalTransactionId}`;
+    const removedIds = new Set(acct.grants.filter((grant) => grant.source === source).map((grant) => grant.id));
+    acct.grants = acct.grants.filter((grant) => grant.source !== source);
+    acct.topupAllowances = (acct.topupAllowances || []).filter((allowance) => !removedIds.has(allowance.id));
+    acct.retiredSubscriptionIds = (acct.retiredSubscriptionIds || []).filter((id) => id !== originalTransactionId);
+    await save(acct);
+  });
+}
+
+export async function clearRetiredSubscription(identity: string, originalTransactionId: string): Promise<void> {
+  return withLock(identity, async () => {
+    const acct = await load(identity);
+    acct.retiredSubscriptionIds = (acct.retiredSubscriptionIds || []).filter((id) => id !== originalTransactionId);
     await save(acct);
   });
 }

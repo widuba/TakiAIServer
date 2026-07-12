@@ -10,6 +10,7 @@ import { finalizeResponse, resolveCalendarUpdateDates, validateAction } from "..
 import { briefForVoice, VOICE_MAX_CHARS } from "../src/util.js";
 import { youtubeVideoInputURL } from "../src/tools.js";
 import { usageLimitsFor } from "../src/credits.js";
+import { subscriptionMergeDecision } from "../src/iap.js";
 import { stabilityForVariability } from "../src/voice.js";
 import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
@@ -337,4 +338,10 @@ test("usage limits add purchased credits to both plan windows", () => {
   assert.deepEqual(usageLimitsFor("plus_voice", 0), { daily: 225, monthly: 4_500 });
   assert.deepEqual(usageLimitsFor("pro", 0), { daily: 750, monthly: 15_000 });
   assert.deepEqual(usageLimitsFor("free", 0), { daily: 5, monthly: 100 });
+});
+
+test("Apple account merges distinguish restored and genuinely duplicate subscriptions", () => {
+  assert.deepEqual(subscriptionMergeDecision("original", ["original"]), { mode: "discard", secondaryTransactionId: "" });
+  assert.deepEqual(subscriptionMergeDecision("original", ["second"]), { mode: "convert", secondaryTransactionId: "second" });
+  assert.deepEqual(subscriptionMergeDecision("", ["first"]), { mode: "keep", secondaryTransactionId: "" });
 });
