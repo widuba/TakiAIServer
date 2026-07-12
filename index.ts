@@ -29,6 +29,7 @@ import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, identitiesForIp,
 import { TIERS, CREDIT_USD } from "./src/credits.js";
 import { transcribe, synthesize, listVoices, isVoiceConfigured } from "./src/voice.js";
 import { emailProviderConfigured, createOAuthState, buildAuthUrl, completeOAuth, loadConnection, disconnectEmail, sendEmail, saveDraft, type EmailProvider } from "./src/email.js";
+import { extractDurableMemories } from "./src/userMemory.js";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
 // Render. (The purchase-simulating grant endpoint was removed when real
@@ -1196,6 +1197,26 @@ app.post("/api/voice", async (req, res) => {
     console.error("Voice route error:", error);
     res.status(502).json({ error: "voice unavailable" });
   }
+});
+
+const memoryExtractWindows = new Map<string, { startedAt: number; count: number }>();
+app.post("/api/memory/extract", async (req, res) => {
+  const message = typeof req.body?.message === "string" ? req.body.message.trim().slice(0, 2000) : "";
+  const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
+  if (!message || !deviceId) { res.status(400).json({ error: "message and deviceId required" }); return; }
+  const ip = clientIp(req);
+  if ((await isBanned(deviceId, deviceId, ip)) || (await isTestRestricted(deviceId))) {
+    res.status(403).json({ error: "access restricted" }); return;
+  }
+  const now = Date.now();
+  const rateKey = `${deviceId}:${ip}`;
+  const prior = memoryExtractWindows.get(rateKey);
+  const windowState = !prior || now - prior.startedAt >= 60_000 ? { startedAt: now, count: 0 } : prior;
+  if (windowState.count >= 10) { res.status(429).json({ error: "memory extraction limit reached" }); return; }
+  windowState.count += 1;
+  memoryExtractWindows.set(rateKey, windowState);
+  const currentFacts = Array.isArray(req.body?.currentFacts) ? req.body.currentFacts : [];
+  res.json(await extractDurableMemories(message, currentFacts, req.body?.teen === true));
 });
 
 // The account's available voices, for the app's voice picker.

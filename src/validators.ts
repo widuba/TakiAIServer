@@ -325,6 +325,7 @@ export function finalizeResponse(plan: AssistantPlan, state: ConversationState):
         spokenText: spoken,
         action: good[0],
         actions: good,
+        sources: plan.sources,
         memory,
         followUpEvent: eventMemoryToFollowUp(lastEvt),
         messageAnalysis: good.some((action) => action.type === "compose_message")
@@ -427,6 +428,7 @@ export function finalizeResponse(plan: AssistantPlan, state: ConversationState):
   return {
     spokenText,
     action: finalAction,
+    sources: plan.sources,
     memory,
     followUpEvent: eventMemoryToFollowUp(lastEvent),
     messageAnalysis,

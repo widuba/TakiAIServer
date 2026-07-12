@@ -295,6 +295,7 @@ export type AssistantMemory = {
 export type AssistantResponse = {
   spokenText: string;
   action: AssistantAction | null;
+  sources?: AssistantSource[];
   // Present (length > 1) when the request produced several actions to run.
   actions?: AssistantAction[] | null;
   memory?: AssistantMemory | null;
@@ -303,6 +304,11 @@ export type AssistantResponse = {
   // controls from it and learns the recipient's profile.
   messageAnalysis?: import("./messageStyle.js").MessageAnalysis | null;
   debug?: any;
+};
+
+export type AssistantSource = {
+  title: string;
+  url: string;
 };
 
 /* ---- Conversation state (built per request) ----------------------------- */
@@ -416,6 +422,7 @@ export type MemoryPatch = {
 export type AssistantPlan = {
   spokenText: string;
   action: AssistantAction | null;
+  sources?: AssistantSource[];
   // When a single request maps to several actions (e.g. "add the next 3 games"),
   // they go here. `action` mirrors actions[0] for back-compat.
   actions?: AssistantAction[] | null;

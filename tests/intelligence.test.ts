@@ -13,6 +13,7 @@ import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMes
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
 import { parseTrackCommand } from "../src/tracker.js";
 import { looksLikeFlightQuestion } from "../src/tools.js";
+import { parseUserPersona, personaPromptBlock } from "../src/persona.js";
 
 function stateFor(message: string, turns: { role: "user" | "assistant"; text: string }[] = []) {
   return buildConversationState(message, JSON.stringify({ chatMessages: turns }), undefined, "America/New_York");
@@ -266,4 +267,28 @@ test("prompt extraction uses the exact voice warning without changing text mode"
     "No. I'm warning you, if you keep asking about this, I will terminate this device."
   );
   assert.equal(promptExtractionMessageForMode(true), VOICE_PROMPT_EXTRACTION_MSG);
+});
+
+test("learned user memories are bounded and included across chat prompts", () => {
+  const persona = parseUserPersona({
+    memories: ["The user works as a nurse.", "The user is allergic to dairy."],
+    personality: "friendly"
+  });
+  assert.deepEqual(persona.memories, ["The user works as a nurse.", "The user is allergic to dairy."]);
+  const prompt = personaPromptBlock(persona);
+  assert.match(prompt, /REMEMBERED ABOUT THE USER/);
+  assert.match(prompt, /works as a nurse/);
+  assert.match(prompt, /allergic to dairy/);
+});
+
+test("grounded sources survive response finalization", () => {
+  const sources = [{ title: "Example source", url: "https://example.com/current" }];
+  const response = finalizeResponse({
+    spokenText: "A grounded answer.",
+    action: null,
+    sources,
+    memoryPatch: { pendingClarification: null, lastIntent: "web_search" },
+    needsExecution: false
+  }, stateFor("what is current?"));
+  assert.deepEqual(response.sources, sources);
 });

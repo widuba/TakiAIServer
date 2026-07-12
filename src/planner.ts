@@ -143,8 +143,8 @@ import {
  * spoken/action synchronization is finalized in validators.finalizeResponse.
  * ==========================================================================*/
 
-function answerPlan(spokenText: string, patch: MemoryPatch = {}): AssistantPlan {
-  return { spokenText, action: null, memoryPatch: { pendingClarification: null, ...patch }, needsExecution: false };
+function answerPlan(spokenText: string, patch: MemoryPatch = {}, sources: AssistantPlan["sources"] = []): AssistantPlan {
+  return { spokenText, action: null, sources, memoryPatch: { pendingClarification: null, ...patch }, needsExecution: false };
 }
 
 // A genuine question / request (deserves a strong, grounded answer) vs. trivial
@@ -1326,7 +1326,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       }
     }
     const res = await getStrictWebAnswer(state.message, { persona: state.userProfile, timeZone: state.timeZone, voiceMode: state.voiceMode });
-    return answerPlan(res.spokenText, { lastIntent: "web_search" });
+    return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
   }
 
   // "Make this at 1pm: <recipe link>" -> import the user's OWN recipe from the
@@ -1475,7 +1475,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
   // never refused as "unverifiable."
   if (looksLikePredictionQuestion(state.message)) {
     const res = await getStrictWebAnswer(state.message, { allowPrediction: true, persona: state.userProfile, timeZone: state.timeZone, voiceMode: state.voiceMode });
-    return answerPlan(res.spokenText, { lastIntent: "web_search" });
+    return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
   }
 
   // "Best/latest/newest" product or current-fact questions must use live search
@@ -1500,7 +1500,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
 
   if (!isActionCommand && (looksLikeFreshFactQuestion(state.message) || looksLikeLiveInfoQuestion(state.message))) {
     const res = await getStrictWebAnswer(state.message, { persona: state.userProfile, timeZone: state.timeZone, voiceMode: state.voiceMode });
-    return answerPlan(res.spokenText, { lastIntent: "web_search" });
+    return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
   }
 
   // "Add the next World Cup game / next Braves game to my calendar" — look the
@@ -1672,7 +1672,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         timeZone: state.timeZone,
         voiceMode: state.voiceMode
       });
-      return answerPlan(res.spokenText, { lastIntent: "web_search" });
+      return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
     }
 
     case "event_lookup": {

@@ -1982,6 +1982,24 @@ function getGroundingSourceCount(response: any) {
   };
 }
 
+function getGroundingSources(response: any) {
+  const gm = response?.candidates?.[0]?.groundingMetadata;
+  const chunks = gm?.groundingChunks || gm?.grounding_chunks || [];
+  const seen = new Set<string>();
+  const sources: { title: string; url: string }[] = [];
+  for (const chunk of Array.isArray(chunks) ? chunks : []) {
+    const web = chunk?.web || chunk?.retrievedContext || chunk?.retrieved_context;
+    const url = String(web?.uri || web?.url || "").trim();
+    if (!/^https?:\/\//i.test(url) || seen.has(url)) continue;
+    seen.add(url);
+    let fallbackTitle = "Web source";
+    try { fallbackTitle = new URL(url).hostname.replace(/^www\./, ""); } catch { /* keep fallback */ }
+    sources.push({ title: String(web?.title || fallbackTitle).trim().slice(0, 140), url });
+    if (sources.length >= 8) break;
+  }
+  return sources;
+}
+
 // Predictive / opinion questions ("who's expected to win", "who's favored",
 // "what are the odds") are not hard facts — they are best answered with live
 // odds, recent form, and analyst consensus, framed as a prediction. We must
@@ -2121,12 +2139,13 @@ ${message}
 
     const answer = (response.text || "").trim();
     const grounding = getGroundingSourceCount(response);
+    const sources = getGroundingSources(response);
     const grounded = grounding.chunks > 0 || grounding.supports > 0 || grounding.webQueries > 0;
 
     if (allowPrediction) {
       // Predictions are inherently tentative — return the grounded answer as-is.
       if (!answer) return { spokenText: "I couldn't find any predictions or odds for that yet.", action: null };
-      return { spokenText: answer, action: null };
+      return { spokenText: answer, action: null, sources };
     }
 
     if (!answer || !grounded) return { spokenText: "I can't verify that right now.", action: null };
@@ -2137,7 +2156,7 @@ ${message}
       }
     }
 
-    return { spokenText: answer, action: null };
+    return { spokenText: answer, action: null, sources };
   } catch (error) {
     console.error("Strict web error:", error);
     return {
