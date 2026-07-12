@@ -1,4 +1,4 @@
-import { ai, MAIN_MODEL } from "./ai.js";
+import { generateContent, MAIN_MODEL } from "./ai.js";
 import { withTimeout } from "./util.js";
 import { GUARDRAILS } from "./persona.js";
 
@@ -74,7 +74,7 @@ Rules:
 - Be accurate and safe (proper cook temps for meat). If the request is not actually food, return {"title":""}.`;
   try {
     const res: any = await withTimeout(
-      ai.models.generateContent({
+      generateContent({
         model: MAIN_MODEL,
         contents: prompt,
         config: { temperature: 0.4, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 } }
@@ -249,7 +249,7 @@ Return ONLY compact JSON:
 If the page has no real recipe, return {"title":""}.`;
   try {
     const res: any = await withTimeout(
-      ai.models.generateContent({ model: MAIN_MODEL, contents: prompt, config: { temperature: 0.2, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 } } } as any),
+      generateContent({ model: MAIN_MODEL, contents: prompt, config: { temperature: 0.2, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 } } } as any),
       22000, "Recipe extract"
     );
     return recipeFromObject(JSON.parse((res.text || "{}").trim()));

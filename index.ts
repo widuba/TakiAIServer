@@ -21,14 +21,15 @@ import { extractFlightCode, normalizeTrackerKind } from "./src/entityClassifier.
 import { setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
 import { isDurable, storeGet, storeSet } from "./src/store.js";
-import { summary as creditSummary, spend, reset as resetCredits, costForRequest, isFreeVoice, paidVoiceCost, noteFreeVoice, tierCatalog, grantForTransaction, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, noteVoiceQuestion, grantCredits, topupPriceCents, topupCentsPerCredit, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, type Tier } from "./src/credits.js";
+import { summary as creditSummary, spendUsageUsd, reset as resetCredits, isFreeVoice, noteFreeVoice, tierCatalog, grantForTransaction, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, noteVoiceQuestion, grantCredits, topupPriceCents, topupCentsPerCredit, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, FREE_VOICE_PER_CYCLE, CREDIT_USD, type Tier } from "./src/credits.js";
+import { measureUsage, totalUsageUsd, ttsCostUsd } from "./src/metering.js";
 import { verifyTransaction, linkTransactionIdentity, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
 import { verifyAppleIdentityToken } from "./src/appleauth.js";
 import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, linkApple, devicesForApple, SUSPENDED_MSG, BANNED_MSG, promptExtractionMessageForMode } from "./src/safety.js";
 import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, identitiesForIp, allUsers, deleteUser } from "./src/users.js";
-import { TIERS, CREDIT_USD } from "./src/credits.js";
+import { TIERS } from "./src/credits.js";
 import { transcribe, synthesize, listVoices, isVoiceConfigured } from "./src/voice.js";
-import { emailProviderConfigured, createOAuthState, buildAuthUrl, completeOAuth, loadConnection, disconnectEmail, sendEmail, saveDraft, type EmailProvider } from "./src/email.js";
+import { emailProviderConfigured, createOAuthState, buildAuthUrl, completeOAuth, loadConnection, disconnectEmail, sendEmail, saveDraft, searchConnectedEmail, type EmailProvider } from "./src/email.js";
 import { extractDurableMemories } from "./src/userMemory.js";
 import { createChatTitle } from "./src/chatTitle.js";
 
@@ -54,6 +55,12 @@ function usageLimitForCost(summary: any, cost: number): "daily" | "monthly" | nu
 
 function usageMessageForReason(reason: "daily" | "monthly"): string {
   return reason === "monthly" ? MONTHLY_LIMIT_MSG : DAILY_LIMIT_MSG;
+}
+
+async function chargeMeasuredUsage(deviceId: string, usage: { geminiUsd: number; searchUsd: number }): Promise<void> {
+  if (!deviceId) return;
+  const charged = await spendUsageUsd(deviceId, usage.geminiUsd + usage.searchUsd);
+  await noteSpend(deviceId, charged.spent);
 }
 
 /* ============================================================================
@@ -156,7 +163,9 @@ app.post("/api/style", async (req, res) => {
   }
   try {
     const persona = parseUserPersona(req.body?.profile);
-    const styled = await withTimeout(styleInCharacter(text, persona), 8000, "Style");
+    const measured = await measureUsage(() => withTimeout(styleInCharacter(text, persona), 8000, "Style"));
+    const styled = measured.value;
+    await chargeMeasuredUsage(typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "", measured.usage);
     res.json({ text: (styled || text).trim() });
   } catch (error) {
     console.error("Style error:", error);
@@ -381,7 +390,7 @@ app.post("/api/resolve-destination", async (req, res) => {
     return;
   }
   try {
-    const dest = await withTimeout(
+    const measured = await measureUsage(() => withTimeout(
       inferEventDestination({
         title,
         location,
@@ -391,7 +400,9 @@ app.post("/api/resolve-destination", async (req, res) => {
       }),
       22000,
       "Resolve destination"
-    );
+    ));
+    const dest = measured.value;
+    await chargeMeasuredUsage(typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "", measured.usage);
     if (!dest) {
       res.status(404).json({ error: "could not resolve a destination" });
       return;
@@ -418,7 +429,9 @@ app.post("/api/match-event", async (req, res) => {
     return;
   }
   try {
-    const index = await withTimeout(matchEventToQuery(query, events), 10000, "Match event");
+    const measured = await measureUsage(() => withTimeout(matchEventToQuery(query, events), 10000, "Match event"));
+    const index = measured.value;
+    await chargeMeasuredUsage(typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "", measured.usage);
     res.json({ index });
   } catch (error) {
     console.error("Match event error:", error);
@@ -456,20 +469,21 @@ app.post("/api/vision", async (req, res) => {
     }
   }
   try {
-    const spokenText = await withTimeout(answerAboutImage(image, mime, question, userProfile, timeZone), 28000, "Vision");
+    const measured = await measureUsage(() => withTimeout(answerAboutImage(image, mime, question, userProfile, timeZone), 28000, "Vision"));
+    const spokenText = measured.value;
     if (deviceId) {
-      let visionCost = costForRequest("vision", voiceMode, tier);
+      let usageUsd = totalUsageUsd(measured.usage);
       if (voiceMode) {
         if (isFreeVoice(tier, visionBaseCredits, visionVoiceUsed)) await noteFreeVoice(deviceId);
-        else visionCost += paidVoiceCost((spokenText || "").length);
+        else usageUsd += ttsCostUsd((spokenText || "").length);
       }
       const fresh = await creditSummary(deviceId);
-      const limitReason = usageLimitForCost(fresh, visionCost);
+      const limitReason = usageLimitForCost(fresh, Math.ceil(usageUsd / CREDIT_USD));
       if (limitReason) {
         res.json({ spokenText: usageMessageForReason(limitReason), credits: { ...fresh, cost: 0 } });
         return;
       }
-      const s = await spend(deviceId, visionCost);
+      const s = await spendUsageUsd(deviceId, usageUsd);
       await noteSpend(deviceId, s.spent);
       res.json({ spokenText, credits: { ...s, cost: s.spent } });
     } else {
@@ -509,20 +523,21 @@ app.post("/api/attachments", async (req, res) => {
   }
 
   try {
-    const answer = await answerAboutAttachments(attachments, question, userProfile, timeZone);
+    const measured = await measureUsage(() => answerAboutAttachments(attachments, question, userProfile, timeZone));
+    const answer = measured.value;
     if (!deviceId) { res.json({ spokenText: answer.text, sources: answer.sources }); return; }
-    let cost = costForRequest("vision", voiceMode, tier);
+    let usageUsd = totalUsageUsd(measured.usage);
     if (voiceMode) {
       if (isFreeVoice(tier, baseCredits, voiceUsed)) await noteFreeVoice(deviceId);
-      else cost += paidVoiceCost(answer.text.length);
+      else usageUsd += ttsCostUsd(answer.text.length);
     }
     const fresh = await creditSummary(deviceId);
-    const limitReason = usageLimitForCost(fresh, cost);
+    const limitReason = usageLimitForCost(fresh, Math.ceil(usageUsd / CREDIT_USD));
     if (limitReason) {
       res.json({ spokenText: usageMessageForReason(limitReason), sources: answer.sources, credits: { ...fresh, cost: 0 } });
       return;
     }
-    const spent = await spend(deviceId, cost);
+    const spent = await spendUsageUsd(deviceId, usageUsd);
     await noteSpend(deviceId, spent.spent);
     res.json({ spokenText: answer.text, sources: answer.sources, credits: { ...spent, cost: spent.spent } });
   } catch (error) {
@@ -768,6 +783,18 @@ app.get("/api/email/status", async (req, res) => {
     gmailAvailable: emailProviderConfigured("gmail"),
     outlookAvailable: emailProviderConfigured("outlook")
   });
+});
+
+app.get("/api/email/search", async (req, res) => {
+  const deviceId = typeof req.query.deviceId === "string" ? req.query.deviceId.trim() : "";
+  const query = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  if (!deviceId || !query) { res.status(400).json({ error: "deviceId and q required" }); return; }
+  try {
+    res.json(await searchConnectedEmail(deviceId, query, 5));
+  } catch (error) {
+    console.error("email search:", error);
+    res.status(502).json({ connected: true, messages: [], error: "email search unavailable" });
+  }
 });
 
 app.post("/api/email/disconnect", async (req, res) => {
@@ -1188,28 +1215,28 @@ async function runAssistant(state: ReturnType<typeof buildConversationState>, de
       };
     }
   }
-  const plan = await withTimeout(planAssistantResponse(state), 45000, "Assistant plan");
-  const finalized = finalizeResponse(plan, state);
-  // Voice action confirmations already come from the capability-aware planner.
-  // A second model call used only to restyle that fixed line added a full network
-  // round trip between understanding the request and starting TTS.
-  if (!voiceMode && finalized.spokenText && (finalized.action || finalized.memory?.pendingClarification)) {
-    finalized.spokenText = await styleInCharacter(finalized.spokenText, state.userProfile, voiceMode);
-  }
-  // Fit the model's answer before synthesis so the UI/TTS limit never turns a
-  // response into an ellipsis. The helper has a no-ellipsis local safety net.
-  if (voiceMode && finalized.spokenText) {
-    finalized.spokenText = await fitVoiceResponse(finalized.spokenText, state.userProfile);
-  }
+  const measured = await measureUsage(async () => {
+    const plan = await withTimeout(planAssistantResponse(state), 45000, "Assistant plan");
+    const response = finalizeResponse(plan, state);
+    // Voice action confirmations already come from the capability-aware planner.
+    if (!voiceMode && response.spokenText && (response.action || response.memory?.pendingClarification)) {
+      response.spokenText = await styleInCharacter(response.spokenText, state.userProfile, voiceMode);
+    }
+    if (voiceMode && response.spokenText) {
+      response.spokenText = await fitVoiceResponse(response.spokenText, state.userProfile);
+    }
+    return response;
+  });
+  const finalized = measured.value;
   if (deviceId) {
-    let cost = costForRequest(finalized.memory?.lastIntent, voiceMode, tier);
+    let usageUsd = totalUsageUsd(measured.usage);
     // Voice: free within the per-cycle allowance on Plus Voice / Pro (base credits
     // only); beyond that, or on top-ups / other tiers, pay per spoken character.
     if (voiceMode) {
       if (isFreeVoice(tier, baseCredits, voiceCycleUsed)) await noteFreeVoice(deviceId);
-      else cost += paidVoiceCost((finalized.spokenText || "").length);
+      else usageUsd += ttsCostUsd((finalized.spokenText || "").length);
     }
-    const limitReason = usageLimitForCost(usageSummary, cost);
+    const limitReason = usageLimitForCost(usageSummary, Math.ceil(usageUsd / CREDIT_USD));
     if (limitReason) {
       const spokenText = usageMessageForReason(limitReason);
       return {
@@ -1217,7 +1244,7 @@ async function runAssistant(state: ReturnType<typeof buildConversationState>, de
         credits: { ...usageSummary, cost: 0 }
       };
     }
-    const s = await spend(deviceId, cost);
+    const s = await spendUsageUsd(deviceId, usageUsd);
     await noteSpend(deviceId, s.spent);
     return { ...finalized, credits: { ...s, cost: s.spent } };
   }
@@ -1257,7 +1284,9 @@ app.post("/api/assistant", async (req, res) => {
     console.error("Assistant route error:", error);
     // Last resort: a plain answer that still respects the wire shape.
     try {
-      const general = await getGeneralAnswer(state);
+      const measured = await measureUsage(() => getGeneralAnswer(state));
+      const general = measured.value;
+      await chargeMeasuredUsage(deviceId, measured.usage);
       res.json(
         finalizeResponse(
           { spokenText: general.text, action: null, memoryPatch: { pendingClarification: null }, needsExecution: false },
@@ -1363,7 +1392,9 @@ app.post("/api/memory/extract", async (req, res) => {
   windowState.count += 1;
   memoryExtractWindows.set(rateKey, windowState);
   const currentFacts = Array.isArray(req.body?.currentFacts) ? req.body.currentFacts : [];
-  res.json(await extractDurableMemories(message, currentFacts, req.body?.teen === true));
+  const measured = await measureUsage(() => extractDurableMemories(message, currentFacts, req.body?.teen === true));
+  await chargeMeasuredUsage(deviceId, measured.usage);
+  res.json(measured.value);
 });
 
 app.post("/api/chat/title", async (req, res) => {
@@ -1381,7 +1412,9 @@ app.post("/api/chat/title", async (req, res) => {
   if (windowState.count >= 6) { res.status(429).json({ error: "chat title limit reached" }); return; }
   windowState.count += 1;
   memoryExtractWindows.set(rateKey, windowState);
-  res.json({ title: await createChatTitle(message, req.body?.teen === true) });
+  const measured = await measureUsage(() => createChatTitle(message, req.body?.teen === true));
+  await chargeMeasuredUsage(deviceId, measured.usage);
+  res.json({ title: measured.value });
 });
 
 // The account's available voices, for the app's voice picker.
@@ -1394,7 +1427,7 @@ app.get("/api/voices", async (_req, res) => {
 const correctionSynthWindows = new Map<string, { startedAt: number; count: number }>();
 app.post("/api/voice/synthesize", async (req, res) => {
   if (!isVoiceConfigured()) { res.status(503).json({ error: "voice not configured" }); return; }
-  const text = typeof req.body?.text === "string" ? req.body.text.trim().slice(0, 600) : "";
+  const text = typeof req.body?.text === "string" ? req.body.text.trim().slice(0, 140) : "";
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   const voiceId = typeof req.body?.voiceId === "string" ? req.body.voiceId : undefined;
   const variability = typeof req.body?.voiceVariability === "number"
@@ -1421,6 +1454,14 @@ app.post("/api/voice/synthesize", async (req, res) => {
       }
     }
     const audio = await synthesize(text, voiceId, variability);
+    const account = await creditSummary(deviceId);
+    const correctionIsIncluded = account.baseCredits > 0
+      && account.voiceCycleUsed > 0
+      && account.voiceCycleUsed <= (FREE_VOICE_PER_CYCLE[account.tier] || 0);
+    if (!correctionIsIncluded) {
+      const charged = await spendUsageUsd(deviceId, ttsCostUsd(text.length));
+      await noteSpend(deviceId, charged.spent);
+    }
     res.json({ audioBase64: audio, mime: "audio/mpeg" });
   } catch (error) {
     console.error("Voice correction synthesis error:", error);

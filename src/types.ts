@@ -18,6 +18,7 @@ export type AssistantActionType =
   | "compose_message"
   | "call_phone"
   | "calendar_search"
+  | "personal_search"
   | "calendar_create"
   | "calendar_update"
   | "calendar_delete"
@@ -124,6 +125,7 @@ export type AssistantAction = {
   photoDays: number | null;
   // photos_search: content to look for on-device (e.g. "dog", "beach", "food").
   photoQuery: string | null;
+  personalSearchQuery: string | null;
   // email_connect: the provider OAuth URL the device opens in the system browser.
   emailAuthUrl: string | null;
   // service_handoff: Taki fills in the details, the device deep-links into the
@@ -384,6 +386,7 @@ export type PlannerIntent =
   | "reminder_create"
   | "reminder_search"
   | "calendar_search"
+  | "personal_search"
   | "open_app"
   | "maps_search"
   | "maps_directions"
@@ -487,6 +490,7 @@ export function blankAction(type: AssistantActionType): AssistantAction {
     trendDays: null,
     photoDays: null,
     photoQuery: null,
+    personalSearchQuery: null,
     emailAuthUrl: null,
     service: null,
     serviceKind: null,

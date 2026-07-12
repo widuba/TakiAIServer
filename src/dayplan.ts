@@ -1,4 +1,4 @@
-import { ai, MAIN_MODEL } from "./ai.js";
+import { generateContent, MAIN_MODEL } from "./ai.js";
 import { withTimeout } from "./util.js";
 
 /* ============================================================================
@@ -35,7 +35,7 @@ Rules:
 - Make it sensible and balanced (include breaks/meals where natural).`;
   try {
     const res: any = await withTimeout(
-      ai.models.generateContent({
+      generateContent({
         model: MAIN_MODEL,
         contents: prompt,
         config: { temperature: 0.4, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 } }

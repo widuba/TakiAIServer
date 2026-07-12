@@ -1,4 +1,4 @@
-import { ai, MAIN_MODEL } from "./ai.js";
+import { generateContent, MAIN_MODEL } from "./ai.js";
 import { withTimeout } from "./util.js";
 import { GUARDRAILS, personaPromptBlock } from "./persona.js";
 import { storeGet, storeSet } from "./store.js";
@@ -258,6 +258,14 @@ async function listMessages(conn: EmailConnection, token: string, query: string,
   }));
 }
 
+export async function searchConnectedEmail(deviceId: string, query: string, max = 5): Promise<{ connected: boolean; messages: EmailMessage[] }> {
+  const conn = await loadConnection(deviceId);
+  if (!conn) return { connected: false, messages: [] };
+  const token = await accessTokenFor(conn);
+  if (!token) return { connected: true, messages: [] };
+  return { connected: true, messages: await listMessages(conn, token, query.trim().slice(0, 80), Math.min(10, Math.max(1, max))) };
+}
+
 async function fetchBody(conn: EmailConnection, token: string, id: string): Promise<string> {
   try {
     if (conn.provider === "gmail") {
@@ -449,7 +457,7 @@ MESSAGES:
 ${digest}`;
   try {
     const r: any = await withTimeout(
-      ai.models.generateContent({ model: MAIN_MODEL, contents: prompt, config: { thinkingConfig: { thinkingBudget: 0 } } } as any),
+      generateContent({ model: MAIN_MODEL, contents: prompt, config: { thinkingConfig: { thinkingBudget: 0 } } } as any),
       20000, "email summary"
     );
     return String(r?.text || "").trim() || "I read your email but couldn't summarize it — try again.";

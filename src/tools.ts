@@ -1,4 +1,4 @@
-import { ai, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, LIST_RESEARCH_TIMEOUT_MS, TIME_ZONE, safetyConfig } from "./ai.js";
+import { generateContent, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, LIST_RESEARCH_TIMEOUT_MS, TIME_ZONE, safetyConfig } from "./ai.js";
 import { personaPromptBlock, characterDirective, GUARDRAILS } from "./persona.js";
 import { capabilityPromptBlock } from "./capabilities.js";
 import type { UserPersona } from "./persona.js";
@@ -367,7 +367,7 @@ Rules:
   // Fast path: flash, thinking off, no web search.
   try {
     const res: any = await withTimeout(
-      ai.models.generateContent({
+      generateContent({
         model: MAIN_MODEL,
         contents: prompt,
         config: { thinkingConfig: { thinkingBudget: 0 } }
@@ -384,7 +384,7 @@ Rules:
   // Fallback: grounded search for anything flash wasn't sure about.
   try {
     const res: any = await withTimeout(
-      ai.models.generateContent({
+      generateContent({
         model: RESEARCH_MODEL,
         contents: prompt,
         config: { tools: [{ googleSearch: {} }] }
@@ -520,7 +520,7 @@ Reply with ONLY the index number of the genuine match, or -1 if none. No other t
 
   try {
     const res: any = await withTimeout(
-      ai.models.generateContent({
+      generateContent({
         model: MAIN_MODEL,
         contents: prompt,
         config: { thinkingConfig: { thinkingBudget: 0 } }
@@ -633,7 +633,7 @@ If you cannot determine a time at all, reply {"valid":false}.`;
 
   try {
     const res: any = await withTimeout(
-      ai.models.generateContent({
+      generateContent({
         model: MAIN_MODEL,
         contents: prompt,
         config: { thinkingConfig: { thinkingBudget: 0 } }
@@ -717,7 +717,7 @@ If no duration is given, reply {"seconds":0}.`;
 
   try {
     const res: any = await withTimeout(
-      ai.models.generateContent({
+      generateContent({
         model: MAIN_MODEL,
         contents: prompt,
         config: { thinkingConfig: { thinkingBudget: 0 } }
@@ -771,7 +771,7 @@ Reply ONLY JSON: {"expr":"<expression>","label":"<short phrase>"}  — or {"expr
 
   try {
     const res: any = await withTimeout(
-      ai.models.generateContent({ model: MAIN_MODEL, contents: prompt, config: { thinkingConfig: { thinkingBudget: 0 } } } as any),
+      generateContent({ model: MAIN_MODEL, contents: prompt, config: { thinkingConfig: { thinkingBudget: 0 } } } as any),
       7000,
       "Math translate"
     );
@@ -2021,7 +2021,7 @@ Rules:
 - If the request lacks two identifiable options, return {"title":"Comparison","criteria":[],"items":[],"summary":"What would you like me to compare?"}.
 User request: ${JSON.stringify(String(message).slice(0, 2000))}`;
   try {
-    const response: any = await withTimeout(ai.models.generateContent({
+    const response: any = await withTimeout(generateContent({
       model: RESEARCH_MODEL,
       contents: prompt,
       config: { temperature: 0, tools: [{ googleSearch: {} }], ...safetyConfig(opts.persona?.teen) }
@@ -2170,7 +2170,7 @@ ${message}
     // Voice mode uses flash (faster + cheaper) for live/web answers too; grounding
     // stays on since these questions genuinely need current data.
     const response: any = await withTimeout(
-      ai.models.generateContent({
+      generateContent({
         model: opts.voiceMode ? MAIN_MODEL : RESEARCH_MODEL,
         contents: allowPrediction ? predictionPrompt : factPrompt,
         config: {
@@ -2237,7 +2237,7 @@ Message: ${clean}`;
 
   try {
     const r: any = await withTimeout(
-      ai.models.generateContent({
+      generateContent({
         model: MAIN_MODEL,
         contents: prompt,
         config: { temperature: 0.8, thinkingConfig: { thinkingBudget: 0 }, ...safetyConfig(persona?.teen) }
@@ -2294,7 +2294,7 @@ Rules:
 `;
   try {
     const response: any = await withTimeout(
-      ai.models.generateContent({
+      generateContent({
         model: RESEARCH_MODEL,
         contents: prompt,
         config: { temperature: 0, tools: [{ googleSearch: {} }] }
@@ -2334,7 +2334,7 @@ Rules:
 `;
   try {
     const response: any = await withTimeout(
-      ai.models.generateContent({
+      generateContent({
         // A schedule LIST is grounded data — the faster model returns it just as
         // well as the accurate one, and pro was too slow for N games (timed out).
         model: MAIN_MODEL,
@@ -2404,7 +2404,7 @@ ${EVENT_TIME_RULES}
 
   try {
     const response: any = await withTimeout(
-      ai.models.generateContent({ model: MAIN_MODEL, contents: prompt, config: { temperature: 0, thinkingConfig: { thinkingBudget: 0 } } }),
+      generateContent({ model: MAIN_MODEL, contents: prompt, config: { temperature: 0, thinkingConfig: { thinkingBudget: 0 } } }),
       9000,
       "Extract future event"
     );
@@ -2491,7 +2491,7 @@ ${EVENT_TIME_RULES}
 
   try {
     const response: any = await withTimeout(
-      ai.models.generateContent({ model: MAIN_MODEL, contents: prompt, config: { temperature: 0, thinkingConfig: { thinkingBudget: 0 } } }),
+      generateContent({ model: MAIN_MODEL, contents: prompt, config: { temperature: 0, thinkingConfig: { thinkingBudget: 0 } } }),
       12000,
       "Extract future events"
     );
@@ -2637,7 +2637,7 @@ ${memoryText}
 
   try {
     const response: any = await withTimeout(
-      ai.models.generateContent({
+      generateContent({
         model: primaryModel,
         contents: prompt,
         config: primaryConfig
@@ -2655,7 +2655,7 @@ ${memoryText}
     // Graceful degrade so we always reply, even if the strong model times out.
     try {
       const r2: any = await withTimeout(
-        ai.models.generateContent({ model: MAIN_MODEL, contents: prompt, config: { thinkingConfig: { thinkingBudget: 0 }, ...safetyConfig(state.userProfile?.teen) } } as any),
+        generateContent({ model: MAIN_MODEL, contents: prompt, config: { thinkingConfig: { thinkingBudget: 0 }, ...safetyConfig(state.userProfile?.teen) } } as any),
         8000,
         "General answer fast"
       );
@@ -2689,7 +2689,7 @@ ${tz ? `The user's local time is ${nowInTimeZone(tz)}.\n` : ""}Question: "${q}"
 
   try {
     const response: any = await withTimeout(
-      ai.models.generateContent({
+      generateContent({
         model: MAIN_MODEL,
         contents: [{ inlineData: { mimeType: mimeType || "image/jpeg", data: base64 } }, { text: prompt }],
         config: { ...safetyConfig(persona?.teen) }
@@ -2709,7 +2709,7 @@ export async function fitVoiceResponse(text: string, persona?: UserPersona): Pro
   if (original.length <= VOICE_MAX_CHARS && !/[.…]+$/.test(original)) return original;
   try {
     const response: any = await withTimeout(
-      ai.models.generateContent({
+      generateContent({
         model: MAIN_MODEL,
         contents: `Rewrite the following answer for spoken playback. Preserve the most useful fact. Return one complete plain-text sentence of at most ${VOICE_MAX_CHARS - 5} characters. Do not use an ellipsis, markdown, a preface, or mention shortening.\n\nANSWER:\n${original}`,
         config: { thinkingConfig: { thinkingBudget: 0 }, ...safetyConfig(persona?.teen) }
@@ -2818,7 +2818,7 @@ ${tz ? `The user's local time is ${nowInTimeZone(tz)}.\n` : ""}Question: "${q}"
 - Match the configured personality without sacrificing accuracy.` });
 
   const response: any = await withTimeout(
-    ai.models.generateContent({
+    generateContent({
       model: MAIN_MODEL,
       contents: parts,
       config: {

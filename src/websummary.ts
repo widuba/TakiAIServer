@@ -1,4 +1,4 @@
-import { ai, MAIN_MODEL } from "./ai.js";
+import { generateContent, MAIN_MODEL } from "./ai.js";
 import { withTimeout } from "./util.js";
 import { GUARDRAILS, personaPromptBlock } from "./persona.js";
 import type { ConversationState } from "./types.js";
@@ -63,7 +63,7 @@ PAGE (${url}):
 ${text}`;
   try {
     const r: any = await withTimeout(
-      ai.models.generateContent({ model: MAIN_MODEL, contents: prompt, config: { thinkingConfig: { thinkingBudget: 0 } } } as any),
+      generateContent({ model: MAIN_MODEL, contents: prompt, config: { thinkingConfig: { thinkingBudget: 0 } } } as any),
       20000, "URL summary"
     );
     const out = String(r?.text || "").trim();

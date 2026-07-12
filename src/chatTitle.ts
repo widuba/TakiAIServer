@@ -1,4 +1,4 @@
-import { ai, PLANNER_MODEL, safetyConfig } from "./ai.js";
+import { generateContent, PLANNER_MODEL, safetyConfig } from "./ai.js";
 import { withTimeout } from "./util.js";
 
 export function normalizeChatTitle(value: string): string {
@@ -16,7 +16,7 @@ export async function createChatTitle(message: string, teen = false): Promise<st
   const input = String(message || "").trim().slice(0, 1200);
   if (!input) return "New Chat";
   try {
-    const result: any = await withTimeout(ai.models.generateContent({
+    const result: any = await withTimeout(generateContent({
       model: PLANNER_MODEL,
       contents: `Create a concise chat title for this user message.
 Return only the title, 2-5 words, title case, no punctuation or quotation marks.

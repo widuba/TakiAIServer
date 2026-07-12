@@ -1,4 +1,4 @@
-import { ai, PLANNER_MODEL, safetyConfig } from "./ai.js";
+import { generateContent, PLANNER_MODEL, safetyConfig } from "./ai.js";
 import { extractJsonObject, withTimeout } from "./util.js";
 
 export type LearnedMemory = { text: string; category: string };
@@ -40,7 +40,7 @@ Rules:
 - If nothing qualifies, return empty arrays.`;
 
   try {
-    const result: any = await withTimeout(ai.models.generateContent({
+    const result: any = await withTimeout(generateContent({
       model: PLANNER_MODEL,
       contents: prompt,
       config: {

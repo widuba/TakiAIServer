@@ -1,5 +1,6 @@
 import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
+import { recordGeminiCall } from "./metering.js";
 
 dotenv.config();
 
@@ -13,6 +14,13 @@ if (!apiKey) throw new Error("Missing GEMINI_API_KEY in .env");
  * PLANNER_MODEL -> structured planning + extraction (fast, JSON mode)
  */
 export const ai = new GoogleGenAI({ apiKey });
+const rawGenerateContent = ai.models.generateContent.bind(ai.models);
+
+export async function generateContent(args: any): Promise<any> {
+  const response = await rawGenerateContent(args);
+  recordGeminiCall(args, response);
+  return response;
+}
 
 export const PORT = Number(process.env.PORT || 8787);
 /**

@@ -1,13 +1,14 @@
 import { storeGet, storeSet, isDurable } from "./store.js";
+import { CREDIT_USD, ttsCostUsd } from "./metering.js";
+
+export { CREDIT_USD } from "./metering.js";
 
 /* ============================================================================
  * Subscriptions & credits — the metering ENGINE (Phase 1).
  *
- * A "credit" == a token that costs ~$0.001 of real AI usage. Credits are granted
- * per subscription cycle and EXPIRE 90 days after the grant. A question's cost
- * scales with its "brainpower" (which model ran it). Voice-mode questions cost
- * extra EXCEPT on the Plus Voice tier. Pro grants more credits + a discount on
- * extra credit purchases (used later when IAP lands).
+ * A credit represents exactly $0.001 of list-price vendor usage. Gemini token
+ * metadata, grounding requests, and paid TTS are accumulated as microdollars;
+ * only complete credits are deducted. Credits expire 90 days after each grant.
  *
  * Identity is the device id for now (no accounts yet). Real Apple IAP + accounts
  * are a later pass; tiers are granted via /api/credits/grant meanwhile.
@@ -19,16 +20,8 @@ import { storeGet, storeSet, isDurable } from "./store.js";
 
 /* ---- CONFIG (tune these) ------------------------------------------------- */
 
-export const CREDIT_USD = 0.001;          // 1 credit ≈ $0.001 (0.1¢) of AI usage
 export const GRANT_EXPIRY_DAYS = 90;      // credits expire 90 days after purchase
 export const FREE_STARTER_CREDITS = 100;  // a fresh device gets this once, so the app works pre-subscription
-
-// Credits charged per question, by "brainpower" tier.
-export const COST_TIERS = { light: 1, standard: 4, heavy: 15 } as const;
-export type CostTier = keyof typeof COST_TIERS;
-
-// Extra credits when a question runs with voice mode on (waived on Plus Voice).
-export const VOICE_SURCHARGE = 3;
 
 export type Tier = "free" | "plus" | "plus_voice" | "pro";
 
@@ -40,9 +33,7 @@ export interface TierConfig {
   extraCreditDiscount: number; // discount on extra credit packs (used when IAP lands)
 }
 
-// Credits are set to ~3× the break-even (a tier's credits cost us ~1/3 of its
-// price to run), passing profit back to the user. e.g. Plus Voice = 4500 credits
-// ≈ $4.50 of usage on a $14.99 plan.
+// Credits are direct usage value: 3,000 credits cover $3.00 of vendor usage.
 export const TIERS: Record<Tier, TierConfig> = {
   free:       { label: "Free",       creditsPerCycle: 0,     priceUsd: 0,     voiceIncluded: false, extraCreditDiscount: 0 },
   plus:       { label: "Plus",       creditsPerCycle: 3000,  priceUsd: 9.99,  voiceIncluded: false, extraCreditDiscount: 0 },
@@ -54,10 +45,11 @@ export const TIERS: Record<Tier, TierConfig> = {
 // Voice pricing. Plus Voice / Pro get a per-cycle allowance of FREE voice turns
 // (no surcharge) out of their base subscription credits; beyond that allowance,
 // or on top-ups / non-voice tiers, voice costs per spoken character. The per-char
-// rate is set to 3× our ElevenLabs Flash-v2.5 TTS cost (~$0.05/1k chars) → charge
-// $0.15/1k chars, i.e. 0.15 credits/char (a credit ≈ $0.001 of usage).
-export const VOICE_CREDITS_PER_CHAR = 0.15;
-export const FREE_VOICE_PER_CYCLE: Record<Tier, number> = { free: 0, plus: 0, plus_voice: 400, pro: 1000 };
+// Paid voice uses the actual $0.05/1k-character cost from metering.ts. Sub-credit
+// fractions carry forward, so repeated short replies are never rounded up.
+export const FREE_VOICE_PER_CYCLE: Record<Tier, number> = { free: 0, plus: 0, plus_voice: 400, pro: 300 };
+export const APP_STORE_COMMISSION_RATE = 0.15;
+export const MAX_VOICE_RESPONSE_CHARS = 140;
 
 // Is this voice turn covered by the free-voice allowance? Only on an included
 // tier, only while base subscription credits remain, and only under the cap.
@@ -66,33 +58,14 @@ export function isFreeVoice(tier: Tier, baseCredits: number, voiceCycleUsed: num
   return cap > 0 && baseCredits > 0 && voiceCycleUsed < cap;
 }
 // Credits charged for a paid voice turn (beyond the free allowance).
-export function paidVoiceCost(spokenChars: number): number {
-  return Math.ceil(Math.max(0, spokenChars) * VOICE_CREDITS_PER_CHAR);
-}
-
-// Map a planner intent → a brainpower cost tier. HEAVY = grounded/pro model
-// paths; LIGHT = on-device actions (barely any model cost); everything else is
-// STANDARD. Retune freely — cost is an intent-based approximation of real usage.
-const HEAVY_INTENTS = new Set(["web_search", "prediction", "freshfact", "liveinfo", "lottery", "vision"]);
-const LIGHT_INTENTS = new Set([
-  "calendar_create", "calendar_update", "calendar_delete", "reminder_create",
-  "alarm_set", "alarm_cancel", "timer_set", "timer_cancel", "stopwatch_start", "stopwatch_stop",
-  "music_control", "home_control", "health_query", "photos_show", "contact_create",
-  "memory_save", "alert_create", "alert_cancel", "scheduled_message", "automation_create",
-  "open_app", "maps_search", "maps_directions", "weather_answer", "call_phone"
-]);
-
-export function costTierForIntent(intent: string | null | undefined): CostTier {
-  const i = intent || "";
-  if (HEAVY_INTENTS.has(i)) return "heavy";
-  if (LIGHT_INTENTS.has(i)) return "light";
-  return "standard"; // answer_only, live_activity, day_plan, cooking_*, compose_*, etc.
-}
-
-// Base credit cost for a request by intent. Voice cost is added separately by the
-// caller via voiceExtraCost() (which needs the spoken length + base-credit state).
-export function costForRequest(intent: string | null | undefined, _voiceMode: boolean, _tier: Tier): number {
-  return COST_TIERS[costTierForIntent(intent)];
+export function worstCaseContributionUsd(tier: Tier): number {
+  const config = TIERS[tier];
+  const netRevenue = config.priceUsd * (1 - APP_STORE_COMMISSION_RATE);
+  const aiCost = config.creditsPerCycle * CREDIT_USD;
+  // A voice action can synthesize both the initial confirmation and one native
+  // correction, each capped to MAX_VOICE_RESPONSE_CHARS.
+  const voiceCost = FREE_VOICE_PER_CYCLE[tier] * ttsCostUsd(MAX_VOICE_RESPONSE_CHARS * 2);
+  return netRevenue - aiCost - voiceCost;
 }
 
 /* ---- LEDGER -------------------------------------------------------------- */
@@ -108,7 +81,7 @@ export interface CreditGrant {
 
 // Minimum balance required to ask anything (cut users off before they hit 0,
 // so a request can't overspend into a negative balance).
-export const MIN_REQUEST_CREDITS = COST_TIERS.standard; // 4
+export const MIN_REQUEST_CREDITS = 1;
 // Free tier gets a hard cap of voice questions, independent of credits.
 export const FREE_VOICE_LIMIT = 5;
 
@@ -128,6 +101,9 @@ export interface CreditAccount {
   monthlyUsage?: { key: string; used: number };
   topupAllowances?: { id: string; amount: number; expiresAt: number }[];
   retiredSubscriptionIds?: string[];
+  // Unbilled vendor cost below one credit, stored as integer millionths of a
+  // dollar. 1 credit is exactly 1,000 microdollars ($0.001).
+  usageRemainderMicros?: number;
   updatedAt: number;
 }
 
@@ -405,6 +381,37 @@ export async function spend(deviceId: string, cost: number): Promise<CreditSumma
     acct.monthlyUsage!.used += actualSpent;
     await save(acct);
     return { ...summarize(acct), spent: actualSpent };
+  });
+}
+
+// Spend exact list-price vendor usage without rounding every request up. Costs
+// below one credit accumulate until they reach exactly $0.001.
+export async function spendUsageUsd(deviceId: string, costUsd: number): Promise<CreditSummary & { spent: number; usageUsd: number }> {
+  return withLock(deviceId, async () => {
+    const acct = await load(deviceId);
+    ensureStarter(acct);
+    const now = Date.now();
+    const costMicros = Math.max(0, Math.round(costUsd * 1_000_000));
+    const accumulated = Math.max(0, Math.floor(acct.usageRemainderMicros || 0)) + costMicros;
+    let need = Math.floor(accumulated / 1000);
+    acct.usageRemainderMicros = accumulated % 1000;
+    const requested = need;
+    const ordered = acct.grants
+      .filter((grant) => grant.expiresAt > now && grant.remaining > 0)
+      .sort((a, b) => a.expiresAt - b.expiresAt);
+    for (const grant of ordered) {
+      if (need <= 0) break;
+      const take = Math.min(grant.remaining, need);
+      grant.remaining -= take;
+      need -= take;
+    }
+    acct.grants = acct.grants.filter((grant) => grant.expiresAt > now && grant.remaining > 0);
+    const actualSpent = requested - need;
+    rollUsageWindows(acct, now);
+    acct.dailyUsage!.used += actualSpent;
+    acct.monthlyUsage!.used += actualSpent;
+    await save(acct);
+    return { ...summarize(acct), spent: actualSpent, usageUsd: costMicros / 1_000_000 };
   });
 }
 

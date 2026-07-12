@@ -1,4 +1,4 @@
-import { ai, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, TIME_ZONE } from "./ai.js";
+import { generateContent, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, TIME_ZONE } from "./ai.js";
 import { safeParseJsonObject, withTimeout } from "./util.js";
 import {
   extractFlightCode,
@@ -241,7 +241,7 @@ Respond with ONLY compact JSON (no markdown, no code fences):
 If it hasn't started yet, set line1 to the matchup abbreviations with no scores and status to the start time. If you can't find a game today, respond with exactly: null`;
   try {
     const res: any = await withTimeout(
-      ai.models.generateContent({ model: RESEARCH_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }] } } as any),
+      generateContent({ model: RESEARCH_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }] } } as any),
       RESEARCH_TIMEOUT_MS, "Sports score"
     );
     const text = (res.text || "").trim();
@@ -284,7 +284,7 @@ Respond with ONLY compact JSON (no markdown, no code fences):
 Use the user's local timezone (${timeZone}). Always include the '|note' part. If you cannot identify this flight, respond with exactly: null`;
   try {
     const res: any = await withTimeout(
-      ai.models.generateContent({ model: RESEARCH_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }] } } as any),
+      generateContent({ model: RESEARCH_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }] } } as any),
       RESEARCH_TIMEOUT_MS, "Flight status"
     );
     const text = (res.text || "").trim();

@@ -1,4 +1,4 @@
-import { ai, MAIN_MODEL, PLANNER_MODEL, PLANNER_TIMEOUT_MS, safetyConfig } from "./ai.js";
+import { generateContent, MAIN_MODEL, PLANNER_MODEL, PLANNER_TIMEOUT_MS, safetyConfig } from "./ai.js";
 import type {
   AssistantAction,
   AssistantPlan,
@@ -529,7 +529,7 @@ Return exactly:
 `;
 
   const result: any = await withTimeout(
-    ai.models.generateContent({
+    generateContent({
       model: PLANNER_MODEL,
       contents: prompt,
       // Disable "thinking": this is structured extraction from a very explicit
@@ -640,7 +640,7 @@ Message: ${body}`;
 
   try {
     const result: any = await withTimeout(
-      ai.models.generateContent({
+      generateContent({
         model: MAIN_MODEL,
         contents: prompt,
         config: { temperature: 0.8, ...safetyConfig(teen) } as any
@@ -770,6 +770,17 @@ export async function planShareRequest(state: ConversationState): Promise<Assist
 /* ============================================================================
  * planAssistantResponse — the central planner.
  * ==========================================================================*/
+
+export function detectPersonalSearch(message: string): string | null {
+  const text = message.trim();
+  const broad = /\b(everything|anything|all my (?:stuff|things|data)|across (?:my )?(?:apps|stuff|data|calendar|email|photos|chats))\b/i.test(text);
+  const search = /\b(find|search|look for|show me)\b/i.test(text);
+  if (!broad || !search) return null;
+  const match = text.match(/\b(?:about|for|matching|related to)\s+(.+?)[?.!]*$/i);
+  if (!match) return null;
+  const query = match[1].replace(/\b(?:across|in)\s+(?:all\s+)?my\s+(?:apps|stuff|data)\b.*$/i, "").trim();
+  return query.length >= 2 ? query.slice(0, 80) : null;
+}
 
 export async function planAssistantResponse(state: ConversationState): Promise<AssistantPlan> {
   if (!state.message.trim()) {
@@ -1092,6 +1103,13 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
     action.musicAction = musicCmd.action;
     action.musicQuery = musicCmd.query || null;
     return actionPlan("On it.", action, { lastIntent: "music_control" });
+  }
+
+  const personalSearchQuery = detectPersonalSearch(state.message);
+  if (personalSearchQuery) {
+    const action = blankAction("personal_search");
+    action.personalSearchQuery = personalSearchQuery;
+    return actionPlan(`Searching your connected sources for ${personalSearchQuery}…`, action, { lastIntent: "personal_search" });
   }
 
   // Email — connect an inbox, or read/search/summarize it. Gated on a provider
