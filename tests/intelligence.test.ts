@@ -11,7 +11,7 @@ import { briefForVoice, VOICE_MAX_CHARS } from "../src/util.js";
 import { formatMathNumber, youtubeVideoInputURL } from "../src/tools.js";
 import { usageLimitsFor } from "../src/credits.js";
 import { subscriptionMergeDecision } from "../src/iap.js";
-import { normalizeTextForSpeech, speechCharacterCount, stabilityForVariability, STT_MODEL, TTS_MODEL } from "../src/voice.js";
+import { billableAudioDurationMs, normalizeTextForSpeech, speechCharacterCount, stabilityForVariability, STT_MODEL, TTS_MODEL } from "../src/voice.js";
 import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
@@ -252,6 +252,9 @@ test("voice variability maps inversely to safe TTS stability", () => {
 test("voice uses current multilingual ElevenLabs models", () => {
   assert.equal(TTS_MODEL, "eleven_multilingual_v2");
   assert.equal(STT_MODEL, "scribe_v2");
+  assert.equal(billableAudioDurationMs(Buffer.alloc(4_000).toString("base64")), 1_000);
+  assert.equal(billableAudioDurationMs(Buffer.alloc(4_000).toString("base64"), 1_200), 1_200);
+  assert.equal(billableAudioDurationMs(Buffer.alloc(4_000).toString("base64"), 60_000), 30_000);
 });
 
 test("voice speaks large numeric answers naturally without changing its budget", () => {

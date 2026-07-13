@@ -4,6 +4,7 @@ export const CREDIT_USD = 0.001;
 // Eleven Multilingual v2 API list price. Flash/Turbo is $0.05/1K, but Taki
 // deliberately uses the higher-quality multilingual model.
 export const TTS_USD_PER_1K_CHARS = 0.10;
+export const STT_USD_PER_HOUR = 0.22;
 export const GEMINI_3_SEARCH_USD_PER_QUERY = 0.014;
 export const GEMINI_2_SEARCH_USD_PER_GROUNDED_PROMPT = 0.035;
 
@@ -130,4 +131,8 @@ export function totalUsageUsd(usage: MeteredUsage): number {
 
 export function ttsCostUsd(spokenChars: number): number {
   return Math.max(0, Math.floor(spokenChars)) * (TTS_USD_PER_1K_CHARS / 1000);
+}
+
+export function sttCostUsd(durationMs: number): number {
+  return Math.max(0, Math.floor(durationMs)) * (STT_USD_PER_HOUR / 3_600_000);
 }

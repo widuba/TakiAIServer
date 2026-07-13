@@ -17,6 +17,16 @@ export function isVoiceConfigured(): boolean {
   return !!ELEVEN_KEY;
 }
 
+// New app builds report AVAudioRecorder duration directly. The byte estimate is
+// a server-side floor for older or modified clients recording 32 kbps AAC.
+export function billableAudioDurationMs(audioBase64: string, reportedMs?: number): number {
+  const reported = Math.max(0, Math.min(30_000, Math.floor(Number(reportedMs) || 0)));
+  const padding = audioBase64.endsWith("==") ? 2 : audioBase64.endsWith("=") ? 1 : 0;
+  const bytes = Math.max(0, Math.floor(audioBase64.length * 3 / 4) - padding);
+  const estimated = Math.max(0, Math.min(30_000, Math.round(bytes / 4)));
+  return Math.max(reported, estimated);
+}
+
 // Transcribe a base64 audio clip → text. Returns "" on failure.
 export async function transcribe(audioBase64: string, mime = "audio/m4a"): Promise<string> {
   if (!ELEVEN_KEY || !audioBase64) return "";

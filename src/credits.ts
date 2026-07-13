@@ -1,5 +1,5 @@
 import { storeGet, storeSet, isDurable } from "./store.js";
-import { CREDIT_USD, ttsCostUsd } from "./metering.js";
+import { CREDIT_USD, sttCostUsd, ttsCostUsd } from "./metering.js";
 
 export { CREDIT_USD } from "./metering.js";
 
@@ -47,9 +47,10 @@ export const TIERS: Record<Tier, TierConfig> = {
 // or on top-ups / non-voice tiers, voice costs per spoken character. Paid voice
 // uses the actual $0.10/1k-character Multilingual v2 cost from metering.ts.
 // Sub-credit fractions carry forward, so short replies are never rounded up.
-export const FREE_VOICE_PER_CYCLE: Record<Tier, number> = { free: 0, plus: 0, plus_voice: 300, pro: 350 };
+export const FREE_VOICE_PER_CYCLE: Record<Tier, number> = { free: 0, plus: 0, plus_voice: 300, pro: 300 };
 export const APP_STORE_COMMISSION_RATE = 0.15;
 export const MAX_VOICE_RESPONSE_CHARS = 140;
+export const MAX_VOICE_INPUT_MS = 30_000;
 
 // Is this voice turn covered by the free-voice allowance? Only on an included
 // tier, only while base subscription credits remain, and only under the cap.
@@ -62,9 +63,10 @@ export function worstCaseContributionUsd(tier: Tier): number {
   const config = TIERS[tier];
   const netRevenue = config.priceUsd * (1 - APP_STORE_COMMISSION_RATE);
   const aiCost = config.creditsPerCycle * CREDIT_USD;
-  // Every voice turn synthesizes exactly one final response, after any native
-  // action has completed, capped to MAX_VOICE_RESPONSE_CHARS.
-  const voiceCost = FREE_VOICE_PER_CYCLE[tier] * ttsCostUsd(MAX_VOICE_RESPONSE_CHARS);
+  // Every included turn may use the full cloud-transcription fallback and
+  // synthesizes one final response capped to MAX_VOICE_RESPONSE_CHARS.
+  const voiceCost = FREE_VOICE_PER_CYCLE[tier]
+    * (sttCostUsd(MAX_VOICE_INPUT_MS) + ttsCostUsd(MAX_VOICE_RESPONSE_CHARS));
   return netRevenue - aiCost - voiceCost;
 }
 

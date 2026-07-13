@@ -23,13 +23,13 @@ import { setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
 import { isDurable, storeGet, storeSet } from "./src/store.js";
 import { summary as creditSummary, spendUsageUsd, reset as resetCredits, isFreeVoice, noteFreeVoice, tierCatalog, grantForTransaction, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, noteVoiceQuestion, grantCredits, topupPriceCents, topupCentsPerCredit, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, FREE_VOICE_PER_CYCLE, CREDIT_USD, type Tier } from "./src/credits.js";
-import { measureUsage, totalUsageUsd, ttsCostUsd } from "./src/metering.js";
+import { measureUsage, sttCostUsd, totalUsageUsd, ttsCostUsd } from "./src/metering.js";
 import { verifyTransaction, linkTransactionIdentity, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
 import { verifyAppleIdentityToken } from "./src/appleauth.js";
 import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, linkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG, promptExtractionMessageForMode } from "./src/safety.js";
 import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, userForIdentity, identitiesForIp, allUsers, deleteUser } from "./src/users.js";
 import { TIERS } from "./src/credits.js";
-import { transcribe, synthesize, listVoices, isVoiceConfigured, speechCharacterCount } from "./src/voice.js";
+import { billableAudioDurationMs, transcribe, synthesize, listVoices, isVoiceConfigured, speechCharacterCount } from "./src/voice.js";
 import { emailProviderConfigured, createOAuthState, buildAuthUrl, completeOAuth, loadConnection, disconnectEmail, sendEmail, saveDraft, searchConnectedEmail, type EmailProvider } from "./src/email.js";
 import { extractDurableMemories } from "./src/userMemory.js";
 import { createChatTitle } from "./src/chatTitle.js";
@@ -1458,7 +1458,8 @@ async function runAssistant(
   state: ReturnType<typeof buildConversationState>,
   deviceId: string,
   voiceMode: boolean,
-  supportsDeferredActionSynthesis = false
+  supportsDeferredActionSynthesis = false,
+  voiceInputUsd = 0
 ): Promise<any> {
   let tier: Tier = "free";
   let baseCredits = 0;     // remaining base-subscription credits (for free-voice check)
@@ -1503,7 +1504,10 @@ async function runAssistant(
     if (voiceMode) {
       voiceSynthesisIncluded = isFreeVoice(tier, baseCredits, voiceCycleUsed);
       if (voiceSynthesisIncluded) await noteFreeVoice(deviceId);
-      else if (!deferVoiceSynthesis) usageUsd += ttsCostUsd(speechCharacterCount(finalized.spokenText || ""));
+      else {
+        usageUsd += Math.max(0, voiceInputUsd);
+        if (!deferVoiceSynthesis) usageUsd += ttsCostUsd(speechCharacterCount(finalized.spokenText || ""));
+      }
     }
     const limitReason = usageLimitForCost(usageSummary, Math.ceil(usageUsd / CREDIT_USD));
     if (limitReason) {
@@ -1588,7 +1592,9 @@ app.post("/api/assistant", async (req, res) => {
 app.post("/api/voice", async (req, res) => {
   if (!isVoiceConfigured()) { res.status(503).json({ error: "voice not configured (set ELEVENLABS_API_KEY)" }); return; }
   const audioBase64 = typeof req.body?.audioBase64 === "string" ? req.body.audioBase64 : "";
+  if (audioBase64.length > 3_000_000) { res.status(413).json({ error: "voice recording too large" }); return; }
   const deviceTranscript = typeof req.body?.transcript === "string" ? req.body.transcript.trim().slice(0, 4000) : "";
+  const audioDurationMs = billableAudioDurationMs(audioBase64, req.body?.audioDurationMs);
   const mime = typeof req.body?.mime === "string" ? req.body.mime : "audio/m4a";
   const rawContext = typeof req.body?.context === "string" ? req.body.context : "";
   const timeZone: string | undefined = typeof req.body?.timeZone === "string" ? req.body.timeZone : undefined;
@@ -1627,6 +1633,7 @@ app.post("/api/voice", async (req, res) => {
     // Prefer Apple's on-device transcription when the phone supplied one. This
     // removes an entire sequential cloud STT request from normal voice turns;
     // audio remains the fallback for unsupported devices or uncertain results.
+    const usedCloudTranscription = !deviceTranscript;
     const transcript = deviceTranscript || await transcribe(audioBase64, mime);
     if (!transcript) {
       // Nothing intelligible (silence) — let the device re-listen or end.
@@ -1648,7 +1655,8 @@ app.post("/api/voice", async (req, res) => {
       state,
       deviceId,
       true,
-      req.body?.deferredActionSynthesis === true
+      req.body?.deferredActionSynthesis === true,
+      usedCloudTranscription ? sttCostUsd(audioDurationMs) : 0
     );
     const audio = result.deferVoiceSynthesis
       ? ""
