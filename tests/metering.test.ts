@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { geminiListPriceUsd, ttsCostUsd } from "../src/metering.js";
+import { geminiListPriceUsd, googleSearchListPriceUsd, ttsCostUsd } from "../src/metering.js";
 import { FREE_VOICE_PER_CYCLE, TIERS, worstCaseContributionUsd } from "../src/credits.js";
 import { detectPersonalSearch } from "../src/planner.js";
 
@@ -17,13 +17,30 @@ test("one credit always represents exactly $0.001 of vendor usage", () => {
   );
 });
 
+test("Gemini 3 list pricing includes thinking tokens and actual search queries", () => {
+  assert.equal(
+    geminiListPriceUsd("gemini-3.5-flash", {
+      promptTokenCount: 1000,
+      candidatesTokenCount: 1000,
+      thoughtsTokenCount: 1000
+    }),
+    0.0195
+  );
+  const grounded = {
+    candidates: [{ groundingMetadata: { webSearchQueries: ["weather today", "rain radar"] } }]
+  };
+  assert.equal(googleSearchListPriceUsd("gemini-3.5-flash", grounded), 0.028);
+  assert.equal(googleSearchListPriceUsd("gemini-2.5-flash", grounded), 0.035);
+  assert.equal(googleSearchListPriceUsd("gemini-3.5-flash", { candidates: [{}] }), 0);
+});
+
 test("Pro remains the highest-contribution paid tier at worst-case included usage", () => {
   const contributions = (["plus", "plus_voice", "pro"] as const)
     .map((tier) => ({ tier, contribution: worstCaseContributionUsd(tier) }));
   const highest = contributions.reduce((best, current) => current.contribution > best.contribution ? current : best);
   assert.equal(highest.tier, "pro", JSON.stringify(contributions));
-  assert.ok(worstCaseContributionUsd("pro") >= 6.2);
-  assert.equal(FREE_VOICE_PER_CYCLE.pro, 300);
+  assert.ok(worstCaseContributionUsd("pro") >= 6.9);
+  assert.equal(FREE_VOICE_PER_CYCLE.pro, 500);
   assert.equal(TIERS.pro.creditsPerCycle, 15_000);
 });
 

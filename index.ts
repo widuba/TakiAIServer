@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import Stripe from "stripe";
+import { randomUUID } from "node:crypto";
 
 import { PORT } from "./src/ai.js";
 import type { DeviceLocation } from "./src/types.js";
@@ -41,6 +42,28 @@ const OUT_OF_CREDITS_MSG = "You're out of credits — top up or upgrade in Membe
 const DAILY_LIMIT_MSG = "You've reached today's usage limit. You can ask again after the daily reset shown in Membership.";
 const MONTHLY_LIMIT_MSG = "You've reached this month's usage limit. You can ask again after the monthly reset shown in Membership.";
 const FREE_VOICE_LIMIT_MSG = "You've reached the Voice limit for the Free tier. Upgrade to Plus for full access.";
+
+type PendingVoiceSynthesis = { deviceId: string; included: boolean; expiresAt: number };
+const pendingVoiceSyntheses = new Map<string, PendingVoiceSynthesis>();
+
+function createVoiceSynthesisToken(deviceId: string, included: boolean): string {
+  const now = Date.now();
+  if (pendingVoiceSyntheses.size > 5_000) {
+    for (const [token, pending] of pendingVoiceSyntheses) {
+      if (pending.expiresAt <= now) pendingVoiceSyntheses.delete(token);
+    }
+  }
+  const token = randomUUID();
+  pendingVoiceSyntheses.set(token, { deviceId, included, expiresAt: now + 2 * 60_000 });
+  return token;
+}
+
+function takeVoiceSynthesisToken(token: string, deviceId: string): PendingVoiceSynthesis | null {
+  const pending = pendingVoiceSyntheses.get(token);
+  if (!pending || pending.deviceId !== deviceId || pending.expiresAt <= Date.now()) return null;
+  pendingVoiceSyntheses.delete(token);
+  return pending;
+}
 
 function usageLimitMessage(summary: { limitReached?: boolean; limitReason?: string | null }): string | null {
   if (!summary.limitReached) return null;
@@ -645,7 +668,7 @@ app.get("/api/credits/topup-config", (_req, res) => {
     max: CREDIT_TOPUP_MAX,
     centsPerCredit: topupCentsPerCredit(false),
     proCentsPerCredit: topupCentsPerCredit(true),
-    plans: (["plus", "plus_voice", "pro"] as Tier[]).map((key) => ({ key, ...TIERS[key] }))
+    plans: tierCatalog().filter((plan) => plan.key !== "free")
   });
 });
 
@@ -1422,7 +1445,12 @@ async function safetyGate(identity: string, message: string, req: any, voiceMode
 // The shared assistant core: credit gate → plan → finalize → style → meter.
 // Returns the JSON payload (finalized response + credits). Used by both
 // /api/assistant and /api/voice (which passes voiceMode=true).
-async function runAssistant(state: ReturnType<typeof buildConversationState>, deviceId: string, voiceMode: boolean): Promise<any> {
+async function runAssistant(
+  state: ReturnType<typeof buildConversationState>,
+  deviceId: string,
+  voiceMode: boolean,
+  supportsDeferredActionSynthesis = false
+): Promise<any> {
   let tier: Tier = "free";
   let baseCredits = 0;     // remaining base-subscription credits (for free-voice check)
   let voiceCycleUsed = 0;  // free voice turns used this cycle
@@ -1456,13 +1484,17 @@ async function runAssistant(state: ReturnType<typeof buildConversationState>, de
     return response;
   });
   const finalized = measured.value;
+  const hasActions = !!finalized.action || (Array.isArray(finalized.actions) && finalized.actions.length > 0);
+  const deferVoiceSynthesis = voiceMode && supportsDeferredActionSynthesis && hasActions && !!deviceId;
   if (deviceId) {
     let usageUsd = totalUsageUsd(measured.usage);
     // Voice: free within the per-cycle allowance on Plus Voice / Pro (base credits
     // only); beyond that, or on top-ups / other tiers, pay per spoken character.
+    let voiceSynthesisIncluded = false;
     if (voiceMode) {
-      if (isFreeVoice(tier, baseCredits, voiceCycleUsed)) await noteFreeVoice(deviceId);
-      else usageUsd += ttsCostUsd((finalized.spokenText || "").length);
+      voiceSynthesisIncluded = isFreeVoice(tier, baseCredits, voiceCycleUsed);
+      if (voiceSynthesisIncluded) await noteFreeVoice(deviceId);
+      else if (!deferVoiceSynthesis) usageUsd += ttsCostUsd((finalized.spokenText || "").length);
     }
     const limitReason = usageLimitForCost(usageSummary, Math.ceil(usageUsd / CREDIT_USD));
     if (limitReason) {
@@ -1474,7 +1506,14 @@ async function runAssistant(state: ReturnType<typeof buildConversationState>, de
     }
     const s = await spendUsageUsd(deviceId, usageUsd);
     await noteSpend(deviceId, s.spent);
-    return { ...finalized, credits: { ...s, cost: s.spent } };
+    const deferredVoiceSynthesisToken = deferVoiceSynthesis
+      ? createVoiceSynthesisToken(deviceId, voiceSynthesisIncluded)
+      : undefined;
+    return {
+      ...finalized,
+      ...(deferVoiceSynthesis ? { deferVoiceSynthesis: true, deferredVoiceSynthesisToken } : {}),
+      credits: { ...s, cost: s.spent }
+    };
   }
   return finalized;
 }
@@ -1596,8 +1635,15 @@ app.post("/api/voice", async (req, res) => {
     let voiceUsed: number | undefined;
     if (freeTier && deviceId) voiceUsed = await noteVoiceQuestion(deviceId);
     const state = buildConversationState(transcript, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, true, deviceId);
-    const result = await runAssistant(state, deviceId, true); // voice → surcharge applies
-    const audio = await synthesize(result.spokenText || "", voiceId, voiceVariability);
+    const result = await runAssistant(
+      state,
+      deviceId,
+      true,
+      req.body?.deferredActionSynthesis === true
+    );
+    const audio = result.deferVoiceSynthesis
+      ? ""
+      : await synthesize(result.spokenText || "", voiceId, voiceVariability);
     res.json({ ...result, transcript, transcriptionSource: deviceTranscript ? "device" : "cloud", audioBase64: audio, mime: "audio/mpeg", voiceUsed });
   } catch (error) {
     console.error("Voice route error:", error);
@@ -1660,6 +1706,9 @@ app.post("/api/voice/synthesize", async (req, res) => {
   const text = typeof req.body?.text === "string" ? req.body.text.trim().slice(0, 140) : "";
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   const voiceId = typeof req.body?.voiceId === "string" ? req.body.voiceId : undefined;
+  const deferredToken = typeof req.body?.deferredVoiceSynthesisToken === "string"
+    ? req.body.deferredVoiceSynthesisToken.trim()
+    : "";
   const variability = typeof req.body?.voiceVariability === "number"
     ? Math.max(0, Math.min(1, req.body.voiceVariability))
     : 0.5;
@@ -1683,11 +1732,20 @@ app.post("/api/voice/synthesize", async (req, res) => {
         if (now - value.startedAt >= 60_000) correctionSynthWindows.delete(key);
       }
     }
-    const audio = await synthesize(text, voiceId, variability);
+    const pending = deferredToken ? takeVoiceSynthesisToken(deferredToken, deviceId) : null;
     const account = await creditSummary(deviceId);
-    const correctionIsIncluded = account.baseCredits > 0
+    const correctionIsIncluded = pending?.included === true || (!pending && account.baseCredits > 0
       && account.voiceCycleUsed > 0
-      && account.voiceCycleUsed <= (FREE_VOICE_PER_CYCLE[account.tier] || 0);
+      && account.voiceCycleUsed <= (FREE_VOICE_PER_CYCLE[account.tier] || 0));
+    if (pending && !correctionIsIncluded) {
+      const cost = Math.ceil(ttsCostUsd(text.length) / CREDIT_USD);
+      const limitReason = usageLimitForCost(account, cost);
+      if (account.balance < cost || limitReason) {
+        res.status(402).json({ error: limitReason ? usageMessageForReason(limitReason) : OUT_OF_CREDITS_MSG });
+        return;
+      }
+    }
+    const audio = await synthesize(text, voiceId, variability);
     if (!correctionIsIncluded) {
       const charged = await spendUsageUsd(deviceId, ttsCostUsd(text.length));
       await noteSpend(deviceId, charged.spent);

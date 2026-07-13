@@ -17,12 +17,36 @@ export const ai = new GoogleGenAI({ apiKey });
 const rawGenerateContent = ai.models.generateContent.bind(ai.models);
 
 export async function generateContent(args: any): Promise<any> {
-  const response = await rawGenerateContent(args);
-  recordGeminiCall(args, response);
+  // Gemini 3 uses thinking levels rather than allowing thinking to be disabled.
+  // Translate the older zero-budget call sites so they remain fast and valid.
+  let request = args;
+  const model = String(args?.model || "").toLowerCase();
+  if (/gemini-3(?:\.|-)/.test(model) && args?.config?.thinkingConfig?.thinkingBudget === 0) {
+    const thinkingLevel = /3\.1-pro/.test(model) ? "LOW" : "MINIMAL";
+    request = {
+      ...args,
+      config: {
+        ...args.config,
+        thinkingConfig: { ...args.config.thinkingConfig, thinkingBudget: undefined, thinkingLevel }
+      }
+    };
+  }
+  const response = await rawGenerateContent(request);
+  recordGeminiCall(request, response);
   return response;
 }
 
 export const PORT = Number(process.env.PORT || 8787);
+function currentModel(configured: string | undefined, fallback: string): string {
+  const requested = String(configured || "").trim();
+  if (!requested) return fallback;
+  if (/^gemini-2(?:\.|-)/i.test(requested)) {
+    console.warn(`Ignoring legacy model override ${requested}; using ${fallback}.`);
+    return fallback;
+  }
+  return requested;
+}
+
 /**
  * Model roles (each tuned for its job):
  *   PLANNER_MODEL   -> fast routing/extraction. flash with thinking off (~1-2s).
@@ -33,13 +57,12 @@ export const PORT = Number(process.env.PORT || 8787);
  *   RESEARCH_MODEL  -> most accurate model + Google grounding, for current/
  *                      changeable facts (scores, prices, schedules, news).
  */
-export const PLANNER_MODEL = process.env.GEMINI_PLANNER_MODEL || "gemini-2.5-flash";
-export const MAIN_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-export const RESEARCH_MODEL = process.env.GEMINI_RESEARCH_MODEL || "gemini-2.5-pro";
+export const PLANNER_MODEL = currentModel(process.env.GEMINI_PLANNER_MODEL, "gemini-3.5-flash");
+export const MAIN_MODEL = currentModel(process.env.GEMINI_MODEL, "gemini-3.5-flash");
+export const RESEARCH_MODEL = currentModel(process.env.GEMINI_RESEARCH_MODEL, "gemini-3.1-pro-preview");
 
-// Timeouts (ms), env-overridable. The planner is now flash-lite with thinking
-// off (~1-2s typical), so a tighter budget is fine. Grounded research on the
-// accurate model is slower, so it gets a longer budget.
+// Timeouts (ms), env-overridable. The planner uses minimal thinking for quick
+// routing. Grounded research on the Pro model gets a longer budget.
 export const PLANNER_TIMEOUT_MS = Number(process.env.PLANNER_TIMEOUT_MS || 12000);
 export const RESEARCH_TIMEOUT_MS = Number(process.env.RESEARCH_TIMEOUT_MS || 20000);
 // Enumerating "the next N games" with grounding is heavier than a single fact

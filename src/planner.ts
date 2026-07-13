@@ -507,8 +507,9 @@ ACTION FIELD SCHEMA (include only what applies):
   emailSubject, appName, mapsQuery, mapsDestination, recurrence, triggerLocation, triggerOnArrival,
   metric, musicAction, musicQuery, homeAction, homeTarget, homeValue, photoDays
 Allowed action "type": compose_message, compose_email, calendar_forward, call_phone, calendar_create,
-  calendar_search, reminder_create, reminder_search, open_app, maps_search, maps_directions,
-  contact_create, health_query, music_control, home_control, photos_show
+  calendar_update, calendar_delete, calendar_search, reminder_create, reminder_search, open_app,
+  maps_search, maps_directions, contact_create, health_query, music_control, home_control,
+  photos_show, photos_search
 
 Return exactly:
 {
@@ -532,9 +533,8 @@ Return exactly:
     generateContent({
       model: PLANNER_MODEL,
       contents: prompt,
-      // Disable "thinking": this is structured extraction from a very explicit
-      // prompt, so the model's internal reasoning mostly adds latency (and was
-      // the main cause of planner timeouts). This ~halves the response time.
+      // Minimal thinking keeps routing quick while preserving Gemini 3.5's
+      // context resolution and instruction following for ambiguous phrasing.
       config: { temperature: 0, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 }, ...safetyConfig(state.userProfile?.teen) }
     } as any),
     PLANNER_TIMEOUT_MS,

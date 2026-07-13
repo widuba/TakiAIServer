@@ -47,7 +47,7 @@ export const TIERS: Record<Tier, TierConfig> = {
 // or on top-ups / non-voice tiers, voice costs per spoken character. The per-char
 // Paid voice uses the actual $0.05/1k-character cost from metering.ts. Sub-credit
 // fractions carry forward, so repeated short replies are never rounded up.
-export const FREE_VOICE_PER_CYCLE: Record<Tier, number> = { free: 0, plus: 0, plus_voice: 400, pro: 300 };
+export const FREE_VOICE_PER_CYCLE: Record<Tier, number> = { free: 0, plus: 0, plus_voice: 400, pro: 500 };
 export const APP_STORE_COMMISSION_RATE = 0.15;
 export const MAX_VOICE_RESPONSE_CHARS = 140;
 
@@ -62,9 +62,9 @@ export function worstCaseContributionUsd(tier: Tier): number {
   const config = TIERS[tier];
   const netRevenue = config.priceUsd * (1 - APP_STORE_COMMISSION_RATE);
   const aiCost = config.creditsPerCycle * CREDIT_USD;
-  // A voice action can synthesize both the initial confirmation and one native
-  // correction, each capped to MAX_VOICE_RESPONSE_CHARS.
-  const voiceCost = FREE_VOICE_PER_CYCLE[tier] * ttsCostUsd(MAX_VOICE_RESPONSE_CHARS * 2);
+  // Every voice turn synthesizes exactly one final response, after any native
+  // action has completed, capped to MAX_VOICE_RESPONSE_CHARS.
+  const voiceCost = FREE_VOICE_PER_CYCLE[tier] * ttsCostUsd(MAX_VOICE_RESPONSE_CHARS);
   return netRevenue - aiCost - voiceCost;
 }
 
@@ -556,5 +556,9 @@ export async function reset(deviceId: string): Promise<void> {
 
 // For the client Membership screen: the tier catalog.
 export function tierCatalog() {
-  return (Object.keys(TIERS) as Tier[]).map((key) => ({ key, ...TIERS[key] }));
+  return (Object.keys(TIERS) as Tier[]).map((key) => ({
+    key,
+    ...TIERS[key],
+    includedVoiceTurns: FREE_VOICE_PER_CYCLE[key]
+  }));
 }

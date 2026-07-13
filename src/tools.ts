@@ -2609,29 +2609,20 @@ ${state.correctionsText || "(none)"}
 ${memoryText}
 `;
 
-  // Voice replies are read aloud: hard-cap to the first couple of sentences so a
-  // grounded model that over-answers can't run up TTS cost / latency. The
-  // character lives in the opening words, so this stays in-voice.
+  // Voice replies are read aloud. This deterministic choke point guarantees a
+  // complete response under the TTS limit without another sequential model call.
   const cap = (t: string): string => {
-    if (!state.voiceMode || !t) return t;
-    const sentences = t.match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g) || [t];
-    let out = sentences.slice(0, 2).join("").trim();
-    if (out.length > 280) out = out.slice(0, 280).replace(/\s+\S*$/, "").trim() + "…";
-    return out || t;
+    return state.voiceMode && t ? briefForVoice(t) : t;
   };
 
-  // Cost control: gemini-2.5-pro + grounded search is ONLY for questions that
-  // truly need live/current info (scores, prices, "now", public schedules, latest
-  // news). Everything else — plain knowledge, explanations, writing, math help —
-  // is answered on flash with NO grounding: far cheaper, much faster, and it
-  // doesn't burn the limited 2.5-pro request quota. (Live/fresh questions are
-  // normally routed to getStrictWebAnswer upstream; this is the general fallback.)
+  // Current questions use the strongest research model in text chat. Search is
+  // available to every general answer so the model can ground uncertain facts;
+  // metering charges it only when grounding metadata confirms it actually ran.
   const isLive = looksLikeLiveInfoQuestion(state.message) || looksLikeFreshFactQuestion(state.message);
-  const needsSearch = isLive;
   const primaryModel = isLive && !state.voiceMode ? RESEARCH_MODEL : MAIN_MODEL;
   const primaryConfig: any = {
-    ...(needsSearch ? { tools: [{ googleSearch: {} }] } : {}),
-    thinkingConfig: { thinkingBudget: 0 },
+    tools: [{ googleSearch: {} }],
+    thinkingConfig: state.voiceMode ? { thinkingLevel: "MINIMAL" } : { thinkingLevel: "LOW" },
     ...safetyConfig(state.userProfile?.teen)
   };
 
@@ -2704,26 +2695,8 @@ ${tz ? `The user's local time is ${nowInTimeZone(tz)}.\n` : ""}Question: "${q}"
   }
 }
 
-export async function fitVoiceResponse(text: string, persona?: UserPersona): Promise<string> {
+export async function fitVoiceResponse(text: string, _persona?: UserPersona): Promise<string> {
   const original = stripMarkdown(String(text || "").trim());
-  if (original.length <= VOICE_MAX_CHARS && !/[.…]+$/.test(original)) return original;
-  try {
-    const response: any = await withTimeout(
-      generateContent({
-        model: MAIN_MODEL,
-        contents: `Rewrite the following answer for spoken playback. Preserve the most useful fact. Return one complete plain-text sentence of at most ${VOICE_MAX_CHARS - 5} characters. Do not use an ellipsis, markdown, a preface, or mention shortening.\n\nANSWER:\n${original}`,
-        config: { thinkingConfig: { thinkingBudget: 0 }, ...safetyConfig(persona?.teen) }
-      } as any),
-      5000,
-      "Voice response fit"
-    );
-    const rewritten = stripMarkdown(String(response.text || "").trim()).replace(/[.…]+$/g, "").trim();
-    if (rewritten && rewritten.length <= VOICE_MAX_CHARS - (/[.!?]$/.test(rewritten) ? 0 : 1)) {
-      return /[.!?]$/.test(rewritten) ? rewritten : `${rewritten}.`;
-    }
-  } catch {
-    // The deterministic fallback below still guarantees the display/TTS cap.
-  }
   return briefForVoice(original);
 }
 

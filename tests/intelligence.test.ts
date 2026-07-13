@@ -173,6 +173,46 @@ test("actions that open another app or system sheet confirm with Done", () => {
   assert.equal(response.spokenText, "Done.");
 });
 
+test("unbacked success claims are never returned without an executable action", () => {
+  for (const spokenText of [
+    "I've texted Bill the details.",
+    "Your reminder is set for 8.",
+    "The email has been sent.",
+    "Done."
+  ]) {
+    const response = finalizeResponse({
+      spokenText,
+      action: null,
+      memoryPatch: { pendingClarification: null },
+      needsExecution: false
+    }, stateFor("do that"));
+    assert.equal(response.spokenText, "Okay.", spokenText);
+  }
+});
+
+test("shipping actions have deterministic missing-detail checks", () => {
+  const expectations: [ReturnType<typeof blankAction>, RegExp][] = [
+    [blankAction("compose_message"), /Who should I send/],
+    [blankAction("compose_email"), /Who should I email/],
+    [blankAction("call_phone"), /Who should I call/],
+    [blankAction("calendar_create"), /title, date, and time/],
+    [blankAction("calendar_update"), /Which calendar event/],
+    [blankAction("calendar_delete"), /Which calendar event/],
+    [blankAction("reminder_create"), /What should I remind/],
+    [blankAction("maps_search"), /What should I search/],
+    [blankAction("maps_directions"), /Where do you want directions/],
+    [blankAction("open_app"), /Which app should I open/],
+    [blankAction("health_query"), /health measurement/],
+    [blankAction("music_control"), /play or control/],
+    [blankAction("home_control"), /control in your home/],
+    [blankAction("photos_search"), /search for in your photos/],
+    [blankAction("contact_create"), /contact's name/]
+  ];
+  for (const [action, expected] of expectations) {
+    assert.match(validateAction(action) || "", expected, action.type);
+  }
+});
+
 test("calendar forwarding accepts grounded contacts and direct addresses", () => {
   const messageAction = blankAction("calendar_forward");
   messageAction.shareKind = "message";

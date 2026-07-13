@@ -288,8 +288,13 @@ function stripFalsePromises(spokenText: string): string {
     .replace(/\bI will add[^.?!]*\.?/gi, "")
     .replace(/\bI(?:'|’)?ll (?:text|message|email|call|remind|search|open|draft|send)[^.?!]*\.?/gi, "")
     .replace(/\bI will (?:text|message|email|call|remind|search|open|draft|send)[^.?!]*\.?/gi, "")
+    .replace(/\bI(?:'|’)?ve (?:added|created|set|sent|texted|emailed|called|opened|scheduled)[^.?!]*\.?/gi, "")
+    .replace(/\bI (?:added|created|set|sent|texted|emailed|called|opened|scheduled)[^.?!]*\.?/gi, "")
+    .replace(/\bYour (?:alarm|timer|reminder|event) (?:is|has been) (?:set|created|scheduled)[^.?!]*\.?/gi, "")
+    .replace(/\bThe (?:message|text|email) (?:was|has been) sent[^.?!]*\.?/gi, "")
     .replace(/\s+/g, " ")
     .trim();
+  if (/^(?:done|all set|handled|completed)[.!]*$/i.test(text)) return "";
   return text;
 }
 

@@ -88,11 +88,10 @@ export async function synthesize(text: string, voiceId?: string, variability?: n
   if (!ELEVEN_KEY || !text.trim()) return "";
   const vid = voiceId && voiceId.trim() ? voiceId.trim() : VOICE_ID;
   try {
-    // Voice replies are short spoken lines, so a smaller output format (22.05 kHz
-    // / 32 kbps) generates + transfers ~4x faster than the 44.1 kHz/128 kbps
-    // default with no audible loss for speech — shaving latency before playback.
+    // Flash keeps generation quick; 44.1 kHz / 64 kbps avoids the brittle,
+    // compressed sound of the old 22.05 kHz stream without a large transfer.
     const res: any = await withTimeout(
-      fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(vid)}?output_format=mp3_22050_32`, {
+      fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(vid)}?output_format=mp3_44100_64`, {
         method: "POST",
         headers: { "xi-api-key": ELEVEN_KEY, "Content-Type": "application/json", Accept: "audio/mpeg" },
         body: JSON.stringify({
