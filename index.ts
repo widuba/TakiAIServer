@@ -21,11 +21,12 @@ import { cachedTrackerSnapshot } from "./src/tracker.js";
 import { extractFlightCode, normalizeTrackerKind } from "./src/entityClassifier.js";
 import { setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
-import { isDurable, storeGet, storeSet } from "./src/store.js";
+import { isDurable, storeDelete, storeGet, storeSet } from "./src/store.js";
 import { summary as creditSummary, spendUsageUsd, reset as resetCredits, isFreeVoice, noteFreeVoice, tierCatalog, grantForTransaction, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, noteVoiceQuestion, grantCredits, topupPriceCents, topupCentsPerCredit, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, FREE_VOICE_PER_CYCLE, CREDIT_USD, type Tier } from "./src/credits.js";
 import { measureUsage, sttCostUsd, totalUsageUsd, ttsCostUsd } from "./src/metering.js";
 import { verifyTransaction, linkTransactionIdentity, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
-import { verifyAppleIdentityToken } from "./src/appleauth.js";
+import { revokeAppleAuthorizationCode, verifyAppleIdentityToken } from "./src/appleauth.js";
+import { purgeAppleAccount } from "./src/accountDeletion.js";
 import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, linkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG, promptExtractionMessageForMode } from "./src/safety.js";
 import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, userForIdentity, identitiesForIp, allUsers, deleteUser } from "./src/users.js";
 import { TIERS } from "./src/credits.js";
@@ -874,6 +875,25 @@ async function retireOtherWebSubscriptions(identity: string, keeping: string): P
   }
 }
 
+async function cancelWebSubscriptionsForDeletion(identity: string): Promise<void> {
+  const key = webSubsForIdentityKey(identity);
+  const list = await storeGet<{ ids: string[] }>(key, { ids: [] });
+  for (const id of list.ids) {
+    const record = await storeGet<WebSubscription | null>(webSubKey(id), null);
+    if (!record) continue;
+    if (record.active) {
+      if (!stripe) throw new Error("Stripe is unavailable");
+      await stripe.subscriptions.cancel(id);
+    }
+    record.active = false;
+    record.identity = "";
+    record.publicId = "";
+    record.updatedAt = Date.now();
+    await storeSet(webSubKey(id), record);
+  }
+  await storeDelete(key);
+}
+
 app.post("/api/plans/checkout", async (req, res) => {
   if (!stripe) { res.status(503).json({ error: "subscriptions are not available yet" }); return; }
   const publicId = typeof req.body?.identity === "string" ? normalizeTopupIdentity(req.body.identity) : "";
@@ -1195,6 +1215,42 @@ app.post("/api/account/apple", async (req, res) => {
   } catch (e) { console.error("apple link:", e); }
   const linkedDevices = (await devicesForApple(identdata.sub)).filter((d) => d !== deviceId);
   res.json({ accountId, deviceId, email: identdata.email, linkedDevices, duplicateSubscriptionNeedsCancellation, ...(await creditSummary(accountId)), tiers: tierCatalog() });
+});
+
+app.post("/api/account/delete", async (req, res) => {
+  const identityToken = typeof req.body?.identityToken === "string" ? req.body.identityToken : "";
+  const authorizationCode = typeof req.body?.authorizationCode === "string" ? req.body.authorizationCode : "";
+  const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
+  const expectedAccountId = typeof req.body?.expectedAccountId === "string" ? req.body.expectedAccountId.trim() : "";
+  const apple = await verifyAppleIdentityToken(identityToken);
+  if (!apple || !authorizationCode) { res.status(401).json({ error: "Apple reauthentication required" }); return; }
+  if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
+
+  const accountId = `apple:${apple.sub}`;
+  if (!expectedAccountId || expectedAccountId !== accountId) {
+    res.status(403).json({ error: "The confirmed Apple account does not match this Taki account" });
+    return;
+  }
+  const linkedDevices = await devicesForApple(apple.sub);
+  if (!linkedDevices.includes(deviceId)) {
+    res.status(403).json({ error: "This device is not linked to that Taki account" });
+    return;
+  }
+  if (!(await revokeAppleAuthorizationCode(authorizationCode))) {
+    res.status(503).json({ error: "Apple could not verify the deletion. Please try again." });
+    return;
+  }
+
+  try {
+    for (const identity of [accountId, ...linkedDevices]) {
+      await cancelWebSubscriptionsForDeletion(identity);
+    }
+    const deleted = await purgeAppleAccount(apple.sub);
+    res.json({ ok: true, deleted });
+  } catch (error) {
+    console.error("Account deletion failed:", error);
+    res.status(502).json({ error: "The account could not be completely deleted. Please contact Taki AI Support." });
+  }
 });
 
 // App Store Server Notifications V2 — Apple POSTs {signedPayload} on renewals,

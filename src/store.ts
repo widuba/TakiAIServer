@@ -91,6 +91,26 @@ export async function storeSet(key: string, value: unknown): Promise<void> {
   }
 }
 
+export async function storeDelete(key: string): Promise<void> {
+  let deletionError: unknown = null;
+  try {
+    const pool = await ensurePg();
+    if (pool) await pool.query("DELETE FROM kv WHERE k = $1", [key]);
+  } catch (e) {
+    console.error("storeDelete pg error:", e);
+    deletionError = e;
+  }
+  try {
+    fs.unlinkSync(filePath(key));
+  } catch (e: any) {
+    if (e?.code !== "ENOENT") {
+      console.error("storeDelete file error:", e);
+      deletionError ||= e;
+    }
+  }
+  if (deletionError) throw deletionError;
+}
+
 // Whether durable (cross-redeploy) persistence is active.
 export function isDurable(): boolean {
   return !!DATABASE_URL;

@@ -1,4 +1,5 @@
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { createRemoteJWKSet, importPKCS8, jwtVerify, SignJWT } from "jose";
+import fs from "node:fs";
 
 /* ============================================================================
  * Sign in with Apple — verify the identity token the device gets from Apple.
@@ -35,6 +36,64 @@ export async function verifyAppleIdentityToken(idToken: string): Promise<AppleId
   } catch (error) {
     console.error("Apple identity verify failed:", (error as Error)?.message || error);
     return null;
+  }
+}
+
+export async function revokeAppleAuthorizationCode(authorizationCode: string): Promise<boolean> {
+  const teamId = (process.env.APPLE_TEAM_ID || process.env.APNS_TEAM_ID || "").trim();
+  const keyId = (process.env.APPLE_SIGN_IN_KEY_ID || process.env.APNS_KEY_ID || "").trim();
+  const keyPath = (process.env.APPLE_SIGN_IN_KEY_PATH || process.env.APNS_KEY_PATH || "").trim();
+  let privateKeyText = (process.env.APPLE_SIGN_IN_KEY_P8 || process.env.APNS_KEY_P8 || "")
+    .replace(/\\n/g, "\n").trim();
+  if (!privateKeyText && keyPath) {
+    try { privateKeyText = fs.readFileSync(keyPath, "utf8").trim(); }
+    catch (error) { console.error("Apple private key read failed:", (error as Error)?.message || error); }
+  }
+  if (!authorizationCode || !teamId || !keyId || !privateKeyText) {
+    console.error("Apple token revocation is not configured");
+    return false;
+  }
+  try {
+    const privateKey = await importPKCS8(privateKeyText, "ES256");
+    const clientSecret = await new SignJWT({})
+      .setProtectedHeader({ alg: "ES256", kid: keyId })
+      .setIssuer(teamId)
+      .setSubject(BUNDLE_ID)
+      .setAudience(APPLE_ISSUER)
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign(privateKey);
+    const tokenResponse = await fetch(`${APPLE_ISSUER}/auth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: BUNDLE_ID,
+        client_secret: clientSecret,
+        code: authorizationCode,
+        grant_type: "authorization_code"
+      })
+    });
+    const tokens: any = await tokenResponse.json().catch(() => ({}));
+    const token = String(tokens.refresh_token || tokens.access_token || "");
+    if (!tokenResponse.ok || !token) {
+      console.error("Apple authorization-code exchange failed:", tokenResponse.status);
+      return false;
+    }
+    const revokeResponse = await fetch(`${APPLE_ISSUER}/auth/revoke`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: BUNDLE_ID,
+        client_secret: clientSecret,
+        token,
+        token_type_hint: tokens.refresh_token ? "refresh_token" : "access_token"
+      })
+    });
+    if (!revokeResponse.ok) console.error("Apple token revocation failed:", revokeResponse.status);
+    return revokeResponse.ok;
+  } catch (error) {
+    console.error("Apple token revocation error:", (error as Error)?.message || error);
+    return false;
   }
 }
 
