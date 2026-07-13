@@ -3,7 +3,7 @@ import { personaPromptBlock, characterDirective, GUARDRAILS } from "./persona.js
 import { capabilityPromptBlock } from "./capabilities.js";
 import type { UserPersona } from "./persona.js";
 import { isoFromYmdTime, addMinutesToIsoLocal, addDaysToYmd, ymdInTimeZone, extractJsonObject, VOICE_MAX_CHARS, briefForVoice } from "./util.js";
-import { extractFlightCode } from "./entityClassifier.js";
+import { extractFlightCode, hasExplicitFinanceCue, hasProductPriceCue } from "./entityClassifier.js";
 
 function isValidTimeZone(tz: string): boolean {
   try {
@@ -1807,6 +1807,7 @@ const NON_STOCK_PRICE =
 
 export function looksLikeStockQuestion(message: string) {
   const m = message.toLowerCase();
+  if (hasProductPriceCue(message) && !hasExplicitFinanceCue(message)) return false;
   const priceWord = /\b(price|worth|cost|trading|quote|how much|going for)\b/.test(m);
   if (/\b(stock|shares?|ticker|nasdaq|nyse|share price)\b/.test(m) && priceWord) return true;
   if (/\b(stock|share) price\b/.test(m)) return true;

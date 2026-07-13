@@ -1429,7 +1429,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
     // Couldn't build a recipe — fall through to a normal answer.
   }
 
-  // "Track AAPL" / "follow the Lakers game" -> a live finance/sports activity on
+  // "Track AAPL" / "track MacBook prices" / "follow the Lakers game" -> a live tracker on
   // the lock screen + Dynamic Island that the device keeps polling fresh.
   {
     const track = parseTrackCommand(state.message);
@@ -1439,7 +1439,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         // Flight title already carries the code + route ("UA328 · DEN→HNL").
         const title = snap.title;
         const action = blankAction("live_activity");
-        action.liveActivityKind = track.kind; // "finance" | "sports" | "flight"
+        action.liveActivityKind = track.kind;
         action.trackKind = track.kind;
         action.trackQuery = track.query;
         action.liveTitle = title;
@@ -1453,6 +1453,8 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         const spoken =
           track.kind === "finance"
             ? `Tracking ${title} — ${snap.line1}${snap.status ? `, ${snap.status}` : ""}. It'll stay live on your lock screen.`
+            : track.kind === "product"
+            ? `Tracking ${title} — ${snap.line1}. I'll refresh the comparison periodically on your lock screen and Dynamic Island.`
             : track.kind === "flight"
             ? `Tracking ${title} — ${snap.status}. Departure and arrival times are live on your lock screen and Dynamic Island.`
             : `Tracking ${title}. I'll keep the score live on your lock screen and Dynamic Island.`;
@@ -1464,6 +1466,8 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         ? `I recognized ${track.query} as a flight, but I couldn't get a verified current status right now, so I didn't start a tracker.`
         : track.kind === "sports"
         ? `I recognized that as a sports tracker, but I couldn't verify a current game, so I didn't start one.`
+        : track.kind === "product"
+        ? `I recognized that as a product-price tracker, but I couldn't verify current prices for every item, so I didn't start one.`
         : `I recognized that as a financial tracker, but I couldn't verify the asset, so I didn't start one.`;
       return answerPlan(unavailable, { lastIntent: "live_activity" });
     }

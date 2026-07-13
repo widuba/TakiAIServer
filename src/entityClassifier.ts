@@ -14,7 +14,9 @@ const AIRLINE_CODES: Record<string, string> = {
   qantas: "QF", "virgin atlantic": "VS", hawaiian: "HA"
 };
 
-const FINANCE_CUE = /\b(stock|stocks|shares?|ticker|price|quote|trading|market|nasdaq|nyse|crypto|coin|valuation)\b|\$/i;
+const FINANCE_CUE = /\b(stock|stocks|shares?|ticker|quote|trading|market|nasdaq|nyse|crypto|coin|valuation)\b|\$[A-Z]{1,5}\b/i;
+const PRODUCT_CUE = /\b(macbooks?|mac mini|imacs?|iphones?|ipads?|airpods?|apple watches?|laptops?|notebooks?|desktops?|computers?|phones?|smartphones?|tablets?|headphones?|earbuds?|monitors?|televisions?|tvs?|cameras?|consoles?|playstations?|xbox(?:es)?|nintendo|switch|galaxy|pixel|surface|chromebooks?|vehicles?|cars?|appliances?|products?|models?|tickets?)\b/i;
+const PRODUCT_PRICE_CUE = /\b(price|prices|priced|cost|costs|deal|deals|sale|sales|retail|msrp)\b/i;
 const FLIGHT_CUE = /\b(flight|airline|airlines|depart(?:ure|ing|s)?|arriv(?:al|ing|es?)?|land(?:ing|ed|s)?|gate|boarding|on time|delayed|cancelled)\b/i;
 const KNOWN_AIRLINE_CODES = new Set([
   ...Object.values(AIRLINE_CODES),
@@ -29,6 +31,10 @@ function escapeRegex(value: string): string {
 
 export function hasExplicitFinanceCue(message: string): boolean {
   return FINANCE_CUE.test(message);
+}
+
+export function hasProductPriceCue(message: string): boolean {
+  return PRODUCT_PRICE_CUE.test(message) && PRODUCT_CUE.test(message);
 }
 
 export function hasExplicitFlightCue(message: string): boolean {

@@ -238,7 +238,8 @@ const deadToken = (r: { status: number; reason?: string }) =>
 // Activity budget and invites throttling).
 const lastPushed = new Map<string, string>();
 
-// Data trackers (finance/sports/flight): re-fetch (cached) and push every 15s,
+// Data trackers: re-fetch (cached) and push every 15s. Product prices use a
+// much longer cache TTL than market/game data.
 // but only when the content changed. So the lock screen updates within ~15s of
 // any change, app open OR closed.
 setInterval(async () => {
@@ -250,7 +251,7 @@ setInterval(async () => {
       lastPushed.delete(reg.id);
       continue;
     }
-    if (reg.kind !== "finance" && reg.kind !== "sports" && reg.kind !== "flight" && reg.kind !== "package") continue;
+    if (reg.kind !== "finance" && reg.kind !== "product" && reg.kind !== "sports" && reg.kind !== "flight" && reg.kind !== "package") continue;
     try {
       const snap = await cachedTrackerSnapshot(reg.kind, String(reg.meta?.query || ""), reg.meta?.tz ? String(reg.meta.tz) : undefined);
       if (!snap) continue;
@@ -352,15 +353,15 @@ setInterval(() => {
 // Fire any due proactive nudges (server-push tier) every minute.
 setInterval(() => { void tickNudges(); }, 60 * 1000);
 
-// Live finance/sports snapshot for an active Live Activity. The device polls
+// Live tracker snapshot for an active Live Activity. The device polls
 // this to keep the lock-screen / Dynamic Island tracker fresh.
 app.get("/api/track", async (req, res) => {
   const requestedKind = typeof req.query.kind === "string" ? req.query.kind : "";
   const query = typeof req.query.q === "string" ? req.query.q : "";
   const kind = normalizeTrackerKind(requestedKind, query);
   const tz = typeof req.query.tz === "string" ? req.query.tz : undefined;
-  if ((kind !== "finance" && kind !== "sports" && kind !== "flight" && kind !== "package") || !query) {
-    res.status(400).json({ error: "kind (finance|sports|flight|package) and q are required" });
+  if ((kind !== "finance" && kind !== "product" && kind !== "sports" && kind !== "flight" && kind !== "package") || !query) {
+    res.status(400).json({ error: "kind (finance|product|sports|flight|package) and q are required" });
     return;
   }
   try {

@@ -64,8 +64,8 @@ export const CAPABILITIES: Capability[] = [
   },
   {
     id: "live-information",
-    summary: "look up current information and track supported sports, prices, flights, countdowns, and alerts",
-    examples: "latest score, AAPL price, track my flight, alert me when Bitcoin reaches a price",
+    summary: "look up current information and track supported sports, product prices, markets, flights, countdowns, and alerts",
+    examples: "latest score, compare MacBook prices, AAPL price, track my flight, alert me when Bitcoin reaches a price",
     questionPatterns: [/\b(current|latest|news|scores?|stocks?|crypto|prices?|flights?|track|alerts?|live activit)\w*\b/i]
   },
   {

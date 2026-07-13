@@ -152,7 +152,7 @@ export type AssistantAction = {
   // habit_action (device-stored): op "log"|"check"|"streak"|"list"; name.
   habitOp: string | null;
   habitName: string | null;
-  // finance/sports Live Activity tracking. trackKind = "finance" | "sports";
+  // Live data tracking. trackKind = finance | product | sports | flight | package.
   // trackQuery is what the device re-polls (/api/quote or /api/score) to keep the
   // activity live. The rest are the initial snapshot to display.
   trackKind: string | null;

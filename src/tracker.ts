@@ -4,13 +4,14 @@ import {
   extractFlightCode,
   hasExplicitFinanceCue,
   hasExplicitFlightCue,
+  hasProductPriceCue,
   isStrongFlightReference,
   normalizeTrackerKind
 } from "./entityClassifier.js";
 export { extractFlightCode } from "./entityClassifier.js";
 
 /* ============================================================================
- * Finance + sports Live Activity tracking.
+ * Finance, product-price, sports, flight, and package Live Activity tracking.
  *
  * parseTrackCommand detects "track/follow AAPL", "follow the Lakers game", etc.
  * fetchTrackerSnapshot pulls the current numbers (Yahoo for stocks, CoinGecko
@@ -66,11 +67,11 @@ const TRACK_VERB =
 const SPORTS_CUE =
   /\b(vs\.?|versus|@|game|match|score|playing|kickoff|tip ?off|nba|nfl|mlb|nhl|mls|premier league|la ?liga|champions league|world cup|super ?bowl)\b/i;
 const FINANCE_CUE =
-  /\b(stock|shares?|ticker|price|nasdaq|nyse|crypto|coin)\b/i;
+  /\b(stock|shares?|ticker|quote|trading|market|nasdaq|nyse|crypto|coin)\b/i;
 
 // Detect a "track X" command and classify it. Returns null for everything else
 // (including "track my steps", which has no finance/sports cue).
-export function parseTrackCommand(message: string): { kind: "finance" | "sports" | "flight"; query: string } | null {
+export function parseTrackCommand(message: string): { kind: "finance" | "product" | "sports" | "flight"; query: string } | null {
   if (!TRACK_VERB.test(message)) return null;
   const m = message.toLowerCase();
 
@@ -79,6 +80,12 @@ export function parseTrackCommand(message: string): { kind: "finance" | "sports"
     .replace(/\b(the|a|an|please|for me|my|on|stock|price|of|live)\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
+
+  // Retail products are not financial assets. This must run before the sports
+  // `vs` detector and before uppercase ticker detection ("MacBook Air vs Pro").
+  if (hasProductPriceCue(message) && !hasExplicitFinanceCue(message)) {
+    return { kind: "product", query: query || message };
+  }
 
   // A carrier code/name plus a flight number is stronger evidence than a bare
   // uppercase ticker. Explicit finance wording still lets users request a stock.
@@ -262,6 +269,46 @@ If it hasn't started yet, set line1 to the matchup abbreviations with no scores 
   }
 }
 
+async function fetchProductPriceSnapshot(query: string, timeZone: string = TIME_ZONE): Promise<TrackerSnapshot | null> {
+  const nowLocal = new Date().toLocaleString("en-US", { timeZone, dateStyle: "full", timeStyle: "short" });
+  const requestedItems = query
+    .split(/\s+(?:vs\.?|versus)\s+|\s*,\s*|\s+and\s+/i)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 4);
+  const expectedPrices = Math.max(1, requestedItems.length);
+  const prompt = `Right now it is ${nowLocal}.
+Find the current NEW retail price in USD for every product in this exact comparison: "${query}".
+Use the manufacturer's official US store when available. Otherwise use a major authorized US retailer. Preserve the user's product order. For an underspecified product family, use the current base model and its starting price; do not silently substitute a different product. If you cannot verify every requested product, respond with exactly: null.
+Respond with ONLY compact JSON (no markdown, no code fences):
+{"title":"<short comparison title, max 30 chars>","line1":"<prices only in order, separated by ·, e.g. '$999 · $1,599 · $599'>","line2":"<short product labels in the same order, separated by ·, e.g. 'Air · Pro · mini'>","status":"<short source context, e.g. 'Apple US starting prices'>"}`;
+  try {
+    const res: any = await withTimeout(
+      generateContent({ model: RESEARCH_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }] } } as any),
+      RESEARCH_TIMEOUT_MS,
+      "Product prices"
+    );
+    const text = String(res.text || "").trim();
+    if (/^null$/i.test(text)) return null;
+    const obj = safeParseJsonObject(text);
+    const line1 = String(obj?.line1 || "").trim();
+    const line2 = String(obj?.line2 || "").trim();
+    const priceCount = line1.match(/(?:\$|USD\s*)[\d,.]+/gi)?.length || 0;
+    if (!obj || !line1 || !line2 || priceCount < expectedPrices) return null;
+    return {
+      title: String(obj.title || "Product prices").slice(0, 30),
+      symbol: "tag.fill",
+      line1: line1.slice(0, 48),
+      line2: line2.slice(0, 44),
+      trend: "flat",
+      status: String(obj.status || "Current retail prices").slice(0, 36)
+    };
+  } catch (error) {
+    console.error("Product price error:", error);
+    return null;
+  }
+}
+
 // Pull the current snapshot for a tracker. Used both when starting the activity
 // and by the device's refresh loop (/api/quote, /api/score).
 // Live flight status via grounded search (same free, no-key path as sports
@@ -396,6 +443,7 @@ export async function fetchPackageSnapshot(query: string): Promise<TrackerSnapsh
 
 export async function fetchTrackerSnapshot(kind: string, query: string, timeZone: string = TIME_ZONE): Promise<TrackerSnapshot | null> {
   const safeKind = normalizeTrackerKind(kind, query);
+  if (safeKind === "product") return fetchProductPriceSnapshot(query, timeZone);
   if (safeKind === "sports") return fetchSportsScore(query, timeZone);
   if (safeKind === "flight") return fetchFlightStatus(extractFlightCode(query) || query, timeZone);
   if (safeKind === "package") return fetchPackageSnapshot(query);
@@ -411,7 +459,7 @@ const snapCache = new Map<string, { at: number; snap: TrackerSnapshot }>();
 // TTLs sized so a ~15s push loop carries fresh data: finance (free APIs) every
 // poll, sports each push during a game, flight a bit slower (status rarely
 // changes minute-to-minute, and each lookup is a grounded search).
-const SNAP_TTL: Record<string, number> = { finance: 8000, sports: 14000, flight: 30000, package: 300000 };
+const SNAP_TTL: Record<string, number> = { finance: 8000, product: 30 * 60 * 1000, sports: 14000, flight: 30000, package: 300000 };
 
 export async function cachedTrackerSnapshot(kind: string, query: string, timeZone?: string): Promise<TrackerSnapshot | null> {
   const key = `${kind}:${query.toLowerCase()}:${timeZone || ""}`;

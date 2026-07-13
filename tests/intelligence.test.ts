@@ -16,7 +16,7 @@ import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
 import { parseTrackCommand } from "../src/tracker.js";
-import { looksLikeComparisonRequest, looksLikeFlightQuestion } from "../src/tools.js";
+import { looksLikeComparisonRequest, looksLikeFlightQuestion, looksLikeStockQuestion } from "../src/tools.js";
 import { parseUserPersona, personaPromptBlock } from "../src/persona.js";
 import { normalizeChatTitle } from "../src/chatTitle.js";
 
@@ -277,6 +277,17 @@ test("explicit finance language still outranks a code-number collision", () => {
   assert.equal(parseTrackCommand("Track BA 123 stock price")?.kind, "finance");
   assert.equal(parseTrackCommand("Track AAPL")?.kind, "finance");
   assert.equal(normalizeTrackerKind("finance", "BA 123 stock"), "finance");
+});
+
+test("retail product prices never route through financial asset tracking", () => {
+  const macs = parseTrackCommand("Track the price of MacBook Air vs Pro vs Mac mini");
+  assert.equal(macs?.kind, "product");
+  assert.match(macs?.query || "", /macbook air/i);
+  assert.equal(parseTrackCommand("Track iPhone 17 price versus Galaxy S26 price")?.kind, "product");
+  assert.equal(parseTrackCommand("Track Apple stock price")?.kind, "finance");
+  assert.equal(parseTrackCommand("Track AAPL price")?.kind, "finance");
+  assert.equal(looksLikeStockQuestion("What is the price of a MacBook Air?"), false);
+  assert.equal(looksLikeStockQuestion("What is the Apple stock price?"), true);
 });
 
 test("explicit entity words resolve collisions before bare identifier shape", () => {
