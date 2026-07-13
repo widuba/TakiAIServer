@@ -3,7 +3,7 @@ import cors from "cors";
 import Stripe from "stripe";
 import { randomUUID } from "node:crypto";
 
-import { PORT } from "./src/ai.js";
+import { PORT, MAIN_MODEL, PLANNER_MODEL, RESEARCH_MODEL } from "./src/ai.js";
 import type { DeviceLocation } from "./src/types.js";
 import { buildConversationState } from "./src/context.js";
 import { planAssistantResponse } from "./src/planner.js";
@@ -120,8 +120,9 @@ app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     app: "Taki AI server",
-    mode: "planner-first-modular-v2",
-    version: "2026-06-14"
+    mode: "planner-first-modular-v3",
+    version: "2026-07-12-intelligence-v3",
+    models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL }
   });
 });
 
