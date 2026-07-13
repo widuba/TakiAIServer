@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import Stripe from "stripe";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 
 import { PORT, MAIN_MODEL, PLANNER_MODEL, RESEARCH_MODEL } from "./src/ai.js";
 import type { DeviceLocation } from "./src/types.js";
@@ -29,7 +29,7 @@ import { verifyAppleIdentityToken } from "./src/appleauth.js";
 import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, linkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG, promptExtractionMessageForMode } from "./src/safety.js";
 import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, userForIdentity, identitiesForIp, allUsers, deleteUser } from "./src/users.js";
 import { TIERS } from "./src/credits.js";
-import { transcribe, synthesize, listVoices, isVoiceConfigured } from "./src/voice.js";
+import { transcribe, synthesize, listVoices, isVoiceConfigured, speechCharacterCount } from "./src/voice.js";
 import { emailProviderConfigured, createOAuthState, buildAuthUrl, completeOAuth, loadConnection, disconnectEmail, sendEmail, saveDraft, searchConnectedEmail, type EmailProvider } from "./src/email.js";
 import { extractDurableMemories } from "./src/userMemory.js";
 import { createChatTitle } from "./src/chatTitle.js";
@@ -37,7 +37,7 @@ import { createChatTitle } from "./src/chatTitle.js";
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
 // Render. (The purchase-simulating grant endpoint was removed when real
 // StoreKit IAP shipped — grants only happen via verified transactions now.)
-const ADMIN_SECRET = process.env.ADMIN_SECRET || "taki-dev-grant-2026";
+const ADMIN_SECRET = (process.env.ADMIN_SECRET || "").trim();
 const OUT_OF_CREDITS_MSG = "You're out of credits — top up or upgrade in Membership to keep asking.";
 const DAILY_LIMIT_MSG = "You've reached today's usage limit. You can ask again after the daily reset shown in Membership.";
 const MONTHLY_LIMIT_MSG = "You've reached this month's usage limit. You can ask again after the monthly reset shown in Membership.";
@@ -45,6 +45,13 @@ const FREE_VOICE_LIMIT_MSG = "You've reached the Voice limit for the Free tier. 
 
 type PendingVoiceSynthesis = { deviceId: string; included: boolean; expiresAt: number };
 const pendingVoiceSyntheses = new Map<string, PendingVoiceSynthesis>();
+
+function isAdminAuthorized(value: unknown): boolean {
+  if (!ADMIN_SECRET || typeof value !== "string") return false;
+  const supplied = Buffer.from(value);
+  const expected = Buffer.from(ADMIN_SECRET);
+  return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+}
 
 function createVoiceSynthesisToken(deviceId: string, included: boolean): string {
   const now = Date.now();
@@ -500,7 +507,7 @@ app.post("/api/vision", async (req, res) => {
       let usageUsd = totalUsageUsd(measured.usage);
       if (voiceMode) {
         if (isFreeVoice(tier, visionBaseCredits, visionVoiceUsed)) await noteFreeVoice(deviceId);
-        else usageUsd += ttsCostUsd((spokenText || "").length);
+        else usageUsd += ttsCostUsd(speechCharacterCount(spokenText || ""));
       }
       const fresh = await creditSummary(deviceId);
       const limitReason = usageLimitForCost(fresh, Math.ceil(usageUsd / CREDIT_USD));
@@ -554,7 +561,7 @@ app.post("/api/attachments", async (req, res) => {
     let usageUsd = totalUsageUsd(measured.usage);
     if (voiceMode) {
       if (isFreeVoice(tier, baseCredits, voiceUsed)) await noteFreeVoice(deviceId);
-      else usageUsd += ttsCostUsd(answer.text.length);
+      else usageUsd += ttsCostUsd(speechCharacterCount(answer.text));
     }
     const fresh = await creditSummary(deviceId);
     const limitReason = usageLimitForCost(fresh, Math.ceil(usageUsd / CREDIT_USD));
@@ -1263,7 +1270,7 @@ app.post("/api/feedback", async (req, res) => {
 // Dev: reset a device's credits.
 app.post("/api/credits/reset", async (req, res) => {
   const b = req.body || {};
-  if (b.secret !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return; }
+  if (!isAdminAuthorized(b.secret)) { res.status(403).json({ error: "forbidden" }); return; }
   const deviceId = typeof b.deviceId === "string" ? b.deviceId.trim() : "";
   if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
   await resetCredits(deviceId);
@@ -1274,13 +1281,13 @@ app.post("/api/credits/reset", async (req, res) => {
 // The human-review queue: every currently-suspended account and the retained
 // flagged messages that triggered it (the only point that content is visible).
 app.post("/api/admin/flagged", async (req, res) => {
-  if (req.body?.secret !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return; }
+  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
   res.json({ queue: await reviewQueue() });
 });
 
 // Reinstate a suspended account (clears strikes + retained flagged messages).
 app.post("/api/admin/reinstate", async (req, res) => {
-  if (req.body?.secret !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return; }
+  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
   const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
   if (!identity) { res.status(400).json({ error: "identity required" }); return; }
   await reinstate(identity);
@@ -1289,7 +1296,7 @@ app.post("/api/admin/reinstate", async (req, res) => {
 
 // Read-only preview of the exact permanent-ban cascade.
 app.post("/api/admin/terminate-preview", async (req, res) => {
-  if (req.body?.secret !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return; }
+  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
   const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
   if (!identity) { res.status(400).json({ error: "identity required" }); return; }
   res.json({ ok: true, identity, impact: await previewTermination(identity) });
@@ -1297,7 +1304,7 @@ app.post("/api/admin/terminate-preview", async (req, res) => {
 
 // Temporary identity-only restriction for safely testing the blocked app state.
 app.post("/api/admin/test-restrict", async (req, res) => {
-  if (req.body?.secret !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return; }
+  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
   const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
   if (!identity) { res.status(400).json({ error: "identity required" }); return; }
   const restriction = await setTestRestriction(identity, Number(req.body?.minutes) || 5);
@@ -1305,7 +1312,7 @@ app.post("/api/admin/test-restrict", async (req, res) => {
 });
 
 app.post("/api/admin/test-restrict-clear", async (req, res) => {
-  if (req.body?.secret !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return; }
+  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
   const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
   if (!identity) { res.status(400).json({ error: "identity required" }); return; }
   await clearTestRestriction(identity);
@@ -1315,7 +1322,7 @@ app.post("/api/admin/test-restrict-clear", async (req, res) => {
 // Terminate + permanently ban the identity, its devices/IPs, and any other
 // identities seen on the same device(s). No appeal.
 app.post("/api/admin/terminate", async (req, res) => {
-  if (req.body?.secret !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return; }
+  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
   const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
   if (!identity) { res.status(400).json({ error: "identity required" }); return; }
   const banned = await terminateAndBan(identity);
@@ -1324,7 +1331,7 @@ app.post("/api/admin/terminate", async (req, res) => {
 
 // Remove a user from the dashboard registry (e.g. test accounts).
 app.post("/api/admin/delete-user", async (req, res) => {
-  if (req.body?.secret !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return; }
+  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
   const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
   if (!identity) { res.status(400).json({ error: "identity required" }); return; }
   await deleteUser(identity);
@@ -1335,7 +1342,7 @@ app.post("/api/admin/delete-user", async (req, res) => {
 // usage, cost-to-serve, revenue, profit, safety status, Apple identity, and the
 // other identities seen on their IP(s).
 app.post("/api/admin/users", async (req, res) => {
-  if (req.body?.secret !== ADMIN_SECRET) { res.status(403).json({ error: "forbidden" }); return; }
+  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
   const users = await allUsers();
   const rows = await Promise.all(users.map(async (u) => {
     const acct = await getSafetyAccount(u.identity);
@@ -1496,7 +1503,7 @@ async function runAssistant(
     if (voiceMode) {
       voiceSynthesisIncluded = isFreeVoice(tier, baseCredits, voiceCycleUsed);
       if (voiceSynthesisIncluded) await noteFreeVoice(deviceId);
-      else if (!deferVoiceSynthesis) usageUsd += ttsCostUsd((finalized.spokenText || "").length);
+      else if (!deferVoiceSynthesis) usageUsd += ttsCostUsd(speechCharacterCount(finalized.spokenText || ""));
     }
     const limitReason = usageLimitForCost(usageSummary, Math.ceil(usageUsd / CREDIT_USD));
     if (limitReason) {
@@ -1740,7 +1747,7 @@ app.post("/api/voice/synthesize", async (req, res) => {
       && account.voiceCycleUsed > 0
       && account.voiceCycleUsed <= (FREE_VOICE_PER_CYCLE[account.tier] || 0));
     if (pending && !correctionIsIncluded) {
-      const cost = Math.ceil(ttsCostUsd(text.length) / CREDIT_USD);
+      const cost = Math.ceil(ttsCostUsd(speechCharacterCount(text)) / CREDIT_USD);
       const limitReason = usageLimitForCost(account, cost);
       if (account.balance < cost || limitReason) {
         res.status(402).json({ error: limitReason ? usageMessageForReason(limitReason) : OUT_OF_CREDITS_MSG });
@@ -1749,7 +1756,7 @@ app.post("/api/voice/synthesize", async (req, res) => {
     }
     const audio = await synthesize(text, voiceId, variability);
     if (!correctionIsIncluded) {
-      const charged = await spendUsageUsd(deviceId, ttsCostUsd(text.length));
+      const charged = await spendUsageUsd(deviceId, ttsCostUsd(speechCharacterCount(text)));
       await noteSpend(deviceId, charged.spent);
     }
     res.json({ audioBase64: audio, mime: "audio/mpeg" });

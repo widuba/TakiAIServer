@@ -752,7 +752,28 @@ export function looksLikeMathQuestion(message: string): boolean {
   return false;
 }
 
-function formatNumber(val: number): string {
+export function formatMathNumber(val: number): string {
+  const abs = Math.abs(val);
+  const scales: Array<[number, string]> = [
+    [1_000_000_000_000_000, "quadrillion"],
+    [1_000_000_000_000, "trillion"],
+    [1_000_000_000, "billion"],
+    [1_000_000, "million"],
+    [1_000, "thousand"]
+  ];
+  for (const [size, label] of scales) {
+    if (abs >= size) {
+      const scaled = val / size;
+      // Integer results divided by powers of ten have a finite exact compact
+      // representation. Keep all meaningful places instead of rounding away
+      // part of the answer (8,234,567 -> 8.234567 million).
+      const places = Number.isInteger(val) && Number.isSafeInteger(val)
+        ? Math.round(Math.log10(size))
+        : 6;
+      const compact = scaled.toFixed(places).replace(/\.?0+$/, "");
+      return `${compact} ${label}`;
+    }
+  }
   if (Number.isInteger(val)) return String(val);
   const trimmed = Number(val.toPrecision(7)); // kill float noise (2.0794415 -> 2.079442)
   return String(trimmed);
@@ -788,11 +809,11 @@ Reply ONLY JSON: {"expr":"<expression>","label":"<short phrase>"}  — or {"expr
     const val = Function('"use strict"; return (' + expr + ");")();
     if (typeof val !== "number" || !Number.isFinite(val)) return null;
 
-    const num = formatNumber(val);
+    const num = formatMathNumber(val);
     const phrase = Number.isInteger(val) ? num : `about ${num}`; // "about" for rounded decimals
     const label = obj && typeof obj.label === "string" ? obj.label.trim().slice(0, 60) : "";
     if (label) {
-      return `${label.charAt(0).toUpperCase()}${label.slice(1)} is ${phrase}.`;
+      return `${label.charAt(0).toUpperCase()}${label.slice(1)} equals ${phrase}.`;
     }
     return Number.isInteger(val) ? `That's ${num}.` : `That's about ${num}.`;
   } catch (error) {

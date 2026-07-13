@@ -8,10 +8,10 @@ import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
 import { finalizeResponse, resolveCalendarUpdateDates, validateAction } from "../src/validators.js";
 import { briefForVoice, VOICE_MAX_CHARS } from "../src/util.js";
-import { youtubeVideoInputURL } from "../src/tools.js";
+import { formatMathNumber, youtubeVideoInputURL } from "../src/tools.js";
 import { usageLimitsFor } from "../src/credits.js";
 import { subscriptionMergeDecision } from "../src/iap.js";
-import { stabilityForVariability } from "../src/voice.js";
+import { normalizeTextForSpeech, speechCharacterCount, stabilityForVariability, STT_MODEL, TTS_MODEL } from "../src/voice.js";
 import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
@@ -247,6 +247,44 @@ test("voice variability maps inversely to safe TTS stability", () => {
   assert.equal(stabilityForVariability(0), 0.8);
   assert.equal(stabilityForVariability(0.5), 0.5);
   assert.equal(stabilityForVariability(1), 0.2);
+});
+
+test("voice uses current multilingual ElevenLabs models", () => {
+  assert.equal(TTS_MODEL, "eleven_multilingual_v2");
+  assert.equal(STT_MODEL, "scribe_v2");
+});
+
+test("voice speaks large numeric answers naturally without changing its budget", () => {
+  assert.equal(normalizeTextForSpeech("800000000"), "eight hundred million");
+  assert.equal(
+    normalizeTextForSpeech("The answer is 800,000,000."),
+    "The answer is eight hundred million."
+  );
+  assert.equal(
+    normalizeTextForSpeech("40 thousand times 20 thousand equals 800 million."),
+    "forty thousand times twenty thousand equals eight hundred million."
+  );
+  assert.equal(
+    normalizeTextForSpeech("40,000 x 20,000 equals 800 million."),
+    "forty thousand times twenty thousand equals eight hundred million."
+  );
+  assert.equal(normalizeTextForSpeech("The total is $12.50."), "The total is twelve dollars and fifty cents.");
+  assert.equal(
+    normalizeTextForSpeech("Call the phone number 2025550198."),
+    "Call the phone number two zero two five five five zero one nine eight."
+  );
+  const numericWall = "9".repeat(140);
+  assert.equal(normalizeTextForSpeech(numericWall), numericWall);
+  assert.ok(speechCharacterCount("800000000") <= 140);
+});
+
+test("calculator formats large results as exact human-readable quantities", () => {
+  assert.equal(formatMathNumber(8_000_000), "8 million");
+  assert.equal(formatMathNumber(80_000_000), "80 million");
+  assert.equal(formatMathNumber(800_000_000), "800 million");
+  assert.equal(formatMathNumber(8_234_567), "8.234567 million");
+  assert.equal(formatMathNumber(1_250_000_000), "1.25 billion");
+  assert.equal(formatMathNumber(-40_000), "-40 thousand");
 });
 
 test("obvious voice knowledge questions bypass action planning safely", () => {

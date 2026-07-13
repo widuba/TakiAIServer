@@ -7,10 +7,11 @@ import { withTimeout } from "./util.js";
  * ==========================================================================*/
 
 const ELEVEN_KEY = process.env.ELEVENLABS_API_KEY || "";
-// A good default voice + low-latency models; all overridable via env.
+// A good default voice. Taki intentionally uses Eleven Multilingual v2 for
+// higher-fidelity, multilingual delivery instead of the cheaper Flash model.
 const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM"; // "Rachel"
-const STT_MODEL = process.env.ELEVENLABS_STT_MODEL || "scribe_v1";
-const TTS_MODEL = process.env.ELEVENLABS_TTS_MODEL || "eleven_flash_v2_5";
+export const STT_MODEL = "scribe_v2";
+export const TTS_MODEL = "eleven_multilingual_v2";
 
 export function isVoiceConfigured(): boolean {
   return !!ELEVEN_KEY;
@@ -84,18 +85,105 @@ export function stabilityForVariability(variability?: number): number {
   return Number((0.8 - v * 0.6).toFixed(2));
 }
 
+const SMALL_NUMBERS = [
+  "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+  "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+  "seventeen", "eighteen", "nineteen"
+];
+const TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
+const SCALES: Array<[bigint, string]> = [
+  [1_000_000_000_000_000n, "quadrillion"],
+  [1_000_000_000_000n, "trillion"],
+  [1_000_000_000n, "billion"],
+  [1_000_000n, "million"],
+  [1_000n, "thousand"]
+];
+
+function integerToWords(value: bigint): string {
+  if (value < 20n) return SMALL_NUMBERS[Number(value)];
+  if (value < 100n) {
+    const rest = value % 10n;
+    return `${TENS[Number(value / 10n)]}${rest ? ` ${SMALL_NUMBERS[Number(rest)]}` : ""}`;
+  }
+  if (value < 1_000n) {
+    const rest = value % 100n;
+    return `${SMALL_NUMBERS[Number(value / 100n)]} hundred${rest ? ` ${integerToWords(rest)}` : ""}`;
+  }
+  for (const [size, label] of SCALES) {
+    if (value >= size) {
+      const rest = value % size;
+      return `${integerToWords(value / size)} ${label}${rest ? ` ${integerToWords(rest)}` : ""}`;
+    }
+  }
+  return value.toString();
+}
+
+function digitsToWords(value: string): string {
+  return [...value].map((digit) => SMALL_NUMBERS[Number(digit)]).join(" ");
+}
+
+function spokenNumericToken(token: string, nearbyText: string): string {
+  const parsed = token.match(/^(-)?(\$)?([\d,]+)(?:\.(\d+))?(%)?$/);
+  if (!parsed) return token;
+  const [, negative, currency, rawWhole, fraction, percent] = parsed;
+  const whole = rawWhole.replace(/,/g, "");
+  if (!/^\d+$/.test(whole)) return token;
+
+  const digitStyle = (whole.length > 1 && whole.startsWith("0"))
+    || whole.length > 15
+    || /\b(phone|call|text|code|pin|account|confirmation|verification)\b/i.test(nearbyText);
+  const base = digitStyle ? digitsToWords(whole) : integerToWords(BigInt(whole));
+  const signed = negative ? `negative ${base}` : base;
+  if (currency) {
+    const dollars = `${signed} dollar${whole === "1" ? "" : "s"}`;
+    if (!fraction || Number(fraction) === 0) return dollars;
+    const centsValue = BigInt((fraction + "00").slice(0, 2));
+    return `${dollars} and ${integerToWords(centsValue)} cent${centsValue === 1n ? "" : "s"}`;
+  }
+  const decimal = fraction ? `${signed} point ${digitsToWords(fraction)}` : signed;
+  return percent ? `${decimal} percent` : decimal;
+}
+
+// Keep numbers readable in chat while giving ElevenLabs natural spoken words.
+// Replacements are bounded to the existing voice response budget so number
+// expansion cannot silently increase included-plan cost or create long audio.
+export function normalizeTextForSpeech(text: string): string {
+  const budget = Math.max(140, text.length);
+  const tokenPattern = /-?\$?\d[\d,]*(?:\.\d+)?%?/g;
+  let result = "";
+  let lastIndex = 0;
+  for (const match of text.matchAll(tokenPattern)) {
+    const token = match[0];
+    const index = match.index;
+    const nearby = text.slice(Math.max(0, index - 32), Math.min(text.length, index + token.length + 32));
+    const replacement = spokenNumericToken(token, nearby);
+    const prefix = text.slice(lastIndex, index);
+    const remainingLength = text.length - (index + token.length);
+    result += prefix;
+    result += result.length + replacement.length + remainingLength <= budget ? replacement : token;
+    lastIndex = index + token.length;
+  }
+  const normalized = result + text.slice(lastIndex);
+  const spokenOperators = normalized.replace(/\s+(?:x|×|\*)\s+/gi, " times ");
+  return spokenOperators.length <= budget ? spokenOperators : normalized;
+}
+
+export function speechCharacterCount(text: string): number {
+  return normalizeTextForSpeech(text).length;
+}
+
 export async function synthesize(text: string, voiceId?: string, variability?: number): Promise<string> {
   if (!ELEVEN_KEY || !text.trim()) return "";
   const vid = voiceId && voiceId.trim() ? voiceId.trim() : VOICE_ID;
+  const spokenText = normalizeTextForSpeech(text);
   try {
-    // Flash keeps generation quick; 44.1 kHz / 64 kbps avoids the brittle,
-    // compressed sound of the old 22.05 kHz stream without a large transfer.
+    // 44.1 kHz / 64 kbps keeps Multilingual v2 clear without a large transfer.
     const res: any = await withTimeout(
       fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(vid)}?output_format=mp3_44100_64`, {
         method: "POST",
         headers: { "xi-api-key": ELEVEN_KEY, "Content-Type": "application/json", Accept: "audio/mpeg" },
         body: JSON.stringify({
-          text: text.slice(0, 2500),
+          text: spokenText.slice(0, 2500),
           model_id: TTS_MODEL,
           voice_settings: { stability: stabilityForVariability(variability), similarity_boost: 0.75 }
         })

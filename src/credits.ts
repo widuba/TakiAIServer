@@ -44,10 +44,10 @@ export const TIERS: Record<Tier, TierConfig> = {
 
 // Voice pricing. Plus Voice / Pro get a per-cycle allowance of FREE voice turns
 // (no surcharge) out of their base subscription credits; beyond that allowance,
-// or on top-ups / non-voice tiers, voice costs per spoken character. The per-char
-// Paid voice uses the actual $0.05/1k-character cost from metering.ts. Sub-credit
-// fractions carry forward, so repeated short replies are never rounded up.
-export const FREE_VOICE_PER_CYCLE: Record<Tier, number> = { free: 0, plus: 0, plus_voice: 400, pro: 500 };
+// or on top-ups / non-voice tiers, voice costs per spoken character. Paid voice
+// uses the actual $0.10/1k-character Multilingual v2 cost from metering.ts.
+// Sub-credit fractions carry forward, so short replies are never rounded up.
+export const FREE_VOICE_PER_CYCLE: Record<Tier, number> = { free: 0, plus: 0, plus_voice: 300, pro: 350 };
 export const APP_STORE_COMMISSION_RATE = 0.15;
 export const MAX_VOICE_RESPONSE_CHARS = 140;
 
