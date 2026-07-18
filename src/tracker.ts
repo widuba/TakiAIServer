@@ -1,5 +1,7 @@
-import { generateContent, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, TIME_ZONE } from "./ai.js";
+import { createHash } from "node:crypto";
+import { generateContent, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, TIME_ZONE } from "./ai.js";
 import { safeParseJsonObject, withTimeout } from "./util.js";
+import { storeDelete, storeGet, storeSet } from "./store.js";
 import {
   extractFlightCode,
   hasExplicitFinanceCue,
@@ -68,6 +70,10 @@ const SPORTS_CUE =
   /\b(vs\.?|versus|@|game|match|score|playing|kickoff|tip ?off|nba|nfl|mlb|nhl|mls|premier league|la ?liga|champions league|world cup|super ?bowl)\b/i;
 const FINANCE_CUE =
   /\b(stock|shares?|ticker|quote|trading|market|nasdaq|nyse|crypto|coin)\b/i;
+const KNOWN_SPORTS_TEAM =
+  /\b(yankees|mets|red sox|dodgers|cubs|phillies|braves|astros|padres|lakers|celtics|warriors|knicks|nets|heat|bucks|suns|mavericks|nuggets|cavaliers|chiefs|eagles|cowboys|packers|steelers|patriots|49ers|bills|ravens|jets|giants|dolphins|commanders|rangers|bruins|maple leafs|canadiens|oilers|panthers|lightning|golden knights|arsenal|chelsea|liverpool|manchester united|manchester city|tottenham|barcelona|real madrid|bayern munich|inter miami)\b/i;
+const TRACKER_MODEL = String(process.env.GEMINI_TRACKER_MODEL || MAIN_MODEL).trim();
+const TRACKER_TIMEOUT_MS = Number(process.env.TRACKER_TIMEOUT_MS || 35000);
 
 // Detect a "track X" command and classify it. Returns null for everything else
 // (including "track my steps", which has no finance/sports cue).
@@ -91,7 +97,7 @@ export function parseTrackCommand(message: string): { kind: "finance" | "product
   // uppercase ticker. Explicit finance wording still lets users request a stock.
   const flightCode = extractFlightCode(message);
   if (flightCode && hasExplicitFlightCue(message)) return { kind: "flight", query: flightCode };
-  if (SPORTS_CUE.test(message)) return { kind: "sports", query: query || message };
+  if (SPORTS_CUE.test(message) || KNOWN_SPORTS_TEAM.test(message)) return { kind: "sports", query: query || message };
   if (flightCode && isStrongFlightReference(message)) return { kind: "flight", query: flightCode };
   if (CRYPTO_WORD.test(m) || FINANCE_CUE.test(m) || hasExplicitFinanceCue(message) || /\$[A-Za-z]{1,5}\b/.test(message) || /\b[A-Z]{2,5}\b/.test(message)) {
     // Preserve the finance cue when a code+number also appears, so downstream
@@ -248,8 +254,8 @@ Respond with ONLY compact JSON (no markdown, no code fences):
 If it hasn't started yet, set line1 to the matchup abbreviations with no scores and status to the start time. If you can't find a game today, respond with exactly: null`;
   try {
     const res: any = await withTimeout(
-      generateContent({ model: RESEARCH_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }] } } as any),
-      RESEARCH_TIMEOUT_MS, "Sports score"
+      generateContent({ model: TRACKER_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }], thinkingConfig: { thinkingBudget: 0 } } } as any),
+      TRACKER_TIMEOUT_MS, "Sports score"
     );
     const text = (res.text || "").trim();
     if (/^null$/i.test(text)) return null;
@@ -331,8 +337,8 @@ Respond with ONLY compact JSON (no markdown, no code fences):
 Use the user's local timezone (${timeZone}). Always include the '|note' part. If you cannot identify this flight, respond with exactly: null`;
   try {
     const res: any = await withTimeout(
-      generateContent({ model: RESEARCH_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }] } } as any),
-      RESEARCH_TIMEOUT_MS, "Flight status"
+      generateContent({ model: TRACKER_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }], thinkingConfig: { thinkingBudget: 0 } } } as any),
+      TRACKER_TIMEOUT_MS, "Flight status"
     );
     const text = (res.text || "").trim();
     if (/^null$/i.test(text)) return null;
@@ -361,9 +367,8 @@ Use the user's local timezone (${timeZone}). Always include the '|note' part. If
 }
 
 // Real package tracking via Ship24 (one universal API for UPS/FedEx/DHL/USPS/…).
-// Set SHIP24_API_KEY on Render to enable live status; without it the card falls
-// back to an honest "Tap to track" shortcut. The endpoint is idempotent — the
-// first call creates the tracker (can be slow) and later calls return updates.
+// We create a durable tracker once, save its trackerId, then use the fast results
+// endpoint for every refresh. Without a key the card remains an honest deep link.
 const SHIP24_KEY = process.env.SHIP24_API_KEY || "";
 export function isPackageTrackingConfigured(): boolean { return !!SHIP24_KEY; }
 
@@ -378,38 +383,83 @@ const SHIP24_MILESTONES: Record<string, { label: string; symbol: string; deliver
   pending: { label: "Tracking…", symbol: "shippingbox.fill" }
 };
 
-async function fetchShip24Status(number: string, carrier: string): Promise<{ line1: string; line2: string; symbol: string; delivered: boolean; eta: string } | null> {
+type Ship24Status = { line1: string; line2: string; symbol: string; delivered: boolean; eta: string };
+type Ship24TrackerRecord = { trackerId: string; trackingNumber: string; createdAt: number };
+
+const ship24Headers = () => ({ Authorization: `Bearer ${SHIP24_KEY}`, "Content-Type": "application/json" });
+const ship24Key = (number: string) => `ship24:tracker:${createHash("sha256").update(number.toUpperCase()).digest("hex").slice(0, 32)}`;
+
+function ship24Location(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (!value || typeof value !== "object") return "";
+  const location = value as Record<string, unknown>;
+  return [location.city, location.state, location.countryCode || location.country]
+    .map((part) => typeof part === "string" ? part.trim() : "")
+    .filter(Boolean)
+    .join(", ");
+}
+
+export function ship24StatusFromResponse(data: any): Ship24Status | null {
+  const tracking = data?.data?.trackings?.[0];
+  if (!tracking) return null;
+  const milestone = String(tracking?.shipment?.statusMilestone || "pending").toLowerCase();
+  const normalized = SHIP24_MILESTONES[milestone] || SHIP24_MILESTONES.pending;
+  const events = Array.isArray(tracking?.events) ? [...tracking.events] : [];
+  events.sort((a, b) => String(b?.occurrenceDatetime || "").localeCompare(String(a?.occurrenceDatetime || "")));
+  const event = events[0] || null;
+  const eventText = typeof event?.status === "string" ? event.status.trim() : "";
+  const location = ship24Location(event?.location);
+  const delivery = tracking?.shipment?.delivery || {};
+  const eta = String(delivery.estimatedDeliveryDate || delivery.estimatedDeliveryDateFrom || "").trim();
+  return {
+    line1: (eventText || normalized.label).slice(0, 42),
+    line2: (location || normalized.label).slice(0, 30),
+    symbol: normalized.symbol,
+    delivered: !!normalized.delivered,
+    eta
+  };
+}
+
+async function createShip24Tracker(number: string): Promise<Ship24TrackerRecord | null> {
+  const response: any = await withTimeout(fetch("https://api.ship24.com/public/v1/trackers", {
+    method: "POST",
+    headers: ship24Headers(),
+    // Ship24 recommends auto-detection unless a verified courier code is known.
+    body: JSON.stringify({ trackingNumber: number })
+  }), 12000, "Ship24 create tracker");
+  if (!response.ok) {
+    console.error("Ship24 create", response.status, (await response.text().catch(() => "")).slice(0, 160));
+    return null;
+  }
+  const data = await response.json();
+  const trackerId = String(data?.data?.tracker?.trackerId || "").trim();
+  if (!trackerId) return null;
+  const record = { trackerId, trackingNumber: number, createdAt: Date.now() };
+  await storeSet(ship24Key(number), record);
+  return record;
+}
+
+async function fetchShip24Status(number: string): Promise<Ship24Status | null> {
   if (!SHIP24_KEY) return null;
+  const key = ship24Key(number);
   try {
-    const body: any = { trackingNumber: number };
-    const cc = carrier ? carrier.toLowerCase() : "";
-    if (cc === "ups" || cc === "fedex" || cc === "dhl" || cc === "usps") body.courierCode = [cc];
-    const res: any = await withTimeout(
-      fetch("https://api.ship24.com/public/v1/trackers/track", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${SHIP24_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      }),
-      20000, "Ship24 track"
-    );
-    if (!res.ok) { console.error("Ship24 status", res.status, (await res.text().catch(() => "")).slice(0, 160)); return null; }
-    const data = await res.json();
-    const t = data?.data?.trackings?.[0];
-    if (!t) return null;
-    const milestone = String(t?.shipment?.statusMilestone || "pending");
-    const m = SHIP24_MILESTONES[milestone] || SHIP24_MILESTONES.pending;
-    const ev = Array.isArray(t?.events) && t.events.length ? t.events[0] : null;
-    const evText = ev?.status ? String(ev.status).trim() : "";
-    const loc = ev?.location ? String(ev.location).trim() : "";
-    const d = t?.shipment?.delivery || {};
-    const eta = String(d.estimatedDeliveryDate || d.estimatedDeliveryDateFrom || "").trim();
-    return {
-      line1: (evText || m.label).slice(0, 42),
-      line2: loc ? loc.slice(0, 30) : (m.delivered ? "Delivered" : m.label),
-      symbol: m.symbol,
-      delivered: !!m.delivered,
-      eta
-    };
+    let record = await storeGet<Ship24TrackerRecord | null>(key, null);
+    if (!record?.trackerId) record = await createShip24Tracker(number);
+    if (!record?.trackerId) return null;
+
+    const response: any = await withTimeout(fetch(
+      `https://api.ship24.com/public/v1/trackers/${encodeURIComponent(record.trackerId)}/results`,
+      { headers: ship24Headers() }
+    ), 12000, "Ship24 tracker results");
+    if (response.status === 404) {
+      await storeDelete(key);
+      return null;
+    }
+    if (!response.ok) {
+      console.error("Ship24 results", response.status, (await response.text().catch(() => "")).slice(0, 160));
+      return null;
+    }
+    return ship24StatusFromResponse(await response.json());
   } catch (error) {
     console.error("Ship24 error:", error);
     return null;
@@ -427,7 +477,7 @@ export async function fetchPackageSnapshot(query: string): Promise<TrackerSnapsh
   if (!number) return null;
   const tail = number.length > 8 ? `#…${number.slice(-6)}` : `#${number}`;
 
-  const live = await fetchShip24Status(number, carrier);
+  const live = await fetchShip24Status(number);
   if (live) {
     return { title: carrier || "Package", symbol: live.symbol, line1: live.line1, line2: live.line2, trend: live.delivered ? "up" : "flat", status: "", eta: live.eta || undefined, delivered: live.delivered };
   }
@@ -459,16 +509,24 @@ const snapCache = new Map<string, { at: number; snap: TrackerSnapshot }>();
 // TTLs sized so a ~15s push loop carries fresh data: finance (free APIs) every
 // poll, sports each push during a game, flight a bit slower (status rarely
 // changes minute-to-minute, and each lookup is a grounded search).
-const SNAP_TTL: Record<string, number> = { finance: 8000, product: 30 * 60 * 1000, sports: 14000, flight: 30000, package: 300000 };
+const SNAP_TTL: Record<string, number> = { finance: 8000, product: 30 * 60 * 1000, sports: 14000, flight: 30000, package: 60000 };
+const snapInflight = new Map<string, Promise<TrackerSnapshot | null>>();
 
 export async function cachedTrackerSnapshot(kind: string, query: string, timeZone?: string): Promise<TrackerSnapshot | null> {
   const key = `${kind}:${query.toLowerCase()}:${timeZone || ""}`;
   const ttl = SNAP_TTL[kind] ?? 10000;
   const cached = snapCache.get(key);
   if (cached && Date.now() - cached.at < ttl) return cached.snap;
-  const snap = await fetchTrackerSnapshot(kind, query, timeZone);
-  if (snap) { snapCache.set(key, { at: Date.now(), snap }); return snap; }
-  return cached?.snap ?? null; // serve a stale snapshot rather than nothing on a transient failure
+  const existing = snapInflight.get(key);
+  if (existing) return (await existing) || cached?.snap || null;
+  const request = fetchTrackerSnapshot(kind, query, timeZone)
+    .then((snap) => {
+      if (snap) snapCache.set(key, { at: Date.now(), snap });
+      return snap;
+    })
+    .finally(() => snapInflight.delete(key));
+  snapInflight.set(key, request);
+  return (await request) || cached?.snap || null; // serve stale data on a transient failure
 }
 
 // Numeric price for an asset (crypto or stock), reusing the same resolution as

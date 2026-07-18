@@ -207,7 +207,7 @@ app.post("/api/style", async (req, res) => {
 
 // The device registers a running Live Activity's push token here so the server
 // can update it in the BACKGROUND (app closed) via ActivityKit push.
-app.post("/api/register-la", (req, res) => {
+app.post("/api/register-la", async (req, res) => {
   const id = typeof req.body?.id === "string" ? req.body.id : "";
   const token = typeof req.body?.token === "string" ? req.body.token : "";
   if (!id || !token) {
@@ -217,22 +217,27 @@ app.post("/api/register-la", (req, res) => {
   const meta = req.body?.meta && typeof req.body.meta === "object" ? req.body.meta : {};
   const requestedKind = typeof req.body?.kind === "string" ? req.body.kind : "finance";
   const query = typeof meta?.query === "string" ? meta.query : "";
-  registerLiveActivity({
-    id,
-    kind: normalizeTrackerKind(requestedKind, query),
-    meta,
-    token
-  });
-  res.json({ ok: true, configured: isPushConfigured() });
+  const environment = req.body?.environment === "production" ? "production" : req.body?.environment === "sandbox" ? "sandbox" : undefined;
+  try {
+    await registerLiveActivity({ id, kind: normalizeTrackerKind(requestedKind, query), meta, token, environment });
+    res.json({ ok: true, configured: isPushConfigured() });
+  } catch (error) {
+    console.error("Live Activity registration failed:", error);
+    res.status(503).json({ error: "Live Activity registration could not be saved" });
+  }
 });
 
-app.post("/api/unregister-la", (req, res) => {
+app.post("/api/unregister-la", async (req, res) => {
   const id = typeof req.body?.id === "string" ? req.body.id : "";
-  if (id) unregisterLiveActivity(id);
-  res.json({ ok: true });
+  try {
+    if (id) await unregisterLiveActivity(id);
+    res.json({ ok: true });
+  } catch {
+    res.status(503).json({ error: "Live Activity registration could not be removed" });
+  }
 });
 
-// Background engine: every minute, re-fetch each live tracker's data and push a
+// Background engine: re-fetch each live tracker's data and push a
 // content-state update straight to its Live Activity — no app needed. Ends
 // activities past their max lifetime and prunes dead tokens.
 // Stay just inside ActivityKit's eight-hour active lifetime while allowing a
@@ -250,37 +255,43 @@ const lastPushed = new Map<string, string>();
 // much longer cache TTL than market/game data.
 // but only when the content changed. So the lock screen updates within ~15s of
 // any change, app open OR closed.
+let trackerPushBusy = false;
 setInterval(async () => {
-  if (!isPushConfigured()) return;
-  for (const reg of getLiveActivities()) {
-    if (Date.now() - reg.startedAt > LA_MAX_MS) {
-      await sendLiveActivityUpdate(reg.token, null, "end");
-      unregisterLiveActivity(reg.id);
-      lastPushed.delete(reg.id);
-      continue;
-    }
-    if (reg.kind !== "finance" && reg.kind !== "product" && reg.kind !== "sports" && reg.kind !== "flight" && reg.kind !== "package") continue;
-    try {
-      const snap = await cachedTrackerSnapshot(reg.kind, String(reg.meta?.query || ""), reg.meta?.tz ? String(reg.meta.tz) : undefined);
-      if (!snap) continue;
-      const content: Record<string, unknown> = {
-        line1: snap.line1, line2: snap.line2, trend: snap.trend,
-        progress: -1, targetEpoch: 0, status: snap.status,
-        depColor: snap.depColor, arrColor: snap.arrColor
-      };
-      // Package activities keep their "Open <carrier>" button across pushes.
-      if (reg.kind === "package" && reg.meta?.url) {
-        content.actionLabel = `Open ${reg.meta?.carrier || "carrier"}`;
-        content.actionURL = String(reg.meta.url);
+  if (!isPushConfigured() || trackerPushBusy) return;
+  trackerPushBusy = true;
+  try {
+    for (const reg of await getLiveActivities()) {
+      if (Date.now() - reg.startedAt > LA_MAX_MS) {
+        await sendLiveActivityUpdate(reg.token, null, "end", reg.environment);
+        await unregisterLiveActivity(reg.id);
+        lastPushed.delete(reg.id);
+        continue;
       }
-      const sig = JSON.stringify(content);
-      if (lastPushed.get(reg.id) === sig) continue; // unchanged → don't spend a push
-      const r = await sendLiveActivityUpdate(reg.token, content);
-      if (deadToken(r)) { unregisterLiveActivity(reg.id); lastPushed.delete(reg.id); }
-      else lastPushed.set(reg.id, sig);
-    } catch (error) {
-      console.error("Live Activity push error:", error);
+      if (reg.kind !== "finance" && reg.kind !== "product" && reg.kind !== "sports" && reg.kind !== "flight" && reg.kind !== "package") continue;
+      try {
+        const snap = await cachedTrackerSnapshot(reg.kind, String(reg.meta?.query || ""), reg.meta?.tz ? String(reg.meta.tz) : undefined);
+        if (!snap) continue;
+        const content: Record<string, unknown> = {
+          line1: snap.line1, line2: snap.line2, trend: snap.trend,
+          progress: -1, targetEpoch: 0, status: snap.status,
+          depColor: snap.depColor, arrColor: snap.arrColor
+        };
+        // Package activities keep their "Open <carrier>" button across pushes.
+        if (reg.kind === "package" && reg.meta?.url) {
+          content.actionLabel = `Open ${reg.meta?.carrier || "carrier"}`;
+          content.actionURL = String(reg.meta.url);
+        }
+        const sig = JSON.stringify(content);
+        if (lastPushed.get(reg.id) === sig) continue;
+        const result = await sendLiveActivityUpdate(reg.token, content, "update", reg.environment);
+        if (deadToken(result)) { await unregisterLiveActivity(reg.id); lastPushed.delete(reg.id); }
+        else lastPushed.set(reg.id, sig);
+      } catch (error) {
+        console.error("Live Activity push error:", error);
+      }
     }
+  } finally {
+    trackerPushBusy = false;
   }
 }, 15 * 1000);
 
@@ -290,13 +301,13 @@ setInterval(async () => {
 const modeWord = (m: string) => (m === "walking" ? "walk" : m === "bicycling" ? "bike" : m === "transit" ? "transit" : "drive");
 setInterval(async () => {
   if (!isPushConfigured()) return;
-  for (const reg of getLiveActivities()) {
+  for (const reg of await getLiveActivities()) {
     if (reg.kind !== "commute") continue;
     const meta = reg.meta || {};
     const startEpoch = Number(meta.eventStartEpoch);
     if (Number.isFinite(startEpoch) && startEpoch * 1000 < Date.now()) {
-      await sendLiveActivityUpdate(reg.token, null, "end");
-      unregisterLiveActivity(reg.id);
+      await sendLiveActivityUpdate(reg.token, null, "end", reg.environment);
+      await unregisterLiveActivity(reg.id);
       continue;
     }
     try {
@@ -308,8 +319,8 @@ setInterval(async () => {
         line1: `${etaMin} min ${modeWord(eta.mode)}`,
         line2: meta.destName ? `to ${meta.destName}` : "",
         trend: "flat", progress: -1, targetEpoch: departEpoch, status: "Leave in"
-      });
-      if (deadToken(r)) unregisterLiveActivity(reg.id);
+      }, "update", reg.environment);
+      if (deadToken(r)) await unregisterLiveActivity(reg.id);
     } catch (error) {
       console.error("Commute push error:", error);
     }
@@ -374,7 +385,8 @@ app.get("/api/track", async (req, res) => {
   }
   try {
     const safeQuery = kind === "flight" ? extractFlightCode(query) || query : query;
-    const snap = await withTimeout(cachedTrackerSnapshot(kind, safeQuery, tz), 25000, "Track snapshot");
+    const timeout = kind === "sports" || kind === "flight" ? 42000 : 25000;
+    const snap = await withTimeout(cachedTrackerSnapshot(kind, safeQuery, tz), timeout, "Track snapshot");
     if (!snap) {
       res.status(502).json({ error: "tracker unavailable" });
       return;

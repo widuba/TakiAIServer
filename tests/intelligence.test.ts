@@ -8,14 +8,14 @@ import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
 import { finalizeResponse, resolveCalendarUpdateDates, validateAction } from "../src/validators.js";
 import { briefForVoice, VOICE_MAX_CHARS } from "../src/util.js";
-import { formatMathNumber, youtubeVideoInputURL } from "../src/tools.js";
+import { formatMathNumber, parsePackageTracking, youtubeVideoInputURL } from "../src/tools.js";
 import { usageLimitsFor } from "../src/credits.js";
 import { subscriptionMergeDecision } from "../src/iap.js";
 import { billableAudioDurationMs, normalizeTextForSpeech, speechCharacterCount, stabilityForVariability, STT_MODEL, TTS_MODEL } from "../src/voice.js";
 import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
-import { parseTrackCommand } from "../src/tracker.js";
+import { parseTrackCommand, ship24StatusFromResponse } from "../src/tracker.js";
 import { looksLikeComparisonRequest, looksLikeFlightQuestion, looksLikeStockQuestion } from "../src/tools.js";
 import { parseUserPersona, personaPromptBlock } from "../src/persona.js";
 import { normalizeChatTitle } from "../src/chatTitle.js";
@@ -335,6 +335,41 @@ test("explicit entity words resolve collisions before bare identifier shape", ()
   assert.equal(parseTrackCommand("Track UA 123 game")?.kind, "sports");
   assert.equal(parseTrackCommand("Track flight UA 123 game")?.kind, "flight");
   assert.equal(parseTrackCommand("Track UA 123 stock")?.kind, "finance");
+});
+
+test("team-only tracker commands are recognized as sports", () => {
+  assert.equal(parseTrackCommand("Track the Yankees")?.kind, "sports");
+  assert.equal(parseTrackCommand("Follow the Lakers")?.kind, "sports");
+  assert.equal(parseTrackCommand("Keep an eye on Arsenal")?.kind, "sports");
+  assert.equal(parseTrackCommand("Track my steps"), null);
+});
+
+test("package tracking accepts common alphanumeric carrier formats", () => {
+  const amazon = parsePackageTracking("Track my Amazon package TBA123456789012");
+  assert.equal(amazon?.number, "TBA123456789012");
+  assert.equal(amazon?.carrier, "Amazon");
+  assert.match(amazon?.url || "", /amazon\.com/);
+
+  const generic = parsePackageTracking("Track package LX1234ABCD567890");
+  assert.equal(generic?.number, "LX1234ABCD567890");
+});
+
+test("Ship24 results select the newest event and normalized milestone", () => {
+  const status = ship24StatusFromResponse({
+    data: {
+      trackings: [{
+        shipment: { statusMilestone: "out_for_delivery", delivery: { estimatedDeliveryDate: "2026-07-18" } },
+        events: [
+          { occurrenceDatetime: "2026-07-17T10:00:00Z", status: "In transit", location: "Atlanta" },
+          { occurrenceDatetime: "2026-07-18T09:00:00Z", status: "Out for delivery", location: { city: "New York", state: "NY" } }
+        ]
+      }]
+    }
+  });
+  assert.equal(status?.line1, "Out for delivery");
+  assert.equal(status?.line2, "New York, NY");
+  assert.equal(status?.eta, "2026-07-18");
+  assert.equal(status?.delivered, false);
 });
 
 test("ordinary words followed by years are not mistaken for flights", () => {

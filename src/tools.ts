@@ -1236,11 +1236,9 @@ export function parseScoreAlert(
 }
 
 /* ============================================================================
- * Flight (#12) + package (#13) tracking — both FREE, no API key.
- *   - Flight: answered inline via the grounded-search path (getStrictWebAnswer,
- *     same as sports scores) — Google surfaces live flight status.
- *   - Package: deep-link to the live carrier page (or a universal tracker when
- *     the carrier is unknown), opened via an open_app action.
+ * Flight (#12) + package (#13) tracking.
+ *   - Flight: verified through grounded current-data lookup.
+ *   - Package: live Ship24 status when configured, plus a carrier deep link.
  * ==========================================================================*/
 
 // A flight-status question: "is flight UA123 on time", "when does DL456 land",
@@ -1262,18 +1260,21 @@ export function looksLikeFlightQuestion(message: string): boolean {
 // tracking-number-shaped token so it never fires on a bare phone number.
 export function parsePackageTracking(message: string): { number: string; carrier: string; url: string } | null {
   const lower = message.toLowerCase();
-  // Tracking-number shapes: UPS 1Z…, USPS intl (2 letters + 9 digits + 2 letters),
-  // or a long all-digit label (USPS/FedEx/DHL). Phone numbers are exactly 10
-  // digits, so we gate this on a track intent below.
-  const numMatch = message.match(/\b(1Z[0-9A-Z]{14,18}|[A-Z]{2}\d{9}[A-Z]{2}|\d{10,22})\b/i);
-  if (!numMatch) return null;
-  const number = numMatch[1].toUpperCase();
-  const unambiguous = /^(1Z|[A-Z]{2}\d{9}[A-Z]{2}$)/i.test(number); // a clear carrier format
-
   const trackVerb = /\b(track|trace|locate|where('?s| is)|status of)\b/.test(lower);
   const packageWord = /\b(package|parcel|order|delivery|shipment|shipped|tracking|mail)\b/.test(lower);
-  const carrierWord = /\b(ups|usps|fedex|fed ?ex|dhl)\b/.test(lower);
+  const carrierWord = /\b(ups|usps|fedex|fed ?ex|dhl|amazon|ontrac|lasership|canada post|royal mail)\b/.test(lower);
   const explicit = /\btracking (?:number|#|no\.?|num)\b/.test(lower);
+  const candidates = message.match(/\b[A-Z0-9][A-Z0-9-]{7,49}\b/gi) || [];
+  const number = candidates
+    .map((candidate) => candidate.toUpperCase())
+    .find((candidate) => {
+      const digits = candidate.replace(/\D/g, "").length;
+      if (digits < 8) return false;
+      if (/^(1Z[0-9A-Z]{14,18}|[A-Z]{2}\d{9}[A-Z]{2}|TBA\d{10,}|\d{10,22})$/i.test(candidate)) return true;
+      return (explicit || packageWord || carrierWord) && /[A-Z]/.test(candidate);
+    });
+  if (!number) return null;
+  const unambiguous = /^(1Z|[A-Z]{2}\d{9}[A-Z]{2}$|TBA\d{10,})/i.test(number);
   const wants = explicit || (trackVerb && (packageWord || carrierWord || unambiguous));
   if (!wants) return null;
 
@@ -1285,6 +1286,8 @@ export function parsePackageTracking(message: string): { number: string; carrier
   else if (/\busps\b/.test(lower)) carrier = "USPS";
   else if (/\bfed ?ex\b/.test(lower)) carrier = "FedEx";
   else if (/\bdhl\b/.test(lower)) carrier = "DHL";
+  else if (/\bamazon\b/.test(lower) || /^TBA/i.test(number)) carrier = "Amazon";
+  else if (/\bontrac\b/.test(lower)) carrier = "OnTrac";
   else if (/^1Z/i.test(number)) carrier = "UPS";                       // UPS 1Z…
   else if (/^[A-Z]{2}\d{9}[A-Z]{2}$/i.test(number)) carrier = "USPS";  // USPS/UPU S10 intl
   else if (/^9[0-5]\d{18,20}$/.test(number)) carrier = "USPS";         // USPS IMpb (91–95…, 20–22 digits)
@@ -1296,7 +1299,9 @@ export function parsePackageTracking(message: string): { number: string; carrier
     UPS: `https://www.ups.com/track?tracknum=${encodeURIComponent(number)}`,
     USPS: `https://tools.usps.com/go/TrackConfirmAction?tLabels=${encodeURIComponent(number)}`,
     FedEx: `https://www.fedex.com/fedextrack/?trknbr=${encodeURIComponent(number)}`,
-    DHL: `https://www.dhl.com/us-en/home/tracking.html?tracking-id=${encodeURIComponent(number)}`
+    DHL: `https://www.dhl.com/us-en/home/tracking.html?tracking-id=${encodeURIComponent(number)}`,
+    Amazon: `https://www.amazon.com/progress-tracker/package/?trackingId=${encodeURIComponent(number)}`,
+    OnTrac: `https://www.ontrac.com/tracking/?number=${encodeURIComponent(number)}`
   };
   // Unknown carrier → a universal tracker that auto-detects from the number.
   const url = carrier ? carrierUrls[carrier] : `https://t.17track.net/en#nums=${encodeURIComponent(number)}`;

@@ -3,6 +3,7 @@ import http2 from "node:http2";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { storeGet, storeSet } from "./store.js";
 
 /* ============================================================================
  * Apple Push Notification service (APNs) — token-based (.p8) provider.
@@ -204,9 +205,11 @@ export interface LARegistration {
   meta: Record<string, any>; // kind-specific: {query} or commute route params
   token: string;    // ActivityKit push token (hex)
   startedAt: number;
+  environment?: "sandbox" | "production";
 }
 
 const LA_STORE_PATH = path.join(__dirname, "..", "la-tokens.json");
+const LA_STORE_KEY = "live-activity-registrations:v2";
 
 function readLA(): Map<string, LARegistration> {
   try {
@@ -218,27 +221,36 @@ function readLA(): Map<string, LARegistration> {
 }
 
 let laRegs = readLA();
+const laReady = (async () => {
+  const durable = await storeGet<LARegistration[]>(LA_STORE_KEY, []);
+  if (durable.length) laRegs = new Map(durable.map((registration) => [registration.id, registration]));
+  else if (laRegs.size) await storeSet(LA_STORE_KEY, [...laRegs.values()]);
+})();
 
-function persistLA() {
+async function persistLA() {
   try {
     fs.writeFileSync(LA_STORE_PATH, JSON.stringify([...laRegs.values()]));
   } catch {
     /* best effort */
   }
+  await storeSet(LA_STORE_KEY, [...laRegs.values()]);
 }
 
-export function registerLiveActivity(reg: { id: string; kind: string; meta: Record<string, any>; token: string }): void {
+export async function registerLiveActivity(reg: { id: string; kind: string; meta: Record<string, any>; token: string; environment?: "sandbox" | "production" }): Promise<void> {
+  await laReady;
   if (!reg.id || !reg.token) return;
   const existing = laRegs.get(reg.id);
   laRegs.set(reg.id, { ...reg, startedAt: existing?.startedAt ?? Date.now() });
-  persistLA();
+  await persistLA();
 }
 
-export function unregisterLiveActivity(id: string): void {
-  if (laRegs.delete(id)) persistLA();
+export async function unregisterLiveActivity(id: string): Promise<void> {
+  await laReady;
+  if (laRegs.delete(id)) await persistLA();
 }
 
-export function getLiveActivities(): LARegistration[] {
+export async function getLiveActivities(): Promise<LARegistration[]> {
+  await laReady;
   return [...laRegs.values()];
 }
 
@@ -247,14 +259,20 @@ export function getLiveActivities(): LARegistration[] {
 export function sendLiveActivityUpdate(
   token: string,
   contentState: Record<string, unknown> | null,
-  event: "update" | "end" = "update"
+  event: "update" | "end" = "update",
+  environment?: "sandbox" | "production"
 ): Promise<PushResult> {
   return new Promise((resolve) => {
     if (!isPushConfigured()) {
       resolve({ token, ok: false, status: 0, reason: "apns-not-configured" });
       return;
     }
-    const client = http2.connect(APNS_HOST);
+    const host = environment === "production"
+      ? "https://api.push.apple.com"
+      : environment === "sandbox"
+      ? "https://api.sandbox.push.apple.com"
+      : APNS_HOST;
+    const client = http2.connect(host);
     client.on("error", (err) => resolve({ token, ok: false, status: 0, reason: String(err) }));
 
     const now = Math.floor(Date.now() / 1000);
