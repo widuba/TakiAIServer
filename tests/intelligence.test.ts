@@ -15,7 +15,7 @@ import { billableAudioDurationMs, normalizeTextForSpeech, speechCharacterCount, 
 import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
-import { parseTrackCommand, ship24StatusFromResponse } from "../src/tracker.js";
+import { espnSportsSnapshotFromResponse, parseTrackCommand, ship24StatusFromResponse } from "../src/tracker.js";
 import { looksLikeComparisonRequest, looksLikeFlightQuestion, looksLikeStockQuestion } from "../src/tools.js";
 import { parseUserPersona, personaPromptBlock } from "../src/persona.js";
 import { normalizeChatTitle } from "../src/chatTitle.js";
@@ -370,6 +370,26 @@ test("Ship24 results select the newest event and normalized milestone", () => {
   assert.equal(status?.line2, "New York, NY");
   assert.equal(status?.eta, "2026-07-18");
   assert.equal(status?.delivered, false);
+});
+
+test("structured sports scoreboards produce a current Live Activity snapshot", () => {
+  const snapshot = espnSportsSnapshotFromResponse({
+    events: [{
+      date: "2026-07-18T23:05:00Z",
+      competitions: [{
+        date: "2026-07-18T23:05:00Z",
+        status: { type: { state: "in", shortDetail: "Top 7th" } },
+        competitors: [
+          { homeAway: "home", score: "3", team: { displayName: "New York Yankees", shortDisplayName: "Yankees", abbreviation: "NYY" } },
+          { homeAway: "away", score: "2", team: { displayName: "Boston Red Sox", shortDisplayName: "Red Sox", abbreviation: "BOS" } }
+        ]
+      }]
+    }]
+  }, "New York Yankees", "America/New_York");
+  assert.equal(snapshot?.title, "Red Sox vs Yankees");
+  assert.equal(snapshot?.line1, "BOS 2 – NYY 3");
+  assert.equal(snapshot?.line2, "Yankees lead");
+  assert.equal(snapshot?.status, "Top 7th");
 });
 
 test("ordinary words followed by years are not mistaken for flights", () => {

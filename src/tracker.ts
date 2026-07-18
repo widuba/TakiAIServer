@@ -267,7 +267,91 @@ async function fetchStockQuote(query: string): Promise<TrackerSnapshot | null> {
   }
 }
 
+const ESPN_LEAGUES: Array<{ match: RegExp; path: string }> = [
+  { match: /\b(yankees|mets|red sox|dodgers|cubs|phillies|braves|astros|padres|mlb|baseball)\b/i, path: "baseball/mlb" },
+  { match: /\b(lakers|celtics|warriors|knicks|nets|heat|bucks|suns|mavericks|nuggets|cavaliers|nba|basketball)\b/i, path: "basketball/nba" },
+  { match: /\b(chiefs|eagles|cowboys|packers|steelers|patriots|49ers|bills|ravens|jets|dolphins|commanders|nfl|football)\b/i, path: "football/nfl" },
+  { match: /\b(bruins|maple leafs|canadiens|oilers|lightning|golden knights|nhl|hockey)\b/i, path: "hockey/nhl" },
+  { match: /\b(inter miami|mls)\b/i, path: "soccer/usa.1" },
+  { match: /\b(arsenal|chelsea|liverpool|manchester united|manchester city|tottenham|premier league)\b/i, path: "soccer/eng.1" },
+  { match: /\b(barcelona|real madrid|la liga)\b/i, path: "soccer/esp.1" },
+  { match: /\b(bayern munich|bundesliga)\b/i, path: "soccer/ger.1" }
+];
+
+function sportsDateKey(timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" })
+    .formatToParts(new Date());
+  const value = (type: string) => parts.find((part) => part.type === type)?.value || "";
+  return `${value("year")}${value("month")}${value("day")}`;
+}
+
+const sportsWords = (value: string) => value.toLowerCase().replace(/[^a-z0-9 ]/g, " ")
+  .split(/\s+/).filter((word) => word.length > 1 && !["the", "game", "match", "score", "track", "follow", "versus", "vs"].includes(word));
+
+export function espnSportsSnapshotFromResponse(data: any, query: string, timeZone: string = TIME_ZONE): TrackerSnapshot | null {
+  const wanted = sportsWords(query);
+  const events = Array.isArray(data?.events) ? data.events : [];
+  const event = events.find((candidate: any) => {
+    const competition = candidate?.competitions?.[0];
+    const names = (competition?.competitors || []).flatMap((competitor: any) => [
+      competitor?.team?.displayName, competitor?.team?.shortDisplayName,
+      competitor?.team?.name, competitor?.team?.abbreviation
+    ]).filter(Boolean).join(" ").toLowerCase();
+    return wanted.length > 0 && wanted.every((word) => names.includes(word));
+  });
+  const competition = event?.competitions?.[0];
+  if (!competition) return null;
+  const competitors = Array.isArray(competition.competitors) ? competition.competitors : [];
+  const away = competitors.find((team: any) => team.homeAway === "away") || competitors[1];
+  const home = competitors.find((team: any) => team.homeAway === "home") || competitors[0];
+  if (!away?.team || !home?.team) return null;
+  const status = competition.status || event.status || {};
+  const state = String(status?.type?.state || "pre");
+  const awayAbbr = String(away.team.abbreviation || away.team.shortDisplayName || "Away").slice(0, 5);
+  const homeAbbr = String(home.team.abbreviation || home.team.shortDisplayName || "Home").slice(0, 5);
+  const awayScore = String(away.score ?? "0");
+  const homeScore = String(home.score ?? "0");
+  const scoreLine = state === "pre" ? `${awayAbbr} – ${homeAbbr}` : `${awayAbbr} ${awayScore} – ${homeAbbr} ${homeScore}`;
+  const awayValue = Number(awayScore);
+  const homeValue = Number(homeScore);
+  const leader = awayValue === homeValue ? "Tied" : awayValue > homeValue
+    ? `${away.team.shortDisplayName || away.team.name} lead`
+    : `${home.team.shortDisplayName || home.team.name} lead`;
+  const when = new Date(competition.date || event.date);
+  const scheduled = Number.isFinite(when.getTime())
+    ? when.toLocaleTimeString("en-US", { timeZone, hour: "numeric", minute: "2-digit" })
+    : "Scheduled";
+  const statusText = state === "pre" ? scheduled : String(status?.type?.shortDetail || status?.type?.detail || (state === "post" ? "Final" : "Live"));
+  const finishedLabel = /\b(postponed|cancelled|canceled|suspended)\b/i.test(statusText) ? statusText : "Final";
+  return {
+    title: `${away.team.shortDisplayName || away.team.name} vs ${home.team.shortDisplayName || home.team.name}`.slice(0, 40),
+    symbol: "sportscourt.fill",
+    line1: scoreLine.slice(0, 24),
+    line2: (state === "pre" ? "Scheduled" : state === "post" ? finishedLabel : leader).slice(0, 30),
+    trend: "flat",
+    status: statusText.slice(0, 20)
+  };
+}
+
+async function fetchEspnSportsScore(query: string, timeZone: string): Promise<TrackerSnapshot | null> {
+  const league = ESPN_LEAGUES.find((candidate) => candidate.match.test(query));
+  if (!league) return null;
+  try {
+    const response: any = await withTimeout(fetch(
+      `https://site.api.espn.com/apis/site/v2/sports/${league.path}/scoreboard?dates=${sportsDateKey(timeZone)}&limit=100`,
+      { headers: PRICE_HEADERS }
+    ), 8000, "Sports scoreboard");
+    if (!response.ok) return null;
+    return espnSportsSnapshotFromResponse(await response.json(), query, timeZone);
+  } catch (error) {
+    console.error("Sports scoreboard error:", error);
+    return null;
+  }
+}
+
 async function fetchSportsScore(query: string, timeZone: string = TIME_ZONE): Promise<TrackerSnapshot | null> {
+  const structured = await fetchEspnSportsScore(query, timeZone);
+  if (structured) return structured;
   const nowLocal = new Date().toLocaleString("en-US", { timeZone, dateStyle: "full", timeStyle: "short" });
   const prompt = `Right now it is ${nowLocal}.
 Find the score of the game involving "${query}" that is IN PROGRESS RIGHT NOW, or SCHEDULED FOR LATER TODAY (${nowLocal.split(" at ")[0]}).
