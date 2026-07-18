@@ -72,8 +72,31 @@ const FINANCE_CUE =
   /\b(stock|shares?|ticker|quote|trading|market|nasdaq|nyse|crypto|coin)\b/i;
 const KNOWN_SPORTS_TEAM =
   /\b(yankees|mets|red sox|dodgers|cubs|phillies|braves|astros|padres|lakers|celtics|warriors|knicks|nets|heat|bucks|suns|mavericks|nuggets|cavaliers|chiefs|eagles|cowboys|packers|steelers|patriots|49ers|bills|ravens|jets|giants|dolphins|commanders|rangers|bruins|maple leafs|canadiens|oilers|panthers|lightning|golden knights|arsenal|chelsea|liverpool|manchester united|manchester city|tottenham|barcelona|real madrid|bayern munich|inter miami)\b/i;
+const SPORTS_TEAM_NAMES: Record<string, string> = {
+  yankees: "New York Yankees", mets: "New York Mets", "red sox": "Boston Red Sox",
+  dodgers: "Los Angeles Dodgers", cubs: "Chicago Cubs", phillies: "Philadelphia Phillies",
+  braves: "Atlanta Braves", astros: "Houston Astros", padres: "San Diego Padres",
+  lakers: "Los Angeles Lakers", celtics: "Boston Celtics", warriors: "Golden State Warriors",
+  knicks: "New York Knicks", nets: "Brooklyn Nets", heat: "Miami Heat", bucks: "Milwaukee Bucks",
+  suns: "Phoenix Suns", mavericks: "Dallas Mavericks", nuggets: "Denver Nuggets",
+  cavaliers: "Cleveland Cavaliers", chiefs: "Kansas City Chiefs", eagles: "Philadelphia Eagles",
+  cowboys: "Dallas Cowboys", packers: "Green Bay Packers", steelers: "Pittsburgh Steelers",
+  patriots: "New England Patriots", "49ers": "San Francisco 49ers", bills: "Buffalo Bills",
+  ravens: "Baltimore Ravens", jets: "New York Jets", dolphins: "Miami Dolphins",
+  commanders: "Washington Commanders", bruins: "Boston Bruins", "maple leafs": "Toronto Maple Leafs",
+  canadiens: "Montreal Canadiens", oilers: "Edmonton Oilers", lightning: "Tampa Bay Lightning",
+  "golden knights": "Vegas Golden Knights", arsenal: "Arsenal FC", chelsea: "Chelsea FC",
+  liverpool: "Liverpool FC", "manchester united": "Manchester United", "manchester city": "Manchester City",
+  tottenham: "Tottenham Hotspur", barcelona: "FC Barcelona", "real madrid": "Real Madrid",
+  "bayern munich": "Bayern Munich", "inter miami": "Inter Miami CF"
+};
 const TRACKER_MODEL = String(process.env.GEMINI_TRACKER_MODEL || MAIN_MODEL).trim();
 const TRACKER_TIMEOUT_MS = Number(process.env.TRACKER_TIMEOUT_MS || 35000);
+
+function canonicalSportsQuery(value: string): string {
+  const key = value.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\b(the|game|match|score)\b/g, " ").replace(/\s+/g, " ").trim();
+  return SPORTS_TEAM_NAMES[key] || value;
+}
 
 // Detect a "track X" command and classify it. Returns null for everything else
 // (including "track my steps", which has no finance/sports cue).
@@ -97,7 +120,7 @@ export function parseTrackCommand(message: string): { kind: "finance" | "product
   // uppercase ticker. Explicit finance wording still lets users request a stock.
   const flightCode = extractFlightCode(message);
   if (flightCode && hasExplicitFlightCue(message)) return { kind: "flight", query: flightCode };
-  if (SPORTS_CUE.test(message) || KNOWN_SPORTS_TEAM.test(message)) return { kind: "sports", query: query || message };
+  if (SPORTS_CUE.test(message) || KNOWN_SPORTS_TEAM.test(message)) return { kind: "sports", query: canonicalSportsQuery(query || message) };
   if (flightCode && isStrongFlightReference(message)) return { kind: "flight", query: flightCode };
   if (CRYPTO_WORD.test(m) || FINANCE_CUE.test(m) || hasExplicitFinanceCue(message) || /\$[A-Za-z]{1,5}\b/.test(message) || /\b[A-Z]{2,5}\b/.test(message)) {
     // Preserve the finance cue when a code+number also appears, so downstream
@@ -521,7 +544,8 @@ export async function cachedTrackerSnapshot(kind: string, query: string, timeZon
   if (existing) return (await existing) || cached?.snap || null;
   const request = fetchTrackerSnapshot(kind, query, timeZone)
     .then((snap) => {
-      if (snap) snapCache.set(key, { at: Date.now(), snap });
+      const pendingPackage = kind === "package" && snap?.line1 === "Tracking…";
+      if (snap && !pendingPackage) snapCache.set(key, { at: Date.now(), snap });
       return snap;
     })
     .finally(() => snapInflight.delete(key));

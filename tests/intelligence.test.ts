@@ -338,9 +338,9 @@ test("explicit entity words resolve collisions before bare identifier shape", ()
 });
 
 test("team-only tracker commands are recognized as sports", () => {
-  assert.equal(parseTrackCommand("Track the Yankees")?.kind, "sports");
-  assert.equal(parseTrackCommand("Follow the Lakers")?.kind, "sports");
-  assert.equal(parseTrackCommand("Keep an eye on Arsenal")?.kind, "sports");
+  assert.deepEqual(parseTrackCommand("Track the Yankees"), { kind: "sports", query: "New York Yankees" });
+  assert.deepEqual(parseTrackCommand("Follow the Lakers"), { kind: "sports", query: "Los Angeles Lakers" });
+  assert.deepEqual(parseTrackCommand("Keep an eye on Arsenal"), { kind: "sports", query: "Arsenal FC" });
   assert.equal(parseTrackCommand("Track my steps"), null);
 });
 
