@@ -15,7 +15,7 @@ import { billableAudioDurationMs, normalizeTextForSpeech, speechCharacterCount, 
 import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
-import { espnSportsSnapshotFromResponse, flightStatsSnapshotFromHtml, parseTrackCommand, ship24StatusFromResponse } from "../src/tracker.js";
+import { appleMacPriceSnapshotFromHtml, espnSportsSnapshotFromResponse, flightStatsSnapshotFromHtml, parseTrackCommand, ship24StatusFromResponse } from "../src/tracker.js";
 import { looksLikeComparisonRequest, looksLikeFlightQuestion, looksLikeStockQuestion } from "../src/tools.js";
 import { parseUserPersona, personaPromptBlock } from "../src/persona.js";
 import { normalizeChatTitle } from "../src/chatTitle.js";
@@ -400,6 +400,25 @@ test("structured sports scoreboards produce a current Live Activity snapshot", (
       ]
     }] }]
   }, "the Orioles game tonight")?.title, "Blue Jays vs Orioles");
+});
+
+test("official Apple Store cards produce a complete product-price comparison", () => {
+  const card = (name: string, path: string, price: string) => `
+    <a href="${path}">
+      <div class="rf-hcard-content-title">${name}</div>
+      <div class="rf-hcard-scrim-price">From <span class="nowrap">${price}</span></div>
+    </a>`;
+  const html = [
+    card("MacBook Air", "/shop/buy-mac/macbook-air", "$1,299"),
+    card("MacBook Pro", "/shop/buy-mac/macbook-pro", "$1,999"),
+    card("Mac mini", "/shop/buy-mac/mac-mini", "$799")
+  ].join("\n");
+  const snapshot = appleMacPriceSnapshotFromHtml(html, "MacBook Air vs MacBook Pro vs Mac mini");
+  assert.equal(snapshot?.line1, "$1,299 · $1,999 · $799");
+  assert.equal(snapshot?.line2, "Air · Pro · mini");
+  assert.equal(snapshot?.status, "Apple US starting prices");
+  assert.equal(snapshot?.sources?.[0]?.url, "https://www.apple.com/shop/buy-mac");
+  assert.equal(appleMacPriceSnapshotFromHtml(html, "MacBook Air vs Pixelbook"), null);
 });
 
 test("structured FlightStats pages produce a verified flight Live Activity snapshot", () => {

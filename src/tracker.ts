@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { generateContent, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, TIME_ZONE } from "./ai.js";
+import { parse as parseHtml } from "node-html-parser";
 import { safeParseJsonObject, withTimeout } from "./util.js";
 import { storeDelete, storeGet, storeSet } from "./store.js";
 import type { AssistantSource } from "./types.js";
@@ -420,7 +421,83 @@ If it hasn't started yet, set line1 to the matchup abbreviations with no scores 
   }
 }
 
+const APPLE_MAC_STORE_URL = "https://www.apple.com/shop/buy-mac";
+const APPLE_MAC_PRODUCTS = [
+  { name: "MacBook Air", shortName: "Air", path: "/shop/buy-mac/macbook-air", aliases: [/\bmacbook air\b/i, /^air$/i] },
+  { name: "MacBook Pro", shortName: "Pro", path: "/shop/buy-mac/macbook-pro", aliases: [/\bmacbook pro\b/i, /^pro$/i] },
+  { name: "Mac mini", shortName: "mini", path: "/shop/buy-mac/mac-mini", aliases: [/\bmac mini\b/i, /^mini$/i] },
+  { name: "iMac", shortName: "iMac", path: "/shop/buy-mac/imac", aliases: [/\bimac\b/i] },
+  { name: "Mac Studio", shortName: "Studio", path: "/shop/buy-mac/mac-studio", aliases: [/\bmac studio\b/i, /^studio$/i] }
+] as const;
+
+type AppleMacProduct = (typeof APPLE_MAC_PRODUCTS)[number];
+
+function requestedAppleMacProducts(query: string): AppleMacProduct[] {
+  const parts = query
+    .replace(/\b(track|follow|watch|monitor|price|prices|pricing|cost|costs|of|the)\b/gi, " ")
+    .split(/\s+(?:vs\.?|versus)\s+|\s*,\s*|\s+and\s+/i)
+    .map((part) => part.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  const products = parts.map((part) => APPLE_MAC_PRODUCTS.find((product) => product.aliases.some((alias) => alias.test(part))));
+  if (!products.length || products.some((product) => !product)) return [];
+  const unique = products.filter((product, index) => products.indexOf(product) === index) as AppleMacProduct[];
+  return unique;
+}
+
+function normalizedApplePath(href: string): string {
+  try {
+    return new URL(href, APPLE_MAC_STORE_URL).pathname.replace(/\/$/, "");
+  } catch {
+    return href.split(/[?#]/)[0].replace(/\/$/, "");
+  }
+}
+
+export function appleMacPriceSnapshotFromHtml(html: string, query: string): TrackerSnapshot | null {
+  const requested = requestedAppleMacProducts(query);
+  if (!requested.length) return null;
+  const root = parseHtml(html);
+  // Apple renders its product shelf inside <noscript>; node-html-parser keeps
+  // that body as text, so parse those fragments as documents as well.
+  const roots = [root, ...root.querySelectorAll("noscript").map((node) => parseHtml(node.innerHTML))];
+  const prices = new Map<string, string>();
+  for (const document of roots) {
+    for (const anchor of document.querySelectorAll("a[href]")) {
+      const href = anchor.getAttribute("href") || "";
+      const product = requested.find((candidate) => normalizedApplePath(href) === candidate.path);
+      if (!product || prices.has(product.path)) continue;
+      const priceText = anchor.querySelector(".rf-hcard-scrim-price")?.textContent || anchor.textContent;
+      const price = priceText.replace(/\s+/g, " ").match(/\bFrom\s+(\$[\d,]+(?:\.\d{2})?)/i)?.[1];
+      if (price) prices.set(product.path, price.replace(/\.00$/, ""));
+    }
+  }
+  if (requested.some((product) => !prices.has(product.path))) return null;
+  const comparing = requested.length > 1;
+  return {
+    title: comparing ? "Mac price comparison" : requested[0].name,
+    symbol: "tag.fill",
+    line1: requested.map((product) => prices.get(product.path)).join(" · ").slice(0, 48),
+    line2: requested.map((product) => comparing ? product.shortName : product.name).join(" · ").slice(0, 44),
+    trend: "flat",
+    status: "Apple US starting prices",
+    sources: [{ title: "apple.com", url: APPLE_MAC_STORE_URL }]
+  };
+}
+
+async function fetchAppleMacPriceSnapshot(query: string): Promise<TrackerSnapshot | null> {
+  if (!requestedAppleMacProducts(query).length) return null;
+  try {
+    const response: any = await withTimeout(fetch(APPLE_MAC_STORE_URL, { headers: PRICE_HEADERS }), 8000, "Apple Store prices");
+    if (!response.ok) return null;
+    return appleMacPriceSnapshotFromHtml(await response.text(), query);
+  } catch (error) {
+    console.error("Apple Store price error:", error);
+    return null;
+  }
+}
+
 async function fetchProductPriceSnapshot(query: string, timeZone: string = TIME_ZONE): Promise<TrackerSnapshot | null> {
+  const appleSnapshot = await fetchAppleMacPriceSnapshot(query);
+  if (appleSnapshot) return appleSnapshot;
   const nowLocal = new Date().toLocaleString("en-US", { timeZone, dateStyle: "full", timeStyle: "short" });
   const requestedItems = query
     .split(/\s+(?:vs\.?|versus)\s+|\s*,\s*|\s+and\s+/i)
