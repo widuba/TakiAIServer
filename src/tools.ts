@@ -128,7 +128,10 @@ export async function getLocationAnswer(deviceLocation: any): Promise<AssistantR
     return { spokenText: "I can tell you're connected, but I couldn't pin down your city right now.", action: null };
   }
   // City, State, Country (US) — or City, Region, Country elsewhere. No coordinates.
-  return { spokenText: `You're in ${label}.`, action: null };
+  const latitude = Number(deviceLocation.latitude);
+  const longitude = Number(deviceLocation.longitude);
+  const sourceUrl = `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${encodeURIComponent(latitude)}&longitude=${encodeURIComponent(longitude)}&localityLanguage=en`;
+  return { spokenText: `You're in ${label}.`, action: null, sources: [{ title: "bigdatacloud.com", url: sourceUrl }] };
 }
 
 /* ---- Weather ------------------------------------------------------------ */
@@ -1510,6 +1513,7 @@ type WeatherData = {
   tomorrowRainChance: number | null;
   rainingNow: boolean;
   rainStart: string | null; // e.g. "4 PM" / "Wed 9 AM", or null if none expected
+  source: { title: string; url: string };
 };
 
 const isRainyText = (s?: string) => /rain|shower|snow|sleet|storm|drizzle|thunder|wintry/i.test(s || "");
@@ -1582,7 +1586,8 @@ async function getNwsWeather(lat: number, lon: number, userTz: string): Promise<
       tomorrowCond: tomDay ? String(tomDay.shortForecast || "").toLowerCase() : null,
       tomorrowRainChance: precipMax(tomorrowKey),
       rainingNow: isRainyText(now.shortForecast) || Number(now?.probabilityOfPrecipitation?.value || 0) >= 55,
-      rainStart
+      rainStart,
+      source: { title: "weather.gov", url: String(dailyUrl || hourlyUrl) }
     };
   } catch (error) {
     console.error("NWS weather error:", error);
@@ -1602,7 +1607,8 @@ async function getOpenMeteoWeather(lat: number, lon: number, fallbackTz: string)
     timezone: "auto" // returns the LOCATION's timezone (so today/tomorrow are local)
   });
   try {
-    const r: any = await withTimeout(fetch(`https://api.open-meteo.com/v1/forecast?${params.toString()}`), 8000, "Weather");
+    const sourceUrl = `https://api.open-meteo.com/v1/forecast?${params.toString()}`;
+    const r: any = await withTimeout(fetch(sourceUrl), 8000, "Weather");
     const data = await r.json();
     const current = data.current;
     const daily = data.daily;
@@ -1643,7 +1649,8 @@ async function getOpenMeteoWeather(lat: number, lon: number, fallbackTz: string)
       tomorrowCond: weatherCodeDescription(Number(daily.weather_code?.[1])),
       tomorrowRainChance: Math.round(Number(daily.precipitation_probability_max?.[1] || 0)),
       rainingNow: Number(current.weather_code) >= 51,
-      rainStart
+      rainStart,
+      source: { title: "open-meteo.com", url: sourceUrl }
     };
   } catch (error) {
     console.error("Open-Meteo weather error:", error);
@@ -1752,7 +1759,7 @@ export async function getWeatherAnswer(message: string, deviceLocation?: DeviceL
       (await getOpenMeteoWeather(latitude, longitude, fallbackTz));
     if (!data) return { spokenText: "I couldn't get the weather there right now. Try again in a moment.", action: null };
 
-    return { spokenText: formatWeather(message, name, data), action: null };
+    return { spokenText: formatWeather(message, name, data), action: null, sources: [data.source] };
   } catch (error) {
     console.error("Weather error:", error);
     return { spokenText: "I couldn't get the weather right now. Try again in a moment.", action: null };
@@ -1819,7 +1826,11 @@ export async function getCryptoPrice(message: string): Promise<AssistantResponse
     const chg = typeof info.usd_24h_change === "number" ? info.usd_24h_change : null;
     const dir = chg == null ? "" : chg >= 0 ? `, up ${chg.toFixed(2)}% today` : `, down ${Math.abs(chg).toFixed(2)}% today`;
     const name = word.charAt(0).toUpperCase() + word.slice(1);
-    return { spokenText: `${name} is trading at ${money(info.usd)}${dir}.`, action: null };
+    return {
+      spokenText: `${name} is trading at ${money(info.usd)}${dir}.`,
+      action: null,
+      sources: [{ title: "coingecko.com", url: `https://www.coingecko.com/en/coins/${encodeURIComponent(id)}` }]
+    };
   } catch (error) {
     console.error("Crypto price error:", error);
     return null;
@@ -1910,7 +1921,11 @@ export async function getStockPrice(message: string): Promise<AssistantResponse 
     const isExt = typeof meta.regularMarketPrice === "number" && Math.abs(price - meta.regularMarketPrice) > 0.001;
     const askedExt = /\b(after.?hours?|after.?market|aftermarket|pre.?market|extended)\b/i.test(message);
     const extNote = isExt && askedExt ? " (extended-hours)" : "";
-    return { spokenText: `${name} (${symbol}) is at ${money(price, meta.currency || "USD")}${extNote}${dir}.`, action: null };
+    return {
+      spokenText: `${name} (${symbol}) is at ${money(price, meta.currency || "USD")}${extNote}${dir}.`,
+      action: null,
+      sources: [{ title: "finance.yahoo.com", url: `https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}` }]
+    };
   } catch (error) {
     console.error("Stock price error:", error);
     return null;
@@ -1950,7 +1965,8 @@ export async function getLotteryAnswer(message: string): Promise<AssistantRespon
       const date = lotteryDrawDate(e.draw_date);
       return {
         spokenText: `The latest Mega Millions numbers${date ? ` (drawn ${date})` : ""} were ${nums}, with a Mega Ball of ${e.mega_ball}.`,
-        action: null
+        action: null,
+        sources: [{ title: "data.ny.gov", url: "https://data.ny.gov/resource/5xaw-6ayf.json?$limit=1&$order=draw_date%20DESC" }]
       };
     }
     const r: any = await withTimeout(
@@ -1967,7 +1983,8 @@ export async function getLotteryAnswer(message: string): Promise<AssistantRespon
     const pp = e.multiplier ? ` (Power Play ${e.multiplier}x)` : "";
     return {
       spokenText: `The latest Powerball numbers${date ? ` (drawn ${date})` : ""} were ${white}, with a Powerball of ${pb}${pp}.`,
-      action: null
+      action: null,
+      sources: [{ title: "data.ny.gov", url: "https://data.ny.gov/resource/d6yy-54nr.json?$limit=1&$order=draw_date%20DESC" }]
     };
   } catch (error) {
     console.error("Lottery error:", error);
@@ -2062,6 +2079,7 @@ User request: ${JSON.stringify(String(message).slice(0, 2000))}`;
     const summary = String(parsed.summary || "").trim().slice(0, 500);
     const sources = getGroundingSources(response);
     if (!criteria.length || items.length < 2) return { spokenText: summary || "What would you like me to compare?", action: null };
+    if (!sources.length) return { spokenText: "I couldn't verify that comparison from linkable sources right now.", action: null };
     return {
       spokenText: summary || `Here's a comparison of ${items.map((item: any) => item.name).join(" and ")}.`,
       action: null,
@@ -2217,11 +2235,11 @@ ${message}
 
     if (allowPrediction) {
       // Predictions are inherently tentative — return the grounded answer as-is.
-      if (!answer) return { spokenText: "I couldn't find any predictions or odds for that yet.", action: null };
+      if (!answer || !sources.length) return { spokenText: "I couldn't find any linkable predictions or odds for that yet.", action: null };
       return { spokenText: answer, action: null, sources };
     }
 
-    if (!answer || !grounded) return { spokenText: "I can't verify that right now.", action: null };
+    if (!answer || !grounded || !sources.length) return { spokenText: "I can't verify that from linkable sources right now.", action: null };
 
     if (/\bprobably|i think|i believe|would be|should be|based on previous|expected around\b/i.test(answer)) {
       if (!/\bnot confirmed|has not confirmed|tentative|rumor|reported|expected\b/i.test(answer)) {
@@ -2291,6 +2309,7 @@ export type VerifiedEventResult = {
   notes?: string;
   spokenText?: string;
   reason?: string;
+  sources?: { title: string; url: string }[];
 };
 
 async function researchCurrentEventAnswer(eventQuery: string, userTz: string) {
@@ -2329,10 +2348,10 @@ Rules:
       RESEARCH_TIMEOUT_MS,
       "Current event research"
     );
-    return String(response.text || "").trim();
+    return { text: String(response.text || "").trim(), sources: getGroundingSources(response) };
   } catch (error) {
     console.error("Current event research failed:", error);
-    return "";
+    return { text: "", sources: [] };
   }
 }
 
@@ -2371,10 +2390,10 @@ Rules:
       LIST_RESEARCH_TIMEOUT_MS,
       "Upcoming events research"
     );
-    return String(response.text || "").trim();
+    return { text: String(response.text || "").trim(), sources: getGroundingSources(response) };
   } catch (error) {
     console.error("Upcoming events research failed:", error);
-    return "";
+    return { text: "", sources: [] };
   }
 }
 
@@ -2472,13 +2491,13 @@ export async function findVerifiedFutureEvent(eventQuery: string, fallbackTz: st
   // One (slow, accurate) grounded research pass, then up to two cheap extraction
   // passes over that same text. Re-researching with the accurate model would
   // risk the overall request budget, and a single grounded pass is reliable.
-  const researchText = await researchCurrentEventAnswer(eventQuery, fallbackTz);
-  if (!researchText) return { found: false, reason: "No current information found." };
+  const research = await researchCurrentEventAnswer(eventQuery, fallbackTz);
+  if (!research.text || !research.sources.length) return { found: false, reason: "No linkable current information found.", sources: research.sources };
   let last: VerifiedEventResult = { found: false };
   for (let attempt = 0; attempt < 2; attempt++) {
-    const result = await extractFutureEventFromResearch(eventQuery, researchText, fallbackTz);
-    if (result.found) return result;
-    last = result;
+    const result = await extractFutureEventFromResearch(eventQuery, research.text, fallbackTz);
+    if (result.found) return { ...result, sources: research.sources };
+    last = { ...result, sources: research.sources };
   }
   return last;
 }
@@ -2554,10 +2573,11 @@ export async function findVerifiedFutureEvents(eventQuery: string, count: number
   // One (slow) grounded research pass, then up to two cheap extraction passes
   // that REUSE that text — so a single extraction hiccup doesn't cost another
   // 14s of web research and blow the request budget.
-  const researchText = await researchUpcomingEventsAnswer(eventQuery, n, fallbackTz);
-  if (!researchText) return [];
+  const research = await researchUpcomingEventsAnswer(eventQuery, n, fallbackTz);
+  if (!research.text || !research.sources.length) return [];
   // Single extraction pass — the list research already used most of the budget.
-  return extractFutureEventsFromResearch(eventQuery, researchText, n, fallbackTz);
+  const events = await extractFutureEventsFromResearch(eventQuery, research.text, n, fallbackTz);
+  return events.map((event) => ({ ...event, sources: research.sources }));
 }
 
 // "Add the next World Cup game / next Braves game / next SpaceX launch to my

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { generateContent, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, TIME_ZONE } from "./ai.js";
 import { safeParseJsonObject, withTimeout } from "./util.js";
 import { storeDelete, storeGet, storeSet } from "./store.js";
+import type { AssistantSource } from "./types.js";
 import {
   extractFlightCode,
   hasExplicitFinanceCue,
@@ -36,6 +37,7 @@ export interface TrackerSnapshot {
   // used to drive "arrives today" nudges.
   eta?: string;
   delivered?: boolean;
+  sources?: AssistantSource[];
 }
 
 const PRICE_HEADERS = { "User-Agent": "Mozilla/5.0 (compatible; TakiAI/1.0)" };
@@ -92,6 +94,22 @@ const SPORTS_TEAM_NAMES: Record<string, string> = {
 };
 const TRACKER_MODEL = String(process.env.GEMINI_TRACKER_MODEL || MAIN_MODEL).trim();
 const TRACKER_TIMEOUT_MS = Number(process.env.TRACKER_TIMEOUT_MS || 35000);
+
+function groundingSources(response: any): AssistantSource[] {
+  const metadata = response?.candidates?.[0]?.groundingMetadata;
+  const chunks = metadata?.groundingChunks || metadata?.grounding_chunks || [];
+  const seen = new Set<string>();
+  const sources: AssistantSource[] = [];
+  for (const chunk of Array.isArray(chunks) ? chunks : []) {
+    const web = chunk?.web || chunk?.retrievedContext || chunk?.retrieved_context;
+    const url = String(web?.uri || web?.url || "").trim();
+    if (!/^https?:\/\//i.test(url) || seen.has(url)) continue;
+    seen.add(url);
+    sources.push({ title: String(web?.title || "Web source").trim().slice(0, 140), url });
+    if (sources.length >= 8) break;
+  }
+  return sources;
+}
 
 function canonicalSportsQuery(value: string): string {
   const key = value.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\b(the|game|match|score)\b/g, " ").replace(/\s+/g, " ").trim();
@@ -159,7 +177,8 @@ async function fetchCryptoQuote(query: string): Promise<TrackerSnapshot | null> 
       line1: money(info.usd),
       line2: name,
       trend,
-      status: chg == null ? "24h" : `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}% today`
+      status: chg == null ? "24h" : `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}% today`,
+      sources: [{ title: "coingecko.com", url: `https://www.coingecko.com/en/coins/${encodeURIComponent(id)}` }]
     };
   } catch (error) {
     console.error("Crypto quote error:", error);
@@ -259,7 +278,8 @@ async function fetchStockQuote(query: string): Promise<TrackerSnapshot | null> {
       line1: money(price, meta.currency || "USD"),
       line2: name,
       trend,
-      status: chg == null ? "" : `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}% today`
+      status: chg == null ? "" : `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}% today`,
+      sources: [{ title: "finance.yahoo.com", url: `https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}` }]
     };
   } catch (error) {
     console.error("Stock quote error:", error);
@@ -337,12 +357,14 @@ async function fetchEspnSportsScore(query: string, timeZone: string): Promise<Tr
   const league = ESPN_LEAGUES.find((candidate) => candidate.match.test(query));
   if (!league) return null;
   try {
+    const sourceUrl = `https://site.api.espn.com/apis/site/v2/sports/${league.path}/scoreboard?dates=${sportsDateKey(timeZone)}&limit=100`;
     const response: any = await withTimeout(fetch(
-      `https://site.api.espn.com/apis/site/v2/sports/${league.path}/scoreboard?dates=${sportsDateKey(timeZone)}&limit=100`,
+      sourceUrl,
       { headers: PRICE_HEADERS }
     ), 8000, "Sports scoreboard");
     if (!response.ok) return null;
-    return espnSportsSnapshotFromResponse(await response.json(), query, timeZone);
+    const snapshot = espnSportsSnapshotFromResponse(await response.json(), query, timeZone);
+    return snapshot ? { ...snapshot, sources: [{ title: "espn.com", url: sourceUrl }] } : null;
   } catch (error) {
     console.error("Sports scoreboard error:", error);
     return null;
@@ -368,13 +390,16 @@ If it hasn't started yet, set line1 to the matchup abbreviations with no scores 
     if (/^null$/i.test(text)) return null;
     const obj = safeParseJsonObject(text);
     if (!obj || typeof obj.line1 !== "string") return null;
+    const sources = groundingSources(res);
+    if (!sources.length) return null;
     return {
       title: String(obj.title || query).slice(0, 40),
       symbol: "sportscourt.fill",
       line1: String(obj.line1 || "").slice(0, 24),
       line2: String(obj.line2 || "").slice(0, 30),
       trend: "flat",
-      status: String(obj.status || "Live").slice(0, 20)
+      status: String(obj.status || "Live").slice(0, 20),
+      sources
     };
   } catch (error) {
     console.error("Sports score error:", error);
@@ -408,13 +433,16 @@ Respond with ONLY compact JSON (no markdown, no code fences):
     const line2 = String(obj?.line2 || "").trim();
     const priceCount = line1.match(/(?:\$|USD\s*)[\d,.]+/gi)?.length || 0;
     if (!obj || !line1 || !line2 || priceCount < expectedPrices) return null;
+    const sources = groundingSources(res);
+    if (!sources.length) return null;
     return {
       title: String(obj.title || "Product prices").slice(0, 30),
       symbol: "tag.fill",
       line1: line1.slice(0, 48),
       line2: line2.slice(0, 44),
       trend: "flat",
-      status: String(obj.status || "Current retail prices").slice(0, 36)
+      status: String(obj.status || "Current retail prices").slice(0, 36),
+      sources
     };
   } catch (error) {
     console.error("Product price error:", error);
@@ -455,6 +483,8 @@ Use the user's local timezone (${timeZone}). Always include the '|note' part. If
     // flight's times to the requested code.
     const normalizedTitle = String(obj.title || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
     if (!normalizedTitle.includes(flight)) return null;
+    const sources = groundingSources(res);
+    if (!sources.length) return null;
     const trend = obj.trend === "up" || obj.trend === "down" ? obj.trend : "flat";
     const color = (c: any) => (c === "green" || c === "yellow" || c === "red" ? c : "green");
     return {
@@ -465,7 +495,8 @@ Use the user's local timezone (${timeZone}). Always include the '|note' part. If
       trend,
       status: String(obj.status || "").slice(0, 44),
       depColor: color(obj.depColor),
-      arrColor: color(obj.arrColor)
+      arrColor: color(obj.arrColor),
+      sources
     };
   } catch (error) {
     console.error("Flight status error:", error);
@@ -586,7 +617,12 @@ export async function fetchPackageSnapshot(query: string): Promise<TrackerSnapsh
 
   const live = await fetchShip24Status(number);
   if (live) {
-    return { title: carrier || "Package", symbol: live.symbol, line1: live.line1, line2: live.line2, trend: live.delivered ? "up" : "flat", status: "", eta: live.eta || undefined, delivered: live.delivered };
+    return {
+      title: carrier || "Package", symbol: live.symbol, line1: live.line1, line2: live.line2,
+      trend: live.delivered ? "up" : "flat", status: "", eta: live.eta || undefined,
+      delivered: live.delivered,
+      sources: [{ title: "ship24.com", url: `https://www.ship24.com/tracking?p=${encodeURIComponent(number)}` }]
+    };
   }
   return {
     title: carrier || "Package",
@@ -640,10 +676,10 @@ export async function cachedTrackerSnapshot(kind: string, query: string, timeZon
 // Numeric price for an asset (crypto or stock), reusing the same resolution as
 // the trackers. Used by the price-alert engine. Returns the displayed price (the
 // same value the user sees), its label, and 24h trend, or null.
-export async function fetchAssetPrice(query: string): Promise<{ price: number; label: string; trend: string } | null> {
+export async function fetchAssetPrice(query: string): Promise<{ price: number; label: string; trend: string; sources: AssistantSource[] } | null> {
   const snap = await fetchTrackerSnapshot("finance", query);
   if (!snap) return null;
   const price = parseFloat(snap.line1.replace(/[^0-9.]/g, ""));
   if (!Number.isFinite(price)) return null;
-  return { price, label: snap.title, trend: snap.trend };
+  return { price, label: snap.title, trend: snap.trend, sources: snap.sources || [] };
 }

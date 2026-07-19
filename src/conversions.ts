@@ -100,6 +100,16 @@ export function looksLikeConversion(message: string): boolean {
   return /\b\d+(?:\.\d+)?\s*[a-z°$€£¥₹]+\s+(?:to|in|into)\s+[a-z°$€£¥₹]/.test(m);
 }
 
+export function currencyConversionSource(message: string): string | null {
+  const normalized = message.toLowerCase().replace(/[?!]/g, "").trim();
+  const match = normalized.match(/(?:convert\s+)?\$?€?£?¥?₹?\s*(-?\d+(?:[.,]\d+)?)\s*([a-z$€£¥₹]+(?:\s[a-z]+)?)\s+(?:to|in|into|=|equals?)\s+([a-z$€£¥₹]+(?:\s[a-z]+)?)/);
+  if (!match) return null;
+  const from = CURRENCY[match[2].trim()];
+  const to = CURRENCY[match[3].trim()];
+  if (!from || !to || from === to) return null;
+  return `https://api.frankfurter.app/latest?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+}
+
 // Returns a concise conversion answer, or null if it isn't a clean conversion.
 export async function computeConversion(message: string): Promise<string | null> {
   const m = message.toLowerCase().replace(/[?!]/g, "").trim();

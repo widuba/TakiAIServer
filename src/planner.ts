@@ -81,11 +81,11 @@ import { auditPlannerOutput } from "./plannerAudit.js";
 import { parseTrackCommand, fetchTrackerSnapshot, fetchAssetPrice, extractFlightCode } from "./tracker.js";
 import { looksLikePlanDay, generateDayPlan } from "./dayplan.js";
 import { looksLikeCookingRequest, generateRecipe, parseRecipeImport, importRecipeFromUrl } from "./cooking.js";
-import { looksLikeUrlSummarize, summarizeUrl } from "./websummary.js";
+import { extractUrl, looksLikeUrlSummarize, summarizeUrl } from "./websummary.js";
 import { parseRecurring } from "./recurring.js";
 import { parseServiceRequest } from "./services.js";
 import { parseListCommand } from "./lists.js";
-import { looksLikeConversion, computeConversion } from "./conversions.js";
+import { looksLikeConversion, computeConversion, currencyConversionSource } from "./conversions.js";
 import { parseExpense, parseHabit } from "./tracking.js";
 import {
   detectEmailRequest,
@@ -194,10 +194,11 @@ function actionPlan(
   spokenText: string,
   action: AssistantAction,
   patch: MemoryPatch = {},
-  messageAnalysis: MessageAnalysis | null = null
+  messageAnalysis: MessageAnalysis | null = null,
+  sources: AssistantPlan["sources"] = []
 ): AssistantPlan {
   // Performing an action always clears any pending clarification.
-  return { spokenText, action, memoryPatch: { pendingClarification: null, ...patch }, needsExecution: true, messageAnalysis };
+  return { spokenText, action, sources, memoryPatch: { pendingClarification: null, ...patch }, needsExecution: true, messageAnalysis };
 }
 
 // A plan that runs several actions (e.g. add multiple calendar events at once).
@@ -205,12 +206,14 @@ function actionsPlan(
   spokenText: string,
   actions: AssistantAction[],
   patch: MemoryPatch = {},
-  messageAnalysis: MessageAnalysis | null = null
+  messageAnalysis: MessageAnalysis | null = null,
+  sources: AssistantPlan["sources"] = []
 ): AssistantPlan {
   return {
     spokenText,
     action: actions[0] || null,
     actions,
+    sources,
     memoryPatch: { pendingClarification: null, ...patch },
     needsExecution: true,
     messageAnalysis
@@ -668,7 +671,7 @@ Message: ${body}`;
 async function researchMessageBody(
   query: string,
   timeZone: string
-): Promise<{ body: string; event: EventMemory | null }> {
+): Promise<{ body: string; event: EventMemory | null; sources: AssistantPlan["sources"] }> {
   const looksEvent = /\b(game|games|match|matches|fixture|launch|race|fight|bout|concert|show|tournament|final|finals|premiere|kickoff|series|grand prix)\b/i.test(query);
 
   if (looksEvent) {
@@ -686,13 +689,13 @@ async function researchMessageBody(
       const when = formatEventDateTime(event.startDate, timeZone);
       const where = event.location ? ` at ${event.location}` : "";
       const body = `${event.title} is ${when ? `on ${when}` : "coming up"}${where}.`;
-      return { body, event };
+      return { body, event, sources: v.sources || [] };
     }
   }
 
   // Non-event fact (weather, price, score, etc.) — use a concise grounded answer.
   const res = await getStrictWebAnswer(query, { timeZone });
-  return { body: (res.spokenText || "").trim(), event: null };
+  return { body: (res.spokenText || "").trim(), event: null, sources: res.sources || [] };
 }
 
 export async function planShareRequest(state: ConversationState): Promise<AssistantPlan | null> {
@@ -764,7 +767,7 @@ export async function planShareRequest(state: ConversationState): Promise<Assist
   return actionPlan("Opening the share sheet with what I found.", action, {
     lastMentionedEvent: researched.event || undefined,
     lastIntent: "share_content"
-  });
+  }, null, researched.sources);
 }
 
 /* ============================================================================
@@ -807,17 +810,20 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
   // Deterministic, unambiguous answer tools (cheap, no routing ambiguity).
   if (isDirectLocationQuestion(state.message)) {
     const res = await getLocationAnswer(state.deviceLocation);
-    return answerPlan(res.spokenText, { lastIntent: "location_answer" });
+    return answerPlan(res.spokenText, { lastIntent: "location_answer" }, res.sources);
   }
   if (isWeatherQuestion(state.message)) {
     const res = await getWeatherAnswer(state.message, state.deviceLocation, state.timeZone);
-    return answerPlan(res.spokenText, { lastIntent: "weather_answer" });
+    return answerPlan(res.spokenText, { lastIntent: "weather_answer" }, res.sources);
   }
 
   // Unit & currency conversion: exact in code (units) or live ECB rate (currency).
   if (looksLikeConversion(state.message)) {
     const res = await computeConversion(state.message);
-    if (res) return answerPlan(res, { lastIntent: "answer_only" });
+    if (res) {
+      const source = currencyConversionSource(state.message);
+      return answerPlan(res, { lastIntent: source ? "web_search" : "answer_only" }, source ? [{ title: "frankfurter.app", url: source }] : []);
+    }
   }
 
   // Math/calculations: evaluate exactly in code (the model only translates to an
@@ -1261,18 +1267,22 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       // Look up the CURRENT price so the confirmation is glanceable: how far the
       // asset is from the target right now.
       let nowLine = "";
+      let priceSources: AssistantPlan["sources"] = [];
       try {
         const cur = await fetchAssetPrice(price.query);
         if (cur) {
           const pct = price.target > 0 ? Math.round(Math.abs((price.target - cur.price) / price.target) * 100) : 0;
           const curStr = `$${cur.price.toLocaleString("en-US", { maximumFractionDigits: cur.price < 1 ? 6 : 2 })}`;
           nowLine = ` It's ${curStr} now — about ${pct}% ${price.direction === "above" ? "to go" : "above"}.`;
+          priceSources = cur.sources;
         }
       } catch { /* best effort */ }
       return actionPlan(
         `Got it — I'll alert you when ${price.label} ${dir} ${tgt}.${nowLine}`,
         action,
-        { lastIntent: "alert_create" }
+        { lastIntent: "alert_create" },
+        null,
+        priceSources
       );
     }
     const score = parseScoreAlert(state.message);
@@ -1296,7 +1306,9 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         return actionsPlan(
           `It's live now (${snap.line1}) — I've put the ${score.label} on your lock screen and I'll keep you posted ${what}.`,
           [la, action],
-          { lastIntent: "alert_create" }
+          { lastIntent: "alert_create" },
+          null,
+          snap.sources
         );
       }
       return actionPlan(`You got it — I'll keep you posted ${what}.`, action, { lastIntent: "alert_create" });
@@ -1327,7 +1339,13 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       action.appUrl = pkg.url;
       action.fallbackUrl = pkg.url;
       const openWhere = pkg.carrier ? `open ${pkg.carrier}` : "open the carrier";
-      return actionPlan(`Tracking ${who} on your lock screen and Dynamic Island — I'll keep the status updated, and you can tap the card to ${openWhere} for full details.`, action, { lastIntent: "live_activity" });
+      return actionPlan(
+        `Tracking ${who} on your lock screen and Dynamic Island — I'll keep the status updated, and you can tap the card to ${openWhere} for full details.`,
+        action,
+        { lastIntent: "live_activity" },
+        null,
+        snap?.sources?.length ? snap.sources : [{ title: pkg.carrier || "carrier", url: pkg.url }]
+      );
     }
   }
 
@@ -1345,7 +1363,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         const leg = (s: string) => s.replace("|", ", "); // "6:00p|exp 6:25p" -> "6:00p, exp 6:25p"
         const dep = snap.line1 ? ` Departs ${leg(snap.line1)}.` : "";
         const arr = snap.line2 ? ` Arrives ${leg(snap.line2)}.` : "";
-        return answerPlan(`${snap.title} — ${snap.status}.${dep}${arr}`.trim(), { lastIntent: "web_search" });
+        return answerPlan(`${snap.title} — ${snap.status}.${dep}${arr}`.trim(), { lastIntent: "web_search" }, snap.sources);
       }
     }
     const res = await getStrictWebAnswer(state.message, { persona: state.userProfile, timeZone: state.timeZone, voiceMode: state.voiceMode });
@@ -1408,7 +1426,8 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
   // the LLM so a link is never answered from the model's stale memory.
   if (looksLikeUrlSummarize(state.message)) {
     const summary = await summarizeUrl(state);
-    if (summary) return answerPlan(summary, { lastIntent: "web_search" });
+    const url = extractUrl(state.message);
+    if (summary) return answerPlan(summary, { lastIntent: "web_search" }, url ? [{ title: "Web source", url }] : []);
   }
 
   // "Cook me chicken parmesan" / "walk me through carbonara" -> a guided recipe
@@ -1458,7 +1477,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
             : track.kind === "flight"
             ? `Tracking ${title} — ${snap.status}. Departure and arrival times are live on your lock screen and Dynamic Island.`
             : `Tracking ${title}. I'll keep the score live on your lock screen and Dynamic Island.`;
-        return actionPlan(spoken, action, { lastIntent: "live_activity" });
+        return actionPlan(spoken, action, { lastIntent: "live_activity" }, null, snap.sources);
       }
       // A recognized tracker must never fall through into another classifier or
       // the model. Be explicit and start nothing when verified data is unavailable.
@@ -1526,15 +1545,15 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
   // search. Fall through to grounded web if the API can't resolve it.
   if (!isActionCommand && looksLikeCryptoQuestion(state.message)) {
     const res = await getCryptoPrice(state.message);
-    if (res) return answerPlan(res.spokenText, { lastIntent: "web_search" });
+    if (res) return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
   }
   if (!isActionCommand && looksLikeStockQuestion(state.message)) {
     const res = await getStockPrice(state.message);
-    if (res) return answerPlan(res.spokenText, { lastIntent: "web_search" });
+    if (res) return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
   }
   if (!isActionCommand && looksLikeLotteryQuestion(state.message)) {
     const res = await getLotteryAnswer(state.message);
-    if (res) return answerPlan(res.spokenText, { lastIntent: "web_search" });
+    if (res) return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
   }
 
   if (!isActionCommand && (looksLikeFreshFactQuestion(state.message) || looksLikeLiveInfoQuestion(state.message))) {
@@ -1571,7 +1590,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         return actionsPlan(`Added ${actions.length} events to your calendar.`, actions, {
           lastMentionedEvent: last,
           lastIntent: "calendar_create"
-        });
+        }, null, verifiedList.flatMap((event) => event.sources || []));
       }
       if (verifiedList.length === 1) {
         const v = verifiedList[0];
@@ -1584,7 +1603,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
           source: "web",
           confidence: 0.9
         };
-        return actionPlan("", eventToCalendarAction(event), { lastMentionedEvent: event, lastIntent: "calendar_create" });
+        return actionPlan("", eventToCalendarAction(event), { lastMentionedEvent: event, lastIntent: "calendar_create" }, null, v.sources);
       }
       return answerPlan("I couldn't find those events to add to your calendar yet.", { lastIntent: "event_lookup" });
     }
@@ -1600,11 +1619,12 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         source: "web",
         confidence: 0.9
       };
-      return actionPlan("", eventToCalendarAction(event), { lastMentionedEvent: event, lastIntent: "calendar_create" });
+      return actionPlan("", eventToCalendarAction(event), { lastMentionedEvent: event, lastIntent: "calendar_create" }, null, verified.sources);
     }
     return answerPlan(
       verified.spokenText || "I couldn't find that event's date and time to add it yet.",
-      { lastIntent: "event_lookup" }
+      { lastIntent: "event_lookup" },
+      verified.sources
     );
   }
 
@@ -1654,12 +1674,12 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
   switch (plan.intent) {
     case "weather_answer": {
       const res = await getWeatherAnswer(state.message, state.deviceLocation, state.timeZone);
-      return answerPlan(res.spokenText, { lastIntent: "weather_answer" });
+      return answerPlan(res.spokenText, { lastIntent: "weather_answer" }, res.sources);
     }
 
     case "location_answer": {
       const res = await getLocationAnswer(state.deviceLocation);
-      return answerPlan(res.spokenText, { lastIntent: "location_answer" });
+      return answerPlan(res.spokenText, { lastIntent: "location_answer" }, res.sources);
     }
 
     // Device actions the LLM resolved from free-form phrasing (the deterministic
@@ -1733,7 +1753,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         confidence: 0.9
       };
       if (plan.wantsCalendar) {
-        return actionPlan("", eventToCalendarAction(event), { lastMentionedEvent: event, lastIntent: "calendar_create" });
+        return actionPlan("", eventToCalendarAction(event), { lastMentionedEvent: event, lastIntent: "calendar_create" }, null, verified.sources);
       }
       // Just answering: state the time in the USER's timezone (the event's
       // absolute time formatted for where they are), not the venue's.
@@ -1741,7 +1761,8 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       const where = event.location ? ` at ${event.location}` : "";
       return answerPlan(
         whenLocal ? `${event.title} is on ${whenLocal}${where}.` : verified.spokenText || `The next one is ${event.title}.`,
-        { lastMentionedEvent: event, lastIntent: "event_lookup" }
+        { lastMentionedEvent: event, lastIntent: "event_lookup" },
+        verified.sources
       );
     }
 
@@ -1960,13 +1981,14 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
               lastMentionedContact: contactFromAction(msgAction, plan.contact),
               lastIntent: "compose_message"
             },
-            messageAnalysis
+            messageAnalysis,
+            r.sources
           );
         }
         return actionPlan(`Opening a text draft to ${name} with the details.`, msgAction, {
           lastMentionedContact: contactFromAction(msgAction, plan.contact),
           lastIntent: "compose_message"
-        }, messageAnalysis);
+        }, messageAnalysis, r.sources);
       }
 
       if (!body) {
@@ -2063,13 +2085,15 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
               lastMentionedEvent: r.event,
               lastMentionedContact: contactFromAction(emailAction, plan.contact),
               lastIntent: "compose_email"
-            }
+            },
+            null,
+            r.sources
           );
         }
         return actionPlan(`Emailing ${name} the details.`, emailAction, {
           lastMentionedContact: contactFromAction(emailAction, plan.contact),
           lastIntent: "compose_email"
-        });
+        }, null, r.sources);
       }
 
       if (!body) {

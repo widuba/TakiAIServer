@@ -19,6 +19,7 @@ import { espnSportsSnapshotFromResponse, parseTrackCommand, ship24StatusFromResp
 import { looksLikeComparisonRequest, looksLikeFlightQuestion, looksLikeStockQuestion } from "../src/tools.js";
 import { parseUserPersona, personaPromptBlock } from "../src/persona.js";
 import { normalizeChatTitle } from "../src/chatTitle.js";
+import { currencyConversionSource } from "../src/conversions.js";
 
 function stateFor(message: string, turns: { role: "user" | "assistant"; text: string }[] = []) {
   return buildConversationState(message, JSON.stringify({ chatMessages: turns }), undefined, "America/New_York");
@@ -443,6 +444,14 @@ test("grounded sources survive response finalization", () => {
     needsExecution: false
   }, stateFor("what is current?"));
   assert.deepEqual(response.sources, sources);
+});
+
+test("live currency conversions expose the exact rate endpoint", () => {
+  assert.equal(
+    currencyConversionSource("Convert 100 USD to EUR"),
+    "https://api.frankfurter.app/latest?from=USD&to=EUR"
+  );
+  assert.equal(currencyConversionSource("Convert 5 miles to kilometers"), null);
 });
 
 test("chat titles are short and stripped of model formatting", () => {
