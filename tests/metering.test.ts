@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { geminiListPriceUsd, googleSearchListPriceUsd, sttCostUsd, ttsCostUsd } from "../src/metering.js";
-import { FREE_VOICE_PER_CYCLE, TIERS, worstCaseContributionUsd } from "../src/credits.js";
+import { ATTACHMENT_BASE_CREDITS, FREE_VOICE_PER_CYCLE, TIERS, attachmentBaseCostCredits, isFreeVoice, worstCaseContributionUsd } from "../src/credits.js";
 import { detectPersonalSearch } from "../src/planner.js";
 
 test("one credit always represents exactly $0.001 of vendor usage", () => {
-  assert.equal(ttsCostUsd(1000), 0.10);
-  assert.equal(ttsCostUsd(200), 0.02);
+  assert.equal(ttsCostUsd(1000), 0.05);
+  assert.equal(ttsCostUsd(200), 0.01);
   assert.equal(sttCostUsd(3_600_000), 0.22);
   assert.equal(sttCostUsd(30_000), 0.22 / 120);
   assert.equal(
@@ -42,9 +42,20 @@ test("Pro remains the highest-contribution paid tier at worst-case included usag
   const highest = contributions.reduce((best, current) => current.contribution > best.contribution ? current : best);
   assert.equal(highest.tier, "pro", JSON.stringify(contributions));
   assert.ok(worstCaseContributionUsd("pro") >= 5.7);
-  assert.equal(FREE_VOICE_PER_CYCLE.plus_voice, 300);
-  assert.equal(FREE_VOICE_PER_CYCLE.pro, 300);
+  assert.equal(FREE_VOICE_PER_CYCLE.plus_voice, 150);
+  assert.equal(FREE_VOICE_PER_CYCLE.pro, 150);
   assert.equal(TIERS.pro.creditsPerCycle, 15_000);
+});
+
+test("voice continues against credits after included turns and binary attachments have a forty-credit floor", () => {
+  assert.equal(isFreeVoice("free", 100, 0, 4), true);
+  assert.equal(isFreeVoice("free", 100, 0, 5), false);
+  assert.equal(isFreeVoice("plus_voice", 1000, 149), true);
+  assert.equal(isFreeVoice("plus_voice", 1000, 150), false);
+  assert.equal(ATTACHMENT_BASE_CREDITS, 40);
+  assert.equal(attachmentBaseCostCredits([
+    { kind: "image" }, { kind: "file" }, { kind: "url" }, { kind: "text" }
+  ]), 80);
 });
 
 test("unified personal search only captures explicit broad searches", () => {

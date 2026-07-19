@@ -250,12 +250,12 @@ test("voice variability maps inversely to safe TTS stability", () => {
   assert.equal(stabilityForVariability(1), 0.2);
 });
 
-test("voice uses current multilingual ElevenLabs models", () => {
-  assert.equal(TTS_MODEL, "eleven_multilingual_v2");
+test("voice uses low-latency Flash v2.5 with current transcription", () => {
+  assert.equal(TTS_MODEL, "eleven_flash_v2_5");
   assert.equal(STT_MODEL, "scribe_v2");
   assert.equal(billableAudioDurationMs(Buffer.alloc(4_000).toString("base64")), 1_000);
   assert.equal(billableAudioDurationMs(Buffer.alloc(4_000).toString("base64"), 1_200), 1_200);
-  assert.equal(billableAudioDurationMs(Buffer.alloc(4_000).toString("base64"), 60_000), 30_000);
+  assert.equal(billableAudioDurationMs(Buffer.alloc(4_000).toString("base64"), 60_000), 60_000);
 });
 
 test("voice speaks large numeric answers naturally without changing its budget", () => {
@@ -534,6 +534,14 @@ test("voice fallback always fits without an ellipsis", () => {
   assert.ok(result.length <= VOICE_MAX_CHARS);
   assert.doesNotMatch(result, /(?:\.\.\.|…)/);
   assert.match(result, /[.!?]$/);
+  assert.equal(VOICE_MAX_CHARS, 280);
+
+  const longList = `Common examples include things such as ${"dogs, cats, birds, and fish, ".repeat(20)}with many more beyond those.`;
+  const complete = briefForVoice(longList);
+  assert.equal(complete, "Common examples include things such as dogs, cats, and birds.");
+  assert.ok(complete.length <= VOICE_MAX_CHARS);
+  assert.doesNotMatch(complete, /(?:such as|including|for example|like|,|;|:)\s*$/i);
+  assert.match(complete, /[.!?]$/);
 });
 
 test("all common YouTube links route through video input", () => {

@@ -1,3 +1,4 @@
+import { MAX_VOICE_INPUT_MS } from "./credits.js";
 import { withTimeout } from "./util.js";
 
 /* ============================================================================
@@ -7,11 +8,11 @@ import { withTimeout } from "./util.js";
  * ==========================================================================*/
 
 const ELEVEN_KEY = process.env.ELEVENLABS_API_KEY || "";
-// A good default voice. Taki intentionally uses Eleven Multilingual v2 for
-// higher-fidelity, multilingual delivery instead of the cheaper Flash model.
+// A good default voice. Flash v2.5 keeps conversational turns low-latency while
+// retaining multilingual support; Taki normalizes numbers before synthesis.
 const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM"; // "Rachel"
 export const STT_MODEL = "scribe_v2";
-export const TTS_MODEL = "eleven_multilingual_v2";
+export const TTS_MODEL = "eleven_flash_v2_5";
 
 export function isVoiceConfigured(): boolean {
   return !!ELEVEN_KEY;
@@ -20,10 +21,10 @@ export function isVoiceConfigured(): boolean {
 // New app builds report AVAudioRecorder duration directly. The byte estimate is
 // a server-side floor for older or modified clients recording 32 kbps AAC.
 export function billableAudioDurationMs(audioBase64: string, reportedMs?: number): number {
-  const reported = Math.max(0, Math.min(30_000, Math.floor(Number(reportedMs) || 0)));
+  const reported = Math.max(0, Math.min(MAX_VOICE_INPUT_MS, Math.floor(Number(reportedMs) || 0)));
   const padding = audioBase64.endsWith("==") ? 2 : audioBase64.endsWith("=") ? 1 : 0;
   const bytes = Math.max(0, Math.floor(audioBase64.length * 3 / 4) - padding);
-  const estimated = Math.max(0, Math.min(30_000, Math.round(bytes / 4)));
+  const estimated = Math.max(0, Math.min(MAX_VOICE_INPUT_MS, Math.round(bytes / 4)));
   return Math.max(reported, estimated);
 }
 
@@ -187,7 +188,7 @@ export async function synthesize(text: string, voiceId?: string, variability?: n
   const vid = voiceId && voiceId.trim() ? voiceId.trim() : VOICE_ID;
   const spokenText = normalizeTextForSpeech(text);
   try {
-    // 44.1 kHz / 64 kbps keeps Multilingual v2 clear without a large transfer.
+    // 44.1 kHz / 64 kbps keeps speech clear without a large transfer.
     const res: any = await withTimeout(
       fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(vid)}?output_format=mp3_44100_64`, {
         method: "POST",

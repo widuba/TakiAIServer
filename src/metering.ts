@@ -1,9 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 export const CREDIT_USD = 0.001;
-// Eleven Multilingual v2 API list price. Flash/Turbo is $0.05/1K, but Taki
-// deliberately uses the higher-quality multilingual model.
-export const TTS_USD_PER_1K_CHARS = 0.10;
+// Eleven Flash v2.5 API list price.
+export const TTS_USD_PER_1K_CHARS = 0.05;
 export const STT_USD_PER_HOUR = 0.22;
 export const GEMINI_3_SEARCH_USD_PER_QUERY = 0.014;
 export const GEMINI_2_SEARCH_USD_PER_GROUNDED_PROMPT = 0.035;

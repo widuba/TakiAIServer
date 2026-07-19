@@ -42,19 +42,27 @@ export const TIERS: Record<Tier, TierConfig> = {
   pro:        { label: "Pro",        creditsPerCycle: 15000, priceUsd: 29.99, voiceIncluded: true,  extraCreditDiscount: 0.2 }
 };
 
-// Voice pricing. Plus Voice / Pro get a per-cycle allowance of FREE voice turns
-// (no surcharge) out of their base subscription credits; beyond that allowance,
-// or on top-ups / non-voice tiers, voice costs per spoken character. Paid voice
-// uses the actual $0.10/1k-character Multilingual v2 cost from metering.ts.
-// Sub-credit fractions carry forward, so short replies are never rounded up.
-export const FREE_VOICE_PER_CYCLE: Record<Tier, number> = { free: 0, plus: 0, plus_voice: 300, pro: 300 };
+// Voice pricing. Plus Voice / Pro get a per-cycle allowance of included speech;
+// after that, voice continues at list-price STT/TTS cost against normal credits.
+// Free gets five lifetime included turns, then follows that same paid path.
+export const FREE_VOICE_PER_CYCLE: Record<Tier, number> = { free: 0, plus: 0, plus_voice: 150, pro: 150 };
+export const FREE_VOICE_LIMIT = 5;
 export const APP_STORE_COMMISSION_RATE = 0.15;
-export const MAX_VOICE_RESPONSE_CHARS = 140;
-export const MAX_VOICE_INPUT_MS = 30_000;
+export const MAX_VOICE_RESPONSE_CHARS = 280;
+export const MAX_VOICE_INPUT_MS = 60_000;
+
+// Images and uploaded files have a predictable multimodal processing floor in
+// addition to measured Gemini usage. URLs and pasted text do not pay this fee.
+export const ATTACHMENT_BASE_CREDITS = 40;
+export function attachmentBaseCostCredits(attachments: Array<{ kind?: unknown }>): number {
+  return attachments.filter((attachment) => attachment?.kind === "image" || attachment?.kind === "file").length
+    * ATTACHMENT_BASE_CREDITS;
+}
 
 // Is this voice turn covered by the free-voice allowance? Only on an included
 // tier, only while base subscription credits remain, and only under the cap.
-export function isFreeVoice(tier: Tier, baseCredits: number, voiceCycleUsed: number): boolean {
+export function isFreeVoice(tier: Tier, baseCredits: number, voiceCycleUsed: number, voiceLifetimeUsed = 0): boolean {
+  if (tier === "free") return voiceLifetimeUsed < FREE_VOICE_LIMIT;
   const cap = FREE_VOICE_PER_CYCLE[tier] || 0;
   return cap > 0 && baseCredits > 0 && voiceCycleUsed < cap;
 }
@@ -84,9 +92,6 @@ export interface CreditGrant {
 // Minimum balance required to ask anything (cut users off before they hit 0,
 // so a request can't overspend into a negative balance).
 export const MIN_REQUEST_CREDITS = 1;
-// Free tier gets a hard cap of voice questions, independent of credits.
-export const FREE_VOICE_LIMIT = 5;
-
 export interface CreditAccount {
   deviceId: string;
   tier: Tier;
@@ -101,6 +106,7 @@ export interface CreditAccount {
   voiceCycleCount?: number;
   dailyUsage?: { key: string; used: number };
   monthlyUsage?: { key: string; used: number };
+  attachmentUsage?: { key: string; used: number };
   topupAllowances?: { id: string; amount: number; expiresAt: number }[];
   retiredSubscriptionIds?: string[];
   // Unbilled vendor cost below one credit, stored as integer millionths of a
@@ -129,9 +135,12 @@ export interface CreditSummary {
   baseCredits: number;
   // FREE voice turns used this cycle (for the per-cycle allowance).
   voiceCycleUsed: number;
+  voiceAllowanceUsed: number;
+  voiceAllowanceLimit: number;
   additionalCredits: number;
   daily: UsageWindow;
   monthly: UsageWindow;
+  attachment: UsageWindow;
   limitReached: boolean;
   limitReason: "daily" | "monthly" | null;
   duplicateSubscriptionNeedsCancellation: boolean;
@@ -223,6 +232,7 @@ function rollUsageWindows(acct: CreditAccount, now = Date.now()): void {
   const month = utcMonthKey(now);
   if (acct.dailyUsage?.key !== day) acct.dailyUsage = { key: day, used: 0 };
   if (acct.monthlyUsage?.key !== month) acct.monthlyUsage = { key: month, used: 0 };
+  if (acct.attachmentUsage?.key !== month) acct.attachmentUsage = { key: month, used: 0 };
 }
 
 export function usageLimitsFor(tier: Tier, additionalCredits: number): { daily: number; monthly: number } {
@@ -257,6 +267,12 @@ function summarize(acct: CreditAccount): CreditSummary {
   const limits = usageLimitsFor(acct.tier, additionalCredits);
   const daily = usageWindow(acct.dailyUsage?.used || 0, limits.daily, nextUTCDay(now));
   const monthly = usageWindow(acct.monthlyUsage?.used || 0, limits.monthly, nextUTCMonth(now));
+  const attachment = usageWindow(acct.attachmentUsage?.used || 0, limits.monthly, nextUTCMonth(now));
+  const voiceAllowanceLimit = acct.tier === "free" ? FREE_VOICE_LIMIT : FREE_VOICE_PER_CYCLE[acct.tier] || 0;
+  const voiceAllowanceUsed = Math.min(
+    voiceAllowanceLimit,
+    acct.tier === "free" ? acct.voiceCount || 0 : acct.voiceCycleCount || 0
+  );
   const limitReason = daily.used >= daily.limit ? "daily" : monthly.used >= monthly.limit ? "monthly" : null;
   return {
     tier: acct.tier,
@@ -267,9 +283,12 @@ function summarize(acct: CreditAccount): CreditSummary {
     voiceUsed: acct.voiceCount || 0,
     baseCredits: live.filter((g) => g.source.startsWith("subscription:")).reduce((s, g) => s + g.remaining, 0),
     voiceCycleUsed: acct.voiceCycleCount || 0,
+    voiceAllowanceUsed,
+    voiceAllowanceLimit,
     additionalCredits,
     daily,
     monthly,
+    attachment,
     limitReached: limitReason !== null,
     limitReason,
     duplicateSubscriptionNeedsCancellation: (acct.retiredSubscriptionIds || []).length > 0
@@ -388,7 +407,11 @@ export async function spend(deviceId: string, cost: number): Promise<CreditSumma
 
 // Spend exact list-price vendor usage without rounding every request up. Costs
 // below one credit accumulate until they reach exactly $0.001.
-export async function spendUsageUsd(deviceId: string, costUsd: number): Promise<CreditSummary & { spent: number; usageUsd: number }> {
+export async function spendUsageUsd(
+  deviceId: string,
+  costUsd: number,
+  category?: "attachment"
+): Promise<CreditSummary & { spent: number; usageUsd: number }> {
   return withLock(deviceId, async () => {
     const acct = await load(deviceId);
     ensureStarter(acct);
@@ -412,6 +435,7 @@ export async function spendUsageUsd(deviceId: string, costUsd: number): Promise<
     rollUsageWindows(acct, now);
     acct.dailyUsage!.used += actualSpent;
     acct.monthlyUsage!.used += actualSpent;
+    if (category === "attachment") acct.attachmentUsage!.used += actualSpent;
     await save(acct);
     return { ...summarize(acct), spent: actualSpent, usageUsd: costMicros / 1_000_000 };
   });

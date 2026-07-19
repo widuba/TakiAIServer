@@ -372,26 +372,51 @@ export function extractReminderTitle(message: string) {
   return titleCaseTask(title);
 }
 
-// Hard-clamp a spoken reply to be SUPER short for voice mode. Voice replies are
-// read aloud, so length = TTS cost + latency + a rambling assistant. We keep at
-// most the first 1–2 sentences and ~180 chars. Applied at the single choke point
+// Hard-clamp a spoken reply for voice mode. Voice replies are read aloud, so
+// length = TTS cost + latency. Applied at the single choke point
 // (runAssistant) so it catches EVERY answer path (general, live/web, lottery,
 // inline planner text, action confirmations) — not just one generator.
 // HARD length cap for spoken replies — keeps voice fast to synthesize + read AND
 // bounds the per-answer TTS cost (so included-voice tiers can't run up the bill).
-export const VOICE_MAX_CHARS = 140;
+export const VOICE_MAX_CHARS = 280;
 export function briefForVoice(text: string): string {
   const t = String(text || "").trim().replace(/[.…]+$/g, "").trim();
   if (!t) return t;
   const sentences = t.match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g) || [t];
-  // One sentence if it covers the gist; a second only if the first is very short.
-  let out = sentences[0]?.trim() || t;
-  if (out.length < 70 && sentences[1]) out = (out + " " + sentences[1].trim()).trim();
-  // Safety fallback only. The primary voice path asks Gemini to rewrite before
-  // synthesis; this guarantees even a failed rewrite never exposes an ellipsis.
-  if (out.length > VOICE_MAX_CHARS) {
-    out = out.slice(0, VOICE_MAX_CHARS - 1).replace(/\s+\S*$/, "").replace(/[,:;\-\s]+$/g, "").trim();
-    if (out && !/[.!?]$/.test(out)) out += ".";
+  let out = "";
+  for (const sentence of sentences.slice(0, 2)) {
+    const candidate = `${out}${out ? " " : ""}${sentence.trim()}`.trim();
+    if (candidate.length > VOICE_MAX_CHARS) break;
+    out = candidate;
   }
+  if (!out) {
+    const firstSentence = sentences[0]?.trim() || t;
+    const listIntro = [...firstSentence.matchAll(/\b(?:such as|including|for example|like)\b/gi)].at(-1);
+    if (listIntro?.index != null && listIntro.index >= 12) {
+      const prefixEnd = listIntro.index + listIntro[0].length;
+      const prefix = firstSentence.slice(0, prefixEnd).replace(/[,:;\-\s]+$/g, "").trim();
+      const items = firstSentence.slice(prefixEnd)
+        .split(",")
+        .map((item) => item.replace(/^\s*(?:and|or)\s+/i, "").replace(/[.!?]+$/g, "").trim())
+        .filter((item, index, all) => item.length > 0 && item.length <= 60 && all.indexOf(item) === index)
+        .slice(0, 3);
+      if (items.length >= 2) {
+        const list = items.length === 2 ? `${items[0]} and ${items[1]}` : `${items[0]}, ${items[1]}, and ${items[2]}`;
+        const candidate = `${prefix} ${list}.`;
+        if (candidate.length <= VOICE_MAX_CHARS) return candidate;
+      }
+    }
+    let fragment = t.slice(0, VOICE_MAX_CHARS - 1).replace(/\s+\S*$/, "").trim();
+    // An unfinished example list sounds especially broken aloud. Prefer the
+    // complete lead-in over stopping after a few comma-separated examples.
+    const fragmentListIntro = [...fragment.matchAll(/\b(?:such as|including|for example|like)\b/gi)].at(-1);
+    if (fragmentListIntro?.index && fragmentListIntro.index >= 32) fragment = fragment.slice(0, fragmentListIntro.index).trim();
+    fragment = fragment
+      .replace(/(?:\s+|^)(?:and|or|but|because|which|that|with|including|such as|for example|like)\s*$/i, "")
+      .replace(/[,:;\-\s]+$/g, "")
+      .trim();
+    out = fragment;
+  }
+  if (out && !/[.!?]$/.test(out)) out += ".";
   return out || "I don't have a short answer yet.";
 }

@@ -2626,7 +2626,8 @@ Rules for conversation history:
   const voiceBlock = state.voiceMode
     ? `
 VOICE MODE — this reply is READ ALOUD, so brevity is mandatory:
-- Answer in ONE short sentence (a second only if truly necessary). Aim for under ~30 words.
+- Answer in ONE complete short sentence (a second only if truly necessary). Stay under 240 characters.
+- Never begin a list or explanation that will not fit. Finish the thought naturally; never end on a comma, connector, or partial example.
 - No lists, no numbered steps, no URLs, no spelling things out — just the spoken answer.
 - Still sound fully in character, but trim every non-essential word. Short does NOT mean flat.
 `
