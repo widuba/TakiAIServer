@@ -106,7 +106,6 @@ export interface CreditAccount {
   voiceCycleCount?: number;
   dailyUsage?: { key: string; used: number };
   monthlyUsage?: { key: string; used: number };
-  attachmentUsage?: { key: string; used: number };
   topupAllowances?: { id: string; amount: number; expiresAt: number }[];
   retiredSubscriptionIds?: string[];
   // Unbilled vendor cost below one credit, stored as integer millionths of a
@@ -140,7 +139,6 @@ export interface CreditSummary {
   additionalCredits: number;
   daily: UsageWindow;
   monthly: UsageWindow;
-  attachment: UsageWindow;
   limitReached: boolean;
   limitReason: "daily" | "monthly" | null;
   duplicateSubscriptionNeedsCancellation: boolean;
@@ -232,7 +230,6 @@ function rollUsageWindows(acct: CreditAccount, now = Date.now()): void {
   const month = utcMonthKey(now);
   if (acct.dailyUsage?.key !== day) acct.dailyUsage = { key: day, used: 0 };
   if (acct.monthlyUsage?.key !== month) acct.monthlyUsage = { key: month, used: 0 };
-  if (acct.attachmentUsage?.key !== month) acct.attachmentUsage = { key: month, used: 0 };
 }
 
 export function usageLimitsFor(tier: Tier, additionalCredits: number): { daily: number; monthly: number } {
@@ -267,7 +264,6 @@ function summarize(acct: CreditAccount): CreditSummary {
   const limits = usageLimitsFor(acct.tier, additionalCredits);
   const daily = usageWindow(acct.dailyUsage?.used || 0, limits.daily, nextUTCDay(now));
   const monthly = usageWindow(acct.monthlyUsage?.used || 0, limits.monthly, nextUTCMonth(now));
-  const attachment = usageWindow(acct.attachmentUsage?.used || 0, limits.monthly, nextUTCMonth(now));
   const voiceAllowanceLimit = acct.tier === "free" ? FREE_VOICE_LIMIT : FREE_VOICE_PER_CYCLE[acct.tier] || 0;
   const voiceAllowanceUsed = Math.min(
     voiceAllowanceLimit,
@@ -288,7 +284,6 @@ function summarize(acct: CreditAccount): CreditSummary {
     additionalCredits,
     daily,
     monthly,
-    attachment,
     limitReached: limitReason !== null,
     limitReason,
     duplicateSubscriptionNeedsCancellation: (acct.retiredSubscriptionIds || []).length > 0
@@ -407,11 +402,7 @@ export async function spend(deviceId: string, cost: number): Promise<CreditSumma
 
 // Spend exact list-price vendor usage without rounding every request up. Costs
 // below one credit accumulate until they reach exactly $0.001.
-export async function spendUsageUsd(
-  deviceId: string,
-  costUsd: number,
-  category?: "attachment"
-): Promise<CreditSummary & { spent: number; usageUsd: number }> {
+export async function spendUsageUsd(deviceId: string, costUsd: number): Promise<CreditSummary & { spent: number; usageUsd: number }> {
   return withLock(deviceId, async () => {
     const acct = await load(deviceId);
     ensureStarter(acct);
@@ -435,7 +426,6 @@ export async function spendUsageUsd(
     rollUsageWindows(acct, now);
     acct.dailyUsage!.used += actualSpent;
     acct.monthlyUsage!.used += actualSpent;
-    if (category === "attachment") acct.attachmentUsage!.used += actualSpent;
     await save(acct);
     return { ...summarize(acct), spent: actualSpent, usageUsd: costMicros / 1_000_000 };
   });

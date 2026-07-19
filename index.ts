@@ -541,7 +541,7 @@ app.post("/api/vision", async (req, res) => {
         res.json({ spokenText: usageMessageForReason(limitReason), credits: { ...fresh, cost: 0 } });
         return;
       }
-      const s = await spendUsageUsd(deviceId, usageUsd, "attachment");
+      const s = await spendUsageUsd(deviceId, usageUsd);
       if (voiceMode && tier === "free") await noteVoiceQuestion(deviceId);
       await noteSpend(deviceId, s.spent);
       res.json({ spokenText, credits: { ...s, cost: s.spent } });
@@ -611,7 +611,7 @@ app.post("/api/attachments", async (req, res) => {
       res.json({ spokenText: usageMessageForReason(limitReason), sources: answer.sources, credits: { ...fresh, cost: 0 } });
       return;
     }
-    const spent = await spendUsageUsd(deviceId, usageUsd, attachmentCredits ? "attachment" : undefined);
+    const spent = await spendUsageUsd(deviceId, usageUsd);
     if (voiceMode && tier === "free") await noteVoiceQuestion(deviceId);
     await noteSpend(deviceId, spent.spent);
     res.json({ spokenText: answer.text, sources: answer.sources, credits: { ...spent, cost: spent.spent } });
