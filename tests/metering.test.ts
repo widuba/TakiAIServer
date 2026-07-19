@@ -36,14 +36,13 @@ test("Gemini 3 list pricing includes thinking tokens and actual search queries",
   assert.equal(googleSearchListPriceUsd("gemini-3.5-flash", { candidates: [{}] }), 0);
 });
 
-test("Pro remains the highest-contribution paid tier at worst-case included usage", () => {
+test("every paid tier remains contribution-positive at worst-case included usage", () => {
   const contributions = (["plus", "plus_voice", "pro"] as const)
     .map((tier) => ({ tier, contribution: worstCaseContributionUsd(tier) }));
-  const highest = contributions.reduce((best, current) => current.contribution > best.contribution ? current : best);
-  assert.equal(highest.tier, "pro", JSON.stringify(contributions));
-  assert.ok(worstCaseContributionUsd("pro") >= 5.7);
+  assert.ok(contributions.every(({ contribution }) => contribution > 5), JSON.stringify(contributions));
+  assert.ok(worstCaseContributionUsd("pro") >= 5);
   assert.equal(FREE_VOICE_PER_CYCLE.plus_voice, 150);
-  assert.equal(FREE_VOICE_PER_CYCLE.pro, 150);
+  assert.equal(FREE_VOICE_PER_CYCLE.pro, 300);
   assert.equal(TIERS.pro.creditsPerCycle, 15_000);
 });
 

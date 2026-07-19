@@ -45,7 +45,7 @@ export const TIERS: Record<Tier, TierConfig> = {
 // Voice pricing. Plus Voice / Pro get a per-cycle allowance of included speech;
 // after that, voice continues at list-price STT/TTS cost against normal credits.
 // Free gets five lifetime included turns, then follows that same paid path.
-export const FREE_VOICE_PER_CYCLE: Record<Tier, number> = { free: 0, plus: 0, plus_voice: 150, pro: 150 };
+export const FREE_VOICE_PER_CYCLE: Record<Tier, number> = { free: 0, plus: 0, plus_voice: 150, pro: 300 };
 export const FREE_VOICE_LIMIT = 5;
 export const APP_STORE_COMMISSION_RATE = 0.15;
 export const MAX_VOICE_RESPONSE_CHARS = 280;
