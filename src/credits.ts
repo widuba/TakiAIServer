@@ -22,6 +22,7 @@ export { CREDIT_USD } from "./metering.js";
 
 export const GRANT_EXPIRY_DAYS = 90;      // credits expire 90 days after purchase
 export const FREE_STARTER_CREDITS = 100;  // a fresh device gets this once, so the app works pre-subscription
+const NON_EXPIRING_GRANT_DATE = Date.UTC(9999, 11, 31);
 
 export type Tier = "free" | "plus" | "plus_voice" | "pro";
 
@@ -37,9 +38,9 @@ export interface TierConfig {
 export const TIERS: Record<Tier, TierConfig> = {
   free:       { label: "Free",       creditsPerCycle: 0,     priceUsd: 0,     voiceIncluded: false, extraCreditDiscount: 0 },
   plus:       { label: "Plus",       creditsPerCycle: 3000,  priceUsd: 9.99,  voiceIncluded: false, extraCreditDiscount: 0 },
-  plus_voice: { label: "Plus Voice", creditsPerCycle: 4000,  priceUsd: 14.99, voiceIncluded: true,  extraCreditDiscount: 0 },
+  plus_voice: { label: "Plus Voice", creditsPerCycle: 4000,  priceUsd: 14.99, voiceIncluded: true,  extraCreditDiscount: 0.2 },
   // Pro now includes voice (on base credits only, like Plus Voice).
-  pro:        { label: "Pro",        creditsPerCycle: 15000, priceUsd: 29.99, voiceIncluded: true,  extraCreditDiscount: 0.2 }
+  pro:        { label: "Pro",        creditsPerCycle: 15000, priceUsd: 29.99, voiceIncluded: true,  extraCreditDiscount: 0.4 }
 };
 
 // Voice pricing. Plus Voice / Pro get a per-cycle allowance of included speech;
@@ -99,6 +100,8 @@ export interface CreditAccount {
   starterGiven?: boolean;
   // Billing-period keys already granted (StoreKit), so a renewal grants once.
   processedTx?: string[];
+  // Consumable StoreKit transactions are permanent and must only grant once.
+  processedConsumableTx?: string[];
   // Lifetime count of voice questions asked (enforces the free-tier voice cap).
   voiceCount?: number;
   // FREE voice turns used THIS billing cycle (reset on renewal). Enforces the
@@ -182,13 +185,13 @@ async function save(acct: CreditAccount): Promise<void> {
   await storeSet(keyFor(acct.deviceId), acct);
 }
 
-function addGrant(acct: CreditAccount, source: string, amount: number): CreditGrant | null {
+function addGrant(acct: CreditAccount, source: string, amount: number, expiresAt?: number): CreditGrant | null {
   if (amount <= 0) return null;
   const now = Date.now();
   const grant: CreditGrant = {
     id: `g_${now}_${Math.random().toString(36).slice(2, 7)}`,
     amount, remaining: amount, grantedAt: now,
-    expiresAt: now + GRANT_EXPIRY_DAYS * 86400000,
+    expiresAt: expiresAt ?? now + GRANT_EXPIRY_DAYS * 86400000,
     source
   };
   acct.grants.push(grant);
@@ -273,8 +276,8 @@ function summarize(acct: CreditAccount): CreditSummary {
   return {
     tier: acct.tier,
     balance: balanceOf(acct),
-    nextExpiry: live[0]?.expiresAt ?? null,
-    expiring: live.map((g) => ({ credits: g.remaining, expiresAt: g.expiresAt })),
+    nextExpiry: live.find((g) => g.expiresAt < NON_EXPIRING_GRANT_DATE)?.expiresAt ?? null,
+    expiring: live.filter((g) => g.expiresAt < NON_EXPIRING_GRANT_DATE).map((g) => ({ credits: g.remaining, expiresAt: g.expiresAt })),
     durable: isDurable(),
     voiceUsed: acct.voiceCount || 0,
     baseCredits: live.filter((g) => g.source.startsWith("subscription:")).reduce((s, g) => s + g.remaining, 0),
@@ -319,22 +322,74 @@ export async function grantCredits(identity: string, amount: number, source: str
 // Web top-up pricing: server-authoritative (never trust a client-sent price).
 // Deliberately POOR value vs. a subscription (subscriptions are ~1/3¢ per credit
 // of granted value) — buying à la carte is 1¢/credit flat, so subscribing is
-// always the better deal. Pro subscribers get 20% off (0.8¢/credit).
+// always the better deal. Plus Voice gets 20% off and Pro gets 40% off.
 export const CREDIT_TOPUP_MIN = 500;
 export const CREDIT_TOPUP_MAX = 500000;
 export const CREDIT_TOPUP_PRESETS = [500, 5000, 25000];
 export const TOPUP_CENTS_PER_CREDIT = 1;      // 1¢ per credit, no volume discount
-export const PRO_TOPUP_DISCOUNT = 0.2;         // Pro members: 20% off
+export const PLUS_VOICE_TOPUP_DISCOUNT = 0.2;
+export const PRO_TOPUP_DISCOUNT = 0.4;
 // Cents per credit for a given buyer (whole-cent for display; Stripe charges the
 // exact computed total).
-export function topupCentsPerCredit(isPro: boolean): number {
-  return TOPUP_CENTS_PER_CREDIT * (isPro ? 1 - PRO_TOPUP_DISCOUNT : 1);
+export function topupCentsPerCredit(tier: Tier = "free"): number {
+  const discount = tier === "pro"
+    ? PRO_TOPUP_DISCOUNT
+    : tier === "plus_voice" ? PLUS_VOICE_TOPUP_DISCOUNT : 0;
+  return TOPUP_CENTS_PER_CREDIT * (1 - discount);
 }
-export function topupPriceCents(credits: number, isPro = false): number | null {
+export function topupPriceCents(credits: number, tier: Tier = "free"): number | null {
   if (!Number.isFinite(credits)) return null;
   const c = Math.floor(credits);
   if (c < CREDIT_TOPUP_MIN || c > CREDIT_TOPUP_MAX) return null;
-  return Math.round(c * topupCentsPerCredit(isPro));
+  return Math.round(c * topupCentsPerCredit(tier));
+}
+
+// Consumable credit packs sold through StoreKit. Their nominal rate is exactly
+// twice the website rate. Tier discounts are delivered as bonus credits, so the
+// signed product ID and current server-side tier remain authoritative.
+export const IN_APP_CREDIT_PRODUCTS: Record<string, { priceCents: number; label: string }> = {
+  "com.davidwiduba.takiai.credits.999": { priceCents: 999, label: "$9.99 pack" },
+  "com.davidwiduba.takiai.credits.2499": { priceCents: 2499, label: "$24.99 pack" },
+  "com.davidwiduba.takiai.credits.4999": { priceCents: 4999, label: "$49.99 pack" },
+  "com.davidwiduba.takiai.credits.9999": { priceCents: 9999, label: "$99.99 pack" }
+};
+export const IN_APP_RATE_MULTIPLIER = 2;
+
+export function inAppCreditsForProduct(productId: string, tier: Tier): number | null {
+  const pack = IN_APP_CREDIT_PRODUCTS[productId];
+  if (!pack) return null;
+  const baseCredits = Math.max(1, Math.round(pack.priceCents / (TOPUP_CENTS_PER_CREDIT * IN_APP_RATE_MULTIPLIER)));
+  const discount = Math.max(0, Math.min(0.9, TIERS[tier]?.extraCreditDiscount || 0));
+  return Math.floor(baseCredits / (1 - discount));
+}
+
+export async function grantForConsumableTransaction(
+  identity: string,
+  transactionId: string,
+  productId: string
+): Promise<{ granted: boolean; credits: number; priceCents: number; summary: CreditSummary }> {
+  return withLock(identity, async () => {
+    const acct = await load(identity);
+    const pack = IN_APP_CREDIT_PRODUCTS[productId];
+    const credits = inAppCreditsForProduct(productId, acct.tier);
+    if (!pack || !credits || !transactionId) {
+      return { granted: false, credits: 0, priceCents: 0, summary: summarize(acct) };
+    }
+    acct.processedConsumableTx = acct.processedConsumableTx || [];
+    if (acct.processedConsumableTx.includes(transactionId)) {
+      return { granted: false, credits, priceCents: pack.priceCents, summary: summarize(acct) };
+    }
+    const grant = addGrant(acct, `iap_topup:${productId}`, credits, NON_EXPIRING_GRANT_DATE);
+    if (grant) {
+      acct.topupAllowances = acct.topupAllowances || [];
+      acct.topupAllowances.push({ id: grant.id, amount: grant.amount, expiresAt: grant.expiresAt });
+    }
+    acct.processedConsumableTx.push(transactionId);
+    if (acct.processedConsumableTx.length > 500) acct.processedConsumableTx = acct.processedConsumableTx.slice(-500);
+    acct.starterGiven = true;
+    await save(acct);
+    return { granted: true, credits, priceCents: pack.priceCents, summary: summarize(acct) };
+  });
 }
 
 // Count a voice question (for the free-tier cap). Returns the new total.
@@ -511,9 +566,12 @@ export async function mergeCredits(
     if (mode === "keep") to.tier = higherTier(to.tier, from.tier);
     to.starterGiven = to.starterGiven || from.starterGiven;
     to.processedTx = [...(to.processedTx || []), ...(from.processedTx || [])].slice(-200);
+    to.processedConsumableTx = [...(to.processedConsumableTx || []), ...(from.processedConsumableTx || [])]
+      .filter((id, index, all) => all.indexOf(id) === index)
+      .slice(-500);
     await save(to);
     // Empty the source so its credits can't be claimed again.
-    await save({ deviceId: fromId, tier: "free", grants: [], starterGiven: true, processedTx: [], topupAllowances: [], updatedAt: Date.now() });
+    await save({ deviceId: fromId, tier: "free", grants: [], starterGiven: true, processedTx: [], processedConsumableTx: [], topupAllowances: [], updatedAt: Date.now() });
     return summarize(to);
   });
 }

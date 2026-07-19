@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Taki AI Admin</title>
+  <style>
+    :root{color-scheme:dark;--bg:#151516;--panel:#1d1d1f;--panel-2:#242426;--line:#343437;--text:#f5f5f2;--muted:#a7a7a1;--green:#63d09a;--amber:#f0bd62;--red:#ff726f;--ink:#111112}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0}button,input{font:inherit;letter-spacing:0}button{cursor:pointer}.hidden{display:none!important}
+    .login{min-height:100vh;display:grid;place-items:center;padding:24px}.login-panel{width:min(420px,100%);border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:28px}.login h1{margin:0 0 4px;font-size:25px}.login p{margin:0 0 22px;color:var(--muted)}
+    input{width:100%;border:1px solid var(--line);border-radius:6px;background:#101011;color:var(--text);padding:11px 12px;outline:none}input:focus{border-color:var(--green)}.primary{border:0;border-radius:6px;background:var(--green);color:var(--ink);font-weight:750;padding:11px 15px}.login .primary{width:100%;margin-top:12px}.error{color:var(--red);min-height:20px;margin-top:10px}
+    .app{min-height:100vh}.topbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:18px;min-height:62px;padding:10px 20px;border-bottom:1px solid var(--line);background:#181819}.brand{font-size:18px;font-weight:800;white-space:nowrap}.topbar .spacer{flex:1}.status{color:var(--muted);font-size:12px}.quiet{border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--text);padding:8px 11px}.quiet:hover{background:var(--panel-2)}
+    .metrics{display:grid;grid-template-columns:repeat(7,minmax(110px,1fr));border-bottom:1px solid var(--line);background:var(--panel)}.metric{padding:15px 18px;border-right:1px solid var(--line)}.metric:last-child{border-right:0}.metric b{display:block;font-size:20px;font-variant-numeric:tabular-nums}.metric span{color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:700}
+    .workspace{display:grid;grid-template-columns:minmax(300px,35%) minmax(0,65%);height:calc(100vh - 137px)}.accounts{border-right:1px solid var(--line);overflow:auto;background:#181819}.account-tools{position:sticky;top:0;z-index:2;padding:12px;border-bottom:1px solid var(--line);background:#181819}.account-list{display:block}.account-row{width:100%;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;text-align:left;color:var(--text);background:transparent;border:0;border-bottom:1px solid #29292b;padding:13px 14px}.account-row:hover,.account-row.active{background:var(--panel-2)}.account-row strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.account-row small{display:block;color:var(--muted);margin-top:3px}.row-numbers{text-align:right;font-variant-numeric:tabular-nums}.row-numbers b{color:var(--green)}
+    .badge{display:inline-flex;align-items:center;min-height:22px;padding:2px 7px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:11px;font-weight:750;text-transform:capitalize}.badge.high_value{border-color:#346e53;color:var(--green)}.badge.at_risk,.badge.suspended{border-color:#7b5d28;color:var(--amber)}.badge.terminated{border-color:#7f3937;color:var(--red)}
+    .detail{overflow:auto;padding:22px 24px 50px}.empty{min-height:100%;display:grid;place-items:center;text-align:center;color:var(--muted)}.detail-header{display:flex;align-items:flex-start;gap:16px;padding-bottom:18px;border-bottom:1px solid var(--line)}.detail-header h1{margin:0;font-size:25px}.detail-header p{margin:3px 0 0;color:var(--muted)}.detail-header .spacer{flex:1}.section{padding:20px 0;border-bottom:1px solid var(--line)}.section h2{font-size:16px;margin:0 0 13px}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.data{min-width:0;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px}.data span{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:700}.data b{display:block;margin-top:5px;font-size:18px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.two{display:grid;grid-template-columns:1fr 1fr;gap:18px}.plain-table{width:100%;border-collapse:collapse}.plain-table th,.plain-table td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}.plain-table th{color:var(--muted);font-size:11px;text-transform:uppercase}.plain-table td:last-child,.plain-table th:last-child{text-align:right}.bar{height:8px;background:#303033;border-radius:999px;overflow:hidden;margin-top:7px}.bar span{display:block;height:100%;background:var(--green)}.subtle{color:var(--muted)}.feature{display:flex;align-items:center;gap:10px;margin:9px 0}.feature span:first-child{width:145px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.feature .bar{flex:1;margin:0}.feature b{width:38px;text-align:right}
+    .recommendation{border-left:3px solid var(--green);padding:3px 0 3px 13px;margin:12px 0}.recommendation b{display:block}.recommendation p{margin:3px 0;color:var(--muted)}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.actions button{border:1px solid var(--line);border-radius:6px;background:var(--panel-2);color:var(--text);padding:9px 12px;font-weight:700}.actions button:hover{border-color:var(--green)}.actions button:disabled{opacity:.4;cursor:not-allowed}.danger{color:var(--red)!important}.consent{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}.consent .on{color:var(--green)}.consent .off{color:var(--muted)}
+    @media(max-width:1100px){.metrics{grid-template-columns:repeat(4,1fr)}.metric:nth-child(4){border-right:0}.workspace{height:auto;grid-template-columns:1fr}.accounts{max-height:420px;border-right:0;border-bottom:1px solid var(--line)}.detail{min-height:600px}.grid{grid-template-columns:repeat(2,1fr)}}
+    @media(max-width:640px){.topbar{padding:10px 12px}.status{display:none}.metrics{grid-template-columns:repeat(2,1fr)}.metric:nth-child(even){border-right:0}.workspace{display:block}.accounts{max-height:330px}.detail{padding:18px 14px 40px}.grid,.two{grid-template-columns:1fr}.detail-header{flex-wrap:wrap}.detail-header .spacer{display:none}}
+  </style>
+</head>
+<body>
+  <main id="login" class="login">
+    <form id="loginForm" class="login-panel">
+      <h1>Taki AI Admin</h1>
+      <p>Account intelligence and engagement</p>
+      <input id="secret" type="password" autocomplete="current-password" placeholder="Admin secret" required>
+      <button class="primary" type="submit">Open dashboard</button>
+      <div id="loginError" class="error" aria-live="polite"></div>
+    </form>
+  </main>
+
+  <main id="app" class="app hidden">
+    <header class="topbar"><div class="brand">Taki AI Admin</div><div id="config" class="status"></div><div class="spacer"></div><button id="refresh" class="quiet">Refresh</button><button id="logout" class="quiet">Lock</button></header>
+    <section id="metrics" class="metrics"></section>
+    <section class="workspace">
+      <aside class="accounts"><div class="account-tools"><input id="search" type="search" placeholder="Search name, email, ID, plan"></div><div id="accountList" class="account-list"></div></aside>
+      <article id="detail" class="detail"><div class="empty">Select an account to see its full history and recommendations.</div></article>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const API = location.origin;
+    let secret = sessionStorage.getItem("taki-admin-secret") || "";
+    let users = [];
+    let selected = "";
+    const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    const usd = (value, digits = 2) => new Intl.NumberFormat("en-US", {style:"currency",currency:"USD",minimumFractionDigits:digits,maximumFractionDigits:digits}).format(Number(value)||0);
+    const num = (value) => Number(value||0).toLocaleString();
+    const date = (value) => value ? new Date(value).toLocaleString() : "Never";
+    const pct = (opened, sent) => sent ? `${Math.round(opened / sent * 100)}%` : "--";
+    async function post(path, body = {}) {
+      const response = await fetch(API + path, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({secret,...body})});
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+      return data;
+    }
+    async function load() {
+      const data = await post("/api/admin/users");
+      users = data.users || [];
+      $("config").textContent = `Push ${data.pushConfigured ? "ready" : "not configured"} · Email ${data.emailConfigured ? "ready" : "not configured"}`;
+      renderMetrics(data.totals || {}); renderList();
+      if (selected && users.some((u) => u.identity === selected)) await openAccount(selected);
+    }
+    function renderMetrics(t) {
+      const entries = [["Accounts",num(t.users)],["High value",num(t.highValue)],["Questions",num(t.questions)],["Gross",usd(t.gross)],["Net",usd(t.net)],["Owner cost",usd(t.cost)],["Profit",usd(t.profit)]];
+      $("metrics").innerHTML = entries.map(([label,value]) => `<div class="metric"><span>${esc(label)}</span><b>${esc(value)}</b></div>`).join("");
+    }
+    function renderList() {
+      const query = $("search").value.trim().toLowerCase();
+      const filtered = users.filter((u) => [u.identity,u.displayName,u.email,u.tier,u.segment].join(" ").toLowerCase().includes(query));
+      $("accountList").innerHTML = filtered.map((u) => `<button class="account-row ${selected===u.identity?"active":""}" data-id="${esc(u.identity)}"><span><strong>${esc(u.displayName)}</strong><small>${esc(u.email || u.identity)} · ${esc(u.tier.replace("_"," "))}</small><span class="badge ${esc(u.segment)}">${esc(u.segment.replaceAll("_"," "))}</span></span><span class="row-numbers"><b>${usd(u.profitUsd)}</b><small>${num(u.totalQuestions)} questions</small></span></button>`).join("") || `<div class="empty" style="min-height:180px">No matching accounts.</div>`;
+      document.querySelectorAll(".account-row").forEach((button) => button.addEventListener("click", () => openAccount(button.dataset.id)));
+    }
+    async function openAccount(identity) {
+      selected = identity; renderList(); location.hash = `account=${encodeURIComponent(identity)}`;
+      $("detail").innerHTML = `<div class="empty">Loading account...</div>`;
+      try { const data = await post("/api/admin/account", {identity}); renderDetail(data.account); }
+      catch (error) { $("detail").innerHTML = `<div class="empty">${esc(error.message)}</div>`; }
+    }
+    function dataBox(label, value) { return `<div class="data"><span>${esc(label)}</span><b>${esc(value)}</b></div>`; }
+    function usageBar(used, limit) { const value = limit ? Math.min(100, Math.round(used/limit*100)) : 0; return `<div class="bar"><span style="width:${value}%"></span></div><small class="subtle">${num(used)} / ${num(limit)} used</small>`; }
+    function featureRows(features) {
+      const rows = Object.entries(features || {}).sort((a,b)=>b[1]-a[1]); const max = rows[0]?.[1] || 1;
+      return rows.length ? rows.map(([name,count]) => `<div class="feature"><span>${esc(name.replaceAll("_"," "))}</span><div class="bar"><span style="width:${Math.max(3,count/max*100)}%"></span></div><b>${num(count)}</b></div>`).join("") : `<p class="subtle">No feature events recorded yet.</p>`;
+    }
+    function performanceRows(performance) {
+      const rows=[]; for (const [category,channels] of Object.entries(performance||{})) for (const [channel,value] of Object.entries(channels||{})) rows.push(`<tr><td>${esc(category)}</td><td>${esc(channel)}</td><td>${num(value.sent)}</td><td>${num(value.opened)}</td><td>${pct(value.opened,value.sent)}</td><td>${value.opened?`${num(Math.round((value.sessionSeconds||0)/value.opened))}s`:"--"}</td></tr>`);
+      return rows.length ? rows.join("") : `<tr><td colspan="6" class="subtle">No campaigns sent yet.</td></tr>`;
+    }
+    function renderDetail(a) {
+      const e=a.engagement||{}; const push=e.recommendedPush||{}; const email=e.recommendedEmail||{}; const daily=a.credits?.daily||{}; const monthly=a.credits?.monthly||{};
+      const purchases=(a.purchases||[]).map((p)=>`<tr><td>${date(p.at)}</td><td>${esc(p.kind.replaceAll("_"," "))}</td><td>${esc(p.tier||"")}</td><td>${usd(p.amountUsd)}</td></tr>`).join("")||`<tr><td colspan="4" class="subtle">No purchases recorded.</td></tr>`;
+      const devices=(a.devices||[]).map((d)=>`<tr><td>${esc(d.model)}</td><td>${esc(d.name||d.takiName||"")}</td><td>${esc(d.id)}</td><td>${date(d.lastSeenAt)}</td></tr>`).join("")||`<tr><td colspan="4" class="subtle">No device details recorded.</td></tr>`;
+      const campaigns=(e.recentCampaigns||[]).map((c)=>`<tr><td>${date(c.sentAt)}</td><td>${esc(c.channel)} · ${esc(c.category)}</td><td>${esc(c.status)}</td><td>${c.openedAt?`Opened · ${num(c.sessionSeconds||0)}s`:"--"}</td></tr>`).join("")||`<tr><td colspan="4" class="subtle">No campaigns sent.</td></tr>`;
+      $("detail").innerHTML = `
+        <div class="detail-header"><div><h1>${esc(a.displayName)}</h1><p>${esc(a.identity)}${a.email?` · ${esc(a.email)}`:""}</p></div><div class="spacer"></div><span class="badge ${esc(a.segment)}">${esc(a.segment.replaceAll("_"," "))}</span></div>
+        <section class="section"><div class="grid">${dataBox("Plan",a.tier.replace("_"," "))}${dataBox("Credits",num(a.balance))}${dataBox("Questions",num(a.totalQuestions))}${dataBox("30-day active days",num(a.activeDays30))}${dataBox("Sessions",num(a.sessions))}${dataBox("Average session",`${num(a.averageSessionSeconds)} sec`)}${dataBox("Gross revenue",usd(a.grossRevenueUsd))}${dataBox("Net revenue",usd(a.netRevenueUsd))}${dataBox("Owner cost",usd(a.costUsd))}${dataBox("Profit",usd(a.profitUsd))}</div></section>
+        <section class="section"><h2>Usage and owner cost</h2><div class="grid">${dataBox("Text questions",num(a.textQuestions))}${dataBox("Text cost",usd(a.textCostUsd,4))}${dataBox("Voice questions",num(a.voiceQuestions))}${dataBox("Voice cost",usd(a.voiceCostUsd,4))}</div>${a.legacyUnallocatedCostUsd?`<p class="subtle">${usd(a.legacyUnallocatedCostUsd,4)} of older metered usage predates channel attribution.</p>`:""}<div class="two" style="margin-top:16px"><div><b>Daily credits</b>${usageBar(daily.used,daily.limit)}</div><div><b>Monthly credits</b>${usageBar(monthly.used,monthly.limit)}</div></div></section>
+        <section class="section"><h2>Feature use</h2>${featureRows(a.featureUsage)}</section>
+        <section class="section"><h2>Personalized engagement</h2><div class="consent"><span class="badge ${a.engagementPreferences.pushEnabled?"on":"off"}">Push ${a.engagementPreferences.pushEnabled?"enabled":"off"}</span><span class="badge ${a.engagementPreferences.emailEnabled?"on":"off"}">Email ${a.engagementPreferences.emailEnabled?"enabled":"off"}</span><span class="badge">Interests: ${esc((a.engagementPreferences.interests||[]).join(", ")||"none")}</span></div><div class="two"><div><div class="recommendation"><b>Next push: ${esc(push.title||"")}</b><p>${esc(push.body||"")}</p><small>${esc(push.reason||"")}</small></div><div class="actions"><button id="sendPush" ${a.engagementPreferences.pushEnabled?"":"disabled"}>Send recommended push</button></div></div><div><div class="recommendation"><b>Next email: ${esc(email.title||"")}</b><p>${esc(email.body||"")}</p><small>${esc(email.reason||"")}</small></div><div class="actions"><button id="sendEmail" ${a.engagementPreferences.emailEnabled?"":"disabled"}>Send recommended email</button></div></div></div><table class="plain-table" style="margin-top:18px"><thead><tr><th>Category</th><th>Channel</th><th>Sent</th><th>Opened</th><th>Response</th><th>Avg session</th></tr></thead><tbody>${performanceRows(e.performance)}</tbody></table><h2 style="margin-top:20px">Campaign history</h2><table class="plain-table"><thead><tr><th>Sent</th><th>Type</th><th>Status</th><th>Response</th></tr></thead><tbody>${campaigns}</tbody></table></section>
+        <section class="section"><h2>Purchases</h2><table class="plain-table"><thead><tr><th>Date</th><th>Type</th><th>Tier</th><th>Gross</th></tr></thead><tbody>${purchases}</tbody></table></section>
+        <section class="section"><h2>Devices and safety</h2><div class="grid">${dataBox("Status",a.status)}${dataBox("Strikes",num(a.strikes))}${dataBox("First seen",date(a.firstSeenAt))}${dataBox("Last seen",date(a.lastSeenAt))}</div><table class="plain-table" style="margin-top:16px"><thead><tr><th>Model</th><th>Name</th><th>ID</th><th>Last seen</th></tr></thead><tbody>${devices}</tbody></table><p class="subtle">Linked identities: ${esc((a.linkedIdentities||[]).join(", "))}<br>IP associations: ${num((a.ips||[]).length)} · Neighboring identities: ${esc((a.ipNeighbors||[]).join(", ")||"none")}</p></section>`;
+      $("sendPush")?.addEventListener("click",()=>sendCampaign(a.identity,"push")); $("sendEmail")?.addEventListener("click",()=>sendCampaign(a.identity,"email"));
+    }
+    async function sendCampaign(identity,channel){if(!confirm(`Send the recommended ${channel} to this account now?`))return;try{const result=await post("/api/admin/engagement-send",{identity,channel});alert(result.ok?`${channel} sent.`:(result.reason||"Send failed."));await openAccount(identity)}catch(error){alert(error.message)}}
+    $("loginForm").addEventListener("submit",async(event)=>{event.preventDefault();secret=$("secret").value.trim();$("loginError").textContent="";try{await load();sessionStorage.setItem("taki-admin-secret",secret);$("login").classList.add("hidden");$("app").classList.remove("hidden")}catch(error){$("loginError").textContent=error.message;secret=""}});
+    $("search").addEventListener("input",renderList); $("refresh").addEventListener("click",load); $("logout").addEventListener("click",()=>{sessionStorage.removeItem("taki-admin-secret");location.reload()});
+    if(secret){load().then(()=>{$("login").classList.add("hidden");$("app").classList.remove("hidden");const hash=new URLSearchParams(location.hash.slice(1)).get("account");if(hash)openAccount(hash)}).catch(()=>sessionStorage.removeItem("taki-admin-secret"))}
+  </script>
+</body>
+</html>

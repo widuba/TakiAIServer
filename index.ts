@@ -1,7 +1,8 @@
 import express from "express";
 import cors from "cors";
 import Stripe from "stripe";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { fileURLToPath } from "node:url";
 
 import { PORT, MAIN_MODEL, PLANNER_MODEL, RESEARCH_MODEL } from "./src/ai.js";
 import type { DeviceLocation } from "./src/types.js";
@@ -22,18 +23,19 @@ import { extractFlightCode, normalizeTrackerKind } from "./src/entityClassifier.
 import { setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
 import { isDurable, storeDelete, storeGet, storeSet } from "./src/store.js";
-import { summary as creditSummary, spendUsageUsd, reset as resetCredits, isFreeVoice, noteFreeVoice, tierCatalog, grantForTransaction, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, noteVoiceQuestion, grantCredits, topupPriceCents, topupCentsPerCredit, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_PER_CYCLE, CREDIT_USD, type Tier } from "./src/credits.js";
+import { summary as creditSummary, spendUsageUsd, reset as resetCredits, isFreeVoice, noteFreeVoice, tierCatalog, grantForTransaction, grantForConsumableTransaction, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, noteVoiceQuestion, grantCredits, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_PER_CYCLE, CREDIT_USD, type Tier } from "./src/credits.js";
 import { measureUsage, sttCostUsd, totalUsageUsd, ttsCostUsd } from "./src/metering.js";
-import { verifyTransaction, linkTransactionIdentity, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
+import { verifyTransaction, verifyCreditTransaction, claimCreditTransaction, rebindCreditTransactions, linkTransactionIdentity, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
 import { revokeAppleAuthorizationCode, verifyAppleIdentityToken } from "./src/appleauth.js";
 import { purgeAppleAccount } from "./src/accountDeletion.js";
 import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, linkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG, promptExtractionMessageForMode } from "./src/safety.js";
-import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, userForIdentity, identitiesForIp, allUsers, deleteUser } from "./src/users.js";
+import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, noteInteraction, noteChannelCost, noteSession, noteEngagementPreferences, userForIdentity, identitiesForIp, allUsers, deleteUser, type UserRecord } from "./src/users.js";
 import { TIERS } from "./src/credits.js";
 import { billableAudioDurationMs, transcribe, synthesize, listVoices, isVoiceConfigured, speechCharacterCount } from "./src/voice.js";
 import { emailProviderConfigured, createOAuthState, buildAuthUrl, completeOAuth, loadConnection, disconnectEmail, sendEmail, saveDraft, searchConnectedEmail, type EmailProvider } from "./src/email.js";
 import { extractDurableMemories } from "./src/userMemory.js";
 import { createChatTitle } from "./src/chatTitle.js";
+import { engagementSummary, isEngagementEmailConfigured, recordEngagementOpen, recordEngagementSession, recommendedEngagement, sendPersonalizedEngagement, shouldSendAutomatic, type EngagementChannel } from "./src/engagement.js";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
 // Render. (The purchase-simulating grant endpoint was removed when real
@@ -87,10 +89,30 @@ function usageMessageForReason(reason: "daily" | "monthly"): string {
   return reason === "monthly" ? MONTHLY_LIMIT_MSG : DAILY_LIMIT_MSG;
 }
 
-async function chargeMeasuredUsage(deviceId: string, usage: { geminiUsd: number; searchUsd: number }): Promise<void> {
-  if (!deviceId) return;
+async function chargeMeasuredUsage(deviceId: string, usage: { geminiUsd: number; searchUsd: number }): Promise<number> {
+  if (!deviceId) return 0;
   const charged = await spendUsageUsd(deviceId, usage.geminiUsd + usage.searchUsd);
   await noteSpend(deviceId, charged.spent);
+  return charged.spent;
+}
+
+function assistantFeature(response: any): string {
+  const actions = [response?.action, ...(Array.isArray(response?.actions) ? response.actions : [])].filter(Boolean);
+  const actionType = String(actions[0]?.type || "");
+  if (actionType && actionType !== "answer_only") return actionType;
+  if (Array.isArray(response?.sources) && response.sources.length) return "web_search";
+  return "chat";
+}
+
+function attachmentFeature(attachments: any[]): string {
+  const kinds = new Set(attachments.map((item) => String(item?.kind || "")));
+  if (kinds.size > 1) return "attachments";
+  if (kinds.has("image")) return "photo";
+  if (kinds.has("file")) return "file";
+  if (kinds.has("url")) return attachments.some((item) => /(?:youtube\.com|youtu\.be)/i.test(String(item?.url || "")))
+    ? "youtube_source"
+    : "web_source";
+  return kinds.has("text") ? "pasted_text" : "attachments";
 }
 
 /* ============================================================================
@@ -122,6 +144,29 @@ const STRIPE_KEY = process.env.STRIPE_SECRET_KEY || "";
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || "";
 const WEB_BASE_URL = process.env.WEB_BASE_URL || "https://takiai.app";
 const stripe = STRIPE_KEY ? new Stripe(STRIPE_KEY) : null;
+const PURCHASE_LINK_SECRET = process.env.PURCHASE_LINK_SECRET || STRIPE_WEBHOOK_SECRET || STRIPE_KEY;
+
+type PurchaseLinkPayload = { identity: string; exp: number; nonce: string; purpose: "credits" };
+function signPurchaseLink(payload: PurchaseLinkPayload): string {
+  if (!PURCHASE_LINK_SECRET) return "";
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = createHmac("sha256", PURCHASE_LINK_SECRET).update(body).digest("base64url");
+  return `${body}.${signature}`;
+}
+function verifyPurchaseLink(token: unknown): PurchaseLinkPayload | null {
+  if (!PURCHASE_LINK_SECRET || typeof token !== "string") return null;
+  const [body, suppliedSignature] = token.split(".");
+  if (!body || !suppliedSignature) return null;
+  const expectedSignature = createHmac("sha256", PURCHASE_LINK_SECRET).update(body).digest("base64url");
+  const supplied = Buffer.from(suppliedSignature);
+  const expected = Buffer.from(expectedSignature);
+  if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as PurchaseLinkPayload;
+    if (payload.purpose !== "credits" || !payload.identity || payload.exp < Date.now()) return null;
+    return payload;
+  } catch { return null; }
+}
 
 app.get("/health", (_req, res) => {
   res.json({
@@ -131,6 +176,10 @@ app.get("/health", (_req, res) => {
     version: "2026-07-12-intelligence-v3",
     models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL }
   });
+});
+
+app.get(["/admin", "/admin/"], (_req, res) => {
+  res.sendFile(fileURLToPath(new URL("./admin.html", import.meta.url)));
 });
 
 // --- Push (APNs) --------------------------------------------------------------
@@ -528,12 +577,14 @@ app.post("/api/vision", async (req, res) => {
     const measured = await measureUsage(() => withTimeout(answerAboutImage(image, mime, question, userProfile, timeZone), 28000, "Vision"));
     const spokenText = measured.value;
     if (deviceId) {
+      const speechUsd = voiceMode ? ttsCostUsd(speechCharacterCount(spokenText || "")) : 0;
+      const ownerCostUsd = totalUsageUsd(measured.usage) + speechUsd;
       let usageUsd = totalUsageUsd(measured.usage) + ATTACHMENT_BASE_CREDITS * CREDIT_USD;
       if (voiceMode) {
         if (isFreeVoice(tier, visionBaseCredits, visionVoiceUsed, visionVoiceLifetimeUsed)) {
           if (tier !== "free") await noteFreeVoice(deviceId);
         }
-        else usageUsd += ttsCostUsd(speechCharacterCount(spokenText || ""));
+        else usageUsd += speechUsd;
       }
       const fresh = await creditSummary(deviceId);
       const limitReason = usageLimitForCost(fresh, Math.ceil(usageUsd / CREDIT_USD));
@@ -544,6 +595,12 @@ app.post("/api/vision", async (req, res) => {
       const s = await spendUsageUsd(deviceId, usageUsd);
       if (voiceMode && tier === "free") await noteVoiceQuestion(deviceId);
       await noteSpend(deviceId, s.spent);
+      await noteInteraction(deviceId, {
+        channel: voiceMode ? "voice" : "text",
+        feature: "photo",
+        credits: s.spent,
+        costUsd: ownerCostUsd
+      });
       res.json({ spokenText, credits: { ...s, cost: s.spent } });
     } else {
       res.json({ spokenText });
@@ -598,12 +655,14 @@ app.post("/api/attachments", async (req, res) => {
     const measured = await measureUsage(() => answerAboutAttachments(attachments, question, userProfile, timeZone));
     const answer = measured.value;
     if (!deviceId) { res.json({ spokenText: answer.text, sources: answer.sources }); return; }
+    const speechUsd = voiceMode ? ttsCostUsd(speechCharacterCount(answer.text)) : 0;
+    const ownerCostUsd = totalUsageUsd(measured.usage) + speechUsd;
     let usageUsd = totalUsageUsd(measured.usage) + attachmentCredits * CREDIT_USD;
     if (voiceMode) {
       if (isFreeVoice(tier, baseCredits, voiceUsed, voiceLifetimeUsed)) {
         if (tier !== "free") await noteFreeVoice(deviceId);
       }
-      else usageUsd += ttsCostUsd(speechCharacterCount(answer.text));
+      else usageUsd += speechUsd;
     }
     const fresh = await creditSummary(deviceId);
     const limitReason = usageLimitForCost(fresh, Math.ceil(usageUsd / CREDIT_USD));
@@ -614,6 +673,12 @@ app.post("/api/attachments", async (req, res) => {
     const spent = await spendUsageUsd(deviceId, usageUsd);
     if (voiceMode && tier === "free") await noteVoiceQuestion(deviceId);
     await noteSpend(deviceId, spent.spent);
+    await noteInteraction(deviceId, {
+      channel: voiceMode ? "voice" : "text",
+      feature: attachmentFeature(attachments),
+      credits: spent.spent,
+      costUsd: ownerCostUsd
+    });
     res.json({ spokenText: answer.text, sources: answer.sources, credits: { ...spent, cost: spent.spent } });
   } catch (error) {
     console.error("Attachment answer failed:", error);
@@ -679,6 +744,75 @@ app.post("/api/device/info", async (req, res) => {
   res.json({ ok: true });
 });
 
+const PROFILE_INTERESTS = new Set(["planning", "communication", "health", "nearby", "home", "research", "reminders"]);
+app.post("/api/analytics/profile", async (req, res) => {
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  const physicalDeviceId = typeof req.body?.deviceId === "string" ? normalizeTopupIdentity(req.body.deviceId) : "";
+  if (!identity || !/^\d{8}$/.test(physicalDeviceId)) {
+    res.status(400).json({ error: "identity and deviceId required" });
+    return;
+  }
+  if (identity.startsWith("apple:")) {
+    const appleSub = identity.slice("apple:".length);
+    if (!(await devicesForApple(appleSub)).includes(physicalDeviceId)) {
+      res.status(403).json({ error: "device is not linked to this account" });
+      return;
+    }
+  } else if (normalizeTopupIdentity(identity) !== physicalDeviceId) {
+    res.status(403).json({ error: "identity mismatch" });
+    return;
+  }
+  const interests = (Array.isArray(req.body?.interests) ? req.body.interests : [])
+    .map((value: unknown) => String(value).trim().toLowerCase())
+    .filter((value: string) => PROFILE_INTERESTS.has(value))
+    .slice(0, 3);
+  await noteEngagementPreferences(identity, {
+    interests,
+    pushEnabled: req.body?.engagementPush === true,
+    emailEnabled: req.body?.engagementEmail === true
+  });
+  await noteUser(identity, clientIp(req), String(req.headers?.["user-agent"] || ""));
+  const profile = await userForIdentity(identity);
+  res.json({ ok: true, engagement: profile.engagement, emailAvailable: !!profile.apple?.email });
+});
+
+app.post("/api/analytics/session", async (req, res) => {
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  const physicalDeviceId = typeof req.body?.deviceId === "string" ? normalizeTopupIdentity(req.body.deviceId) : "";
+  const durationSeconds = Math.max(1, Math.min(6 * 3600, Math.round(Number(req.body?.durationSeconds) || 0)));
+  if (!identity || !/^\d{8}$/.test(physicalDeviceId) || !durationSeconds) {
+    res.status(400).json({ error: "identity, deviceId, and duration required" });
+    return;
+  }
+  if (identity.startsWith("apple:")) {
+    if (!(await devicesForApple(identity.slice("apple:".length))).includes(physicalDeviceId)) {
+      res.status(403).json({ error: "device is not linked to this account" });
+      return;
+    }
+  } else if (normalizeTopupIdentity(identity) !== physicalDeviceId) {
+    res.status(403).json({ error: "identity mismatch" });
+    return;
+  }
+  const campaign = typeof req.body?.campaign === "string" ? req.body.campaign.trim().slice(0, 80) : "";
+  await noteSession(identity, durationSeconds, campaign || undefined);
+  if (campaign) await recordEngagementSession(campaign, identity, durationSeconds);
+  res.json({ ok: true });
+});
+
+app.post("/api/engagement/open", async (req, res) => {
+  const campaign = typeof req.body?.campaign === "string" ? req.body.campaign.trim() : "";
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  if (!campaign || !identity) { res.status(400).json({ error: "campaign and identity required" }); return; }
+  const recorded = await recordEngagementOpen(campaign, identity);
+  res.status(recorded ? 200 : 404).json({ ok: recorded });
+});
+
+app.get("/api/engagement/click", async (req, res) => {
+  const campaign = typeof req.query?.campaign === "string" ? req.query.campaign.trim() : "";
+  if (campaign) await recordEngagementOpen(campaign);
+  res.redirect(302, process.env.ENGAGEMENT_CLICK_DESTINATION || "https://takiai.app");
+});
+
 async function captureRequestDeviceInfo(req: any, takiName: string): Promise<void> {
   const deviceId = typeof req.body?.physicalDeviceId === "string" ? normalizeTopupIdentity(req.body.physicalDeviceId) : "";
   if (!/^\d{8}$/.test(deviceId)) return;
@@ -718,8 +852,9 @@ app.get("/api/credits/topup-config", (_req, res) => {
     enabled: !!stripe,
     min: CREDIT_TOPUP_MIN,
     max: CREDIT_TOPUP_MAX,
-    centsPerCredit: topupCentsPerCredit(false),
-    proCentsPerCredit: topupCentsPerCredit(true),
+    centsPerCredit: topupCentsPerCredit("free"),
+    plusVoiceCentsPerCredit: topupCentsPerCredit("plus_voice"),
+    proCentsPerCredit: topupCentsPerCredit("pro"),
     plans: tierCatalog().filter((plan) => plan.key !== "free")
   });
 });
@@ -826,6 +961,45 @@ async function validateTopupAccount(identity: string): Promise<PurchaseAccount> 
   };
 }
 
+function publicPurchaseAccount(v: PurchaseAccount) {
+  return {
+    valid: v.valid,
+    reason: v.reason || "",
+    identity: v.publicId,
+    isPro: v.isPro,
+    tier: v.tier,
+    appleSynced: v.appleSynced,
+    email: v.email,
+    displayName: v.displayName,
+    devices: v.devices,
+    min: CREDIT_TOPUP_MIN,
+    max: CREDIT_TOPUP_MAX,
+    centsPerCredit: topupCentsPerCredit(v.tier)
+  };
+}
+
+// U.S.-storefront app handoff: exchange the current account for a short-lived,
+// signed URL token. Storefront is fetched from StoreKit immediately before this
+// request and is deliberately not persisted as profile or marketing data.
+app.post("/api/credits/purchase-link", async (req, res) => {
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  const storefront = typeof req.body?.storefront === "string" ? req.body.storefront.toUpperCase() : "";
+  if (storefront !== "USA") { res.status(403).json({ error: "Web purchase links are unavailable in this storefront" }); return; }
+  const account = await validateTopupAccount(identity);
+  if (!account.valid) { res.status(400).json({ error: account.reason || "Account unavailable" }); return; }
+  const token = signPurchaseLink({ identity: account.publicId, exp: Date.now() + 10 * 60_000, nonce: randomUUID(), purpose: "credits" });
+  if (!token) { res.status(503).json({ error: "Secure purchase links are not configured" }); return; }
+  res.json({ url: `${WEB_BASE_URL}/buy/?plan=credits&handoff=${encodeURIComponent(token)}`, expiresIn: 600 });
+});
+
+app.post("/api/credits/handoff", async (req, res) => {
+  const payload = verifyPurchaseLink(req.body?.token);
+  if (!payload) { res.status(401).json({ valid: false, reason: "This purchase link expired. Open Membership in Taki and try again." }); return; }
+  const account = await validateTopupAccount(payload.identity);
+  if (!account.valid) { res.status(400).json(publicPurchaseAccount(account)); return; }
+  res.json(publicPurchaseAccount(account));
+});
+
 const purchaseLookupWindows = new Map<string, { at: number; count: number }>();
 
 // Step 1 of the buy flow: check an Account ID and return a limited confirmation
@@ -840,19 +1014,7 @@ app.post("/api/credits/account-check", async (req, res) => {
   const identity = typeof req.body?.identity === "string" ? normalizeTopupIdentity(req.body.identity) : "";
   if (!identity) { res.status(400).json({ valid: false, reason: "Enter your Account ID." }); return; }
   const v = await validateTopupAccount(identity);
-  res.json({
-    valid: v.valid,
-    reason: v.reason || "",
-    isPro: v.isPro,
-    tier: v.tier,
-    appleSynced: v.appleSynced,
-    email: v.email,
-    displayName: v.displayName,
-    devices: v.devices,
-    min: CREDIT_TOPUP_MIN,
-    max: CREDIT_TOPUP_MAX,
-    centsPerCredit: topupCentsPerCredit(v.isPro)
-  });
+  res.json(publicPurchaseAccount(v));
 });
 
 // Step 2: start a checkout for `credits` credits toward `identity`. Re-validates
@@ -860,17 +1022,18 @@ app.post("/api/credits/account-check", async (req, res) => {
 // sent prices/Pro flags are never trusted).
 app.post("/api/credits/checkout", async (req, res) => {
   if (!stripe) { res.status(503).json({ error: "top-ups are not available yet" }); return; }
-  const identity = typeof req.body?.identity === "string" ? normalizeTopupIdentity(req.body.identity) : "";
+  const handoff = verifyPurchaseLink(req.body?.handoffToken);
+  const identity = handoff?.identity || (typeof req.body?.identity === "string" ? normalizeTopupIdentity(req.body.identity) : "");
   const credits = Math.floor(Number(req.body?.credits));
   if (!identity) { res.status(400).json({ error: "account ID required" }); return; }
   const v = await validateTopupAccount(identity);
   if (!v.valid) { res.status(403).json({ error: v.reason || "This account can't purchase credits." }); return; }
-  const cents = topupPriceCents(credits, v.isPro);
+  const cents = topupPriceCents(credits, v.tier);
   if (cents == null) { res.status(400).json({ error: `Choose between ${CREDIT_TOPUP_MIN.toLocaleString()} and ${CREDIT_TOPUP_MAX.toLocaleString()} credits.` }); return; }
   try {
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
-      line_items: [{ quantity: 1, price_data: { currency: "usd", unit_amount: cents, product_data: { name: `${credits.toLocaleString()} Taki AI credits${v.isPro ? " (Pro price)" : ""}` } } }],
+      line_items: [{ quantity: 1, price_data: { currency: "usd", unit_amount: cents, product_data: { name: `${credits.toLocaleString()} Taki AI credits${v.tier === "pro" ? " (Pro price)" : v.tier === "plus_voice" ? " (Plus Voice price)" : ""}` } } }],
       metadata: { identity: v.ledgerIdentity, publicId: identity, credits: String(credits), purchaseType: "credits" },
       success_url: `${WEB_BASE_URL}/buy?status=success&kind=credits&account=${encodeURIComponent(identity)}`,
       cancel_url: `${WEB_BASE_URL}/buy?status=canceled`
@@ -1152,6 +1315,20 @@ app.post("/api/email/send", async (req, res) => {
 // free-credits path left in production.
 
 /* ---- Apple In-App Purchase (StoreKit 2) --------------------------------- */
+app.get("/api/iap/credit-packs", async (req, res) => {
+  const identity = typeof req.query.identity === "string" ? req.query.identity.trim() : "";
+  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  const account = await creditSummary(identity);
+  const packs = Object.entries(IN_APP_CREDIT_PRODUCTS).map(([productId, pack]) => ({
+    productId,
+    priceCents: pack.priceCents,
+    credits: inAppCreditsForProduct(productId, account.tier),
+    tier: account.tier,
+    discount: TIERS[account.tier]?.extraCreditDiscount || 0
+  }));
+  res.json({ tier: account.tier, packs });
+});
+
 // The device sends its verified signed transaction(s) (JWS). We read the product,
 // map it to a tier, and grant that cycle's credits to the caller's identity
 // (device id, or the Apple account id when signed in). Idempotent per billing
@@ -1167,7 +1344,26 @@ app.post("/api/iap/verify", async (req, res) => {
 
   let tier: Tier | null = null;
   let anyGranted = false;
+  let consumableGranted = false;
   for (const jws of jwsList) {
+    const creditInfo = await verifyCreditTransaction(jws);
+    if (creditInfo) {
+      const claim = await claimCreditTransaction(creditInfo.transactionId, identity);
+      if (claim === "conflict") {
+        console.warn("IAP credit transaction already belongs to another account", creditInfo.transactionId);
+        continue;
+      }
+      const purchase = await grantForConsumableTransaction(identity, creditInfo.transactionId, creditInfo.productId);
+      if (purchase.granted) {
+        await noteRevenue(identity, {
+          at: Date.now(), kind: "iap_topup", amountUsd: purchase.priceCents / 100, credits: purchase.credits
+        });
+      }
+      anyGranted = anyGranted || purchase.granted;
+      consumableGranted = consumableGranted || purchase.granted;
+      tier = purchase.summary.tier;
+      continue;
+    }
     const info = await verifyTransaction(jws);
     if (!info) continue;
     // Remember who owns this subscription so server notifications (renewals,
@@ -1192,8 +1388,8 @@ app.post("/api/iap/verify", async (req, res) => {
     anyGranted = anyGranted || r.granted;
     tier = r.summary.tier;
   }
-  if (!tier) { res.status(400).json({ error: "no valid subscription transaction" }); return; }
-  res.json({ ...(await creditSummary(identity)), granted: anyGranted });
+  if (!tier) { res.status(400).json({ error: "no valid StoreKit transaction" }); return; }
+  res.json({ ...(await creditSummary(identity)), granted: anyGranted, consumableGranted });
 });
 
 /* ---- Sign in with Apple (optional account) ------------------------------ */
@@ -1216,8 +1412,20 @@ app.post("/api/account/apple", async (req, res) => {
   let duplicateSubscriptionNeedsCancellation = false;
   try {
     await linkApple(identdata.sub, deviceId);
-    await noteApple(deviceId, { sub: identdata.sub, email: identdata.email, name: fullName || undefined });
+    const priorDeviceUser = await userForIdentity(deviceId);
+    const appleProfile = {
+      sub: identdata.sub,
+      email: identdata.email || priorDeviceUser.apple?.email,
+      name: fullName || priorDeviceUser.apple?.name || undefined
+    };
+    await noteApple(deviceId, appleProfile);
+    await noteApple(accountId, appleProfile);
+    const priorAccountUser = await userForIdentity(accountId);
+    if (priorDeviceUser.engagement.updatedAt > priorAccountUser.engagement.updatedAt) {
+      await noteEngagementPreferences(accountId, priorDeviceUser.engagement);
+    }
     await noteUser(deviceId, clientIp(req), String(req.headers?.["user-agent"] || ""));
+    await noteUser(accountId, clientIp(req), String(req.headers?.["user-agent"] || ""));
     const activeTransactionIds: string[] = [];
     for (const jws of entitlementJWS) {
       const info = await verifyTransaction(jws);
@@ -1250,13 +1458,15 @@ app.post("/api/account/apple", async (req, res) => {
     }
 
     await mergeCredits(deviceId, accountId, { subscriptionMode, secondaryTransactionId });
+    await rebindCreditTransactions(deviceId, accountId);
     for (const transactionId of deviceTransactions) {
       const role = transactionId === primary ? "primary" : "secondary";
       await setTransactionRole(transactionId, accountId, role);
     }
   } catch (e) { console.error("apple link:", e); }
   const linkedDevices = (await devicesForApple(identdata.sub)).filter((d) => d !== deviceId);
-  res.json({ accountId, deviceId, email: identdata.email, linkedDevices, duplicateSubscriptionNeedsCancellation, ...(await creditSummary(accountId)), tiers: tierCatalog() });
+  const accountUser = await userForIdentity(accountId);
+  res.json({ accountId, deviceId, email: identdata.email || accountUser.apple?.email, linkedDevices, duplicateSubscriptionNeedsCancellation, engagement: accountUser.engagement, ...(await creditSummary(accountId)), tiers: tierCatalog() });
 });
 
 app.post("/api/account/delete", async (req, res) => {
@@ -1436,49 +1646,244 @@ app.post("/api/admin/delete-user", async (req, res) => {
   res.json({ ok: true, identity, deleted: true });
 });
 
-// Full admin dashboard feed: every user + plan/history, IPs, device, credit
-// usage, cost-to-serve, revenue, profit, safety status, Apple identity, and the
-// other identities seen on their IP(s).
+function money(value: number, digits = 2): number {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
+async function canonicalAccountIdentity(identity: string): Promise<string> {
+  if (identity.startsWith("apple:")) return identity;
+  const record = await userForIdentity(identity);
+  const sub = record.apple?.sub || await appleForDevice(identity);
+  return sub ? `apple:${sub}` : identity;
+}
+
+function combineAdminUsers(identity: string, records: UserRecord[]): UserRecord {
+  const activeDays = [...new Set(records.flatMap((record) => record.activeDays || []))].sort().slice(-120);
+  const featureUsage: Record<string, number> = {};
+  for (const record of records) {
+    for (const [feature, count] of Object.entries(record.analytics.featureUsage || {})) {
+      featureUsage[feature] = (featureUsage[feature] || 0) + Number(count || 0);
+    }
+  }
+  const engagementRecord = [...records]
+    .sort((a, b) => Number(b.engagement?.updatedAt || 0) - Number(a.engagement?.updatedAt || 0))[0];
+  const firstSeen = records.map((record) => record.firstSeenAt).filter((value) => value > 0);
+  const apple = records.map((record) => record.apple).find((value) => value?.email)
+    || records.map((record) => record.apple).find(Boolean);
+  return {
+    identity,
+    firstSeenAt: firstSeen.length ? Math.min(...firstSeen) : 0,
+    lastSeenAt: Math.max(0, ...records.map((record) => record.lastSeenAt || 0)),
+    requestCount: records.reduce((sum, record) => sum + Number(record.requestCount || 0), 0),
+    creditsUsed: records.reduce((sum, record) => sum + Number(record.creditsUsed || 0), 0),
+    tier: records.find((record) => record.identity === identity)?.tier || records[0]?.tier || "free",
+    tierHistory: records.flatMap((record) => record.tierHistory || []).sort((a, b) => a.at - b.at).slice(-100),
+    deviceType: records.map((record) => record.deviceType).find(Boolean),
+    ips: [...new Set(records.flatMap((record) => record.ips || []))].slice(-50),
+    apple,
+    revenueUsd: records.reduce((sum, record) => sum + Number(record.revenueUsd || 0), 0),
+    purchases: records.flatMap((record) => record.purchases || []).sort((a, b) => b.at - a.at).slice(0, 200),
+    device: records.map((record) => record.device).find((value) => value?.takiName)
+      || records.map((record) => record.device).find(Boolean),
+    activeDays,
+    analytics: {
+      textQuestions: records.reduce((sum, record) => sum + Number(record.analytics.textQuestions || 0), 0),
+      voiceQuestions: records.reduce((sum, record) => sum + Number(record.analytics.voiceQuestions || 0), 0),
+      textCostUsd: records.reduce((sum, record) => sum + Number(record.analytics.textCostUsd || 0), 0),
+      voiceCostUsd: records.reduce((sum, record) => sum + Number(record.analytics.voiceCostUsd || 0), 0),
+      featureUsage,
+      recentQuestions: records.flatMap((record) => record.analytics.recentQuestions || []).sort((a, b) => b.at - a.at).slice(0, 100),
+      lastQuestionAt: Math.max(0, ...records.map((record) => record.analytics.lastQuestionAt || 0)) || undefined,
+      sessions: records.reduce((sum, record) => sum + Number(record.analytics.sessions || 0), 0),
+      totalSessionSeconds: records.reduce((sum, record) => sum + Number(record.analytics.totalSessionSeconds || 0), 0),
+      recentSessions: records.flatMap((record) => record.analytics.recentSessions || []).sort((a, b) => b.at - a.at).slice(0, 100)
+    },
+    engagement: engagementRecord?.engagement || { interests: [], pushEnabled: false, emailEnabled: false, updatedAt: 0 }
+  };
+}
+
+async function buildAdminAccount(requestedIdentity: string) {
+  const identity = await canonicalAccountIdentity(requestedIdentity);
+  const appleSub = identity.startsWith("apple:") ? identity.slice("apple:".length) : "";
+  const deviceIds = appleSub ? await devicesForApple(appleSub) : [identity];
+  const memberIds = [...new Set([identity, ...deviceIds])];
+  const records = await Promise.all(memberIds.map(userForIdentity));
+  const user = combineAdminUsers(identity, records);
+  const credit = await creditSummary(identity);
+  user.tier = credit.tier;
+  const safetyAccounts = await Promise.all(memberIds.map(getSafetyAccount));
+  const status = safetyAccounts.some((account) => account.status === "terminated")
+    ? "terminated"
+    : safetyAccounts.some((account) => account.status === "suspended") ? "suspended" : "active";
+  const strikes = Math.max(0, ...safetyAccounts.map((account) => Number(account.strikes || 0)));
+  const trackedTextCostUsd = money(user.analytics.textCostUsd, 6);
+  const trackedVoiceCostUsd = money(user.analytics.voiceCostUsd, 6);
+  const trackedCostUsd = trackedTextCostUsd + trackedVoiceCostUsd;
+  const chargedCostBaseline = user.creditsUsed * CREDIT_USD;
+  const legacyUnallocatedCostUsd = money(Math.max(0, chargedCostBaseline - trackedCostUsd), 6);
+  const costUsd = money(trackedCostUsd + legacyUnallocatedCostUsd, 2);
+  let netRevenueUsd = 0;
+  for (const purchase of user.purchases) {
+    netRevenueUsd += purchase.kind === "topup" || purchase.kind === "web_subscription"
+      ? Math.max(0, purchase.amountUsd * 0.971 - 0.30)
+      : purchase.amountUsd * 0.85;
+  }
+  netRevenueUsd = money(netRevenueUsd);
+  const grossRevenueUsd = money(user.revenueUsd);
+  const profitUsd = money(netRevenueUsd - costUsd);
+  const activeDays30 = user.activeDays.filter((day) => Date.now() - Date.parse(`${day}T00:00:00Z`) < 30 * 86400_000).length;
+  const highValue = (netRevenueUsd >= 25 && profitUsd >= 8) || (user.purchases.length >= 3 && profitUsd > 10) || grossRevenueUsd >= 75;
+  const paid = credit.tier !== "free" || grossRevenueUsd > 0;
+  const inactiveDays = user.lastSeenAt ? Math.floor((Date.now() - user.lastSeenAt) / 86400_000) : 9999;
+  const segment = status !== "active" ? status
+    : highValue ? "high_value"
+    : paid && inactiveDays >= 14 ? "at_risk"
+    : paid ? "growing"
+    : activeDays30 >= 5 ? "engaged"
+    : user.firstSeenAt && Date.now() - user.firstSeenAt < 7 * 86400_000 ? "new"
+    : "standard";
+  const neighbors = new Set<string>();
+  for (const ip of user.ips) {
+    for (const neighbor of await identitiesForIp(ip)) if (!memberIds.includes(neighbor)) neighbors.add(neighbor);
+  }
+  const devices = records
+    .filter((record) => !record.identity.startsWith("apple:"))
+    .map((record) => ({
+      id: record.identity,
+      name: record.device?.name || "",
+      model: record.device?.model || record.deviceType || "Unknown device",
+      identifier: record.device?.identifier || "",
+      takiName: record.device?.takiName || "",
+      lastSeenAt: record.device?.lastSeenAt || record.lastSeenAt
+    }));
+  const engagement = await engagementSummary(user);
+  const displayName = user.apple?.name || user.device?.takiName || devices.map((device) => ownerNameFromDeviceName(device.name)).find(Boolean) || "Taki user";
+  const common = {
+    identity,
+    displayName,
+    email: user.apple?.email || "",
+    tier: credit.tier,
+    balance: credit.balance,
+    status,
+    strikes,
+    firstSeenAt: user.firstSeenAt,
+    lastSeenAt: user.lastSeenAt,
+    activeDays30,
+    textQuestions: user.analytics.textQuestions,
+    voiceQuestions: user.analytics.voiceQuestions,
+    totalQuestions: user.analytics.textQuestions + user.analytics.voiceQuestions,
+    sessions: user.analytics.sessions,
+    averageSessionSeconds: user.analytics.sessions ? Math.round(user.analytics.totalSessionSeconds / user.analytics.sessions) : 0,
+    textCostUsd: trackedTextCostUsd,
+    voiceCostUsd: trackedVoiceCostUsd,
+    legacyUnallocatedCostUsd,
+    costUsd,
+    grossRevenueUsd,
+    netRevenueUsd,
+    profitUsd,
+    highValue,
+    segment,
+    deviceCount: devices.length,
+    topFeatures: Object.entries(user.analytics.featureUsage).sort((a, b) => b[1] - a[1]).slice(0, 5),
+    engagementPreferences: user.engagement
+  };
+  return {
+    row: common,
+    detail: {
+      ...common,
+      credits: credit,
+      featureUsage: user.analytics.featureUsage,
+      recentQuestions: user.analytics.recentQuestions,
+      activeDays: user.activeDays,
+      purchases: user.purchases,
+      tierHistory: user.tierHistory,
+      devices,
+      ips: user.ips,
+      ipNeighbors: [...neighbors],
+      linkedIdentities: memberIds,
+      engagement
+    },
+    user,
+    deviceIds
+  };
+}
+
+async function canonicalAdminIdentities(): Promise<string[]> {
+  const users = await allUsers();
+  const identities = new Set<string>();
+  for (const user of users) identities.add(await canonicalAccountIdentity(user.identity));
+  return [...identities];
+}
+
+// Account-level feed: linked devices roll into one customer, while detail pages
+// retain device, feature, cost, purchase, engagement, and safety information.
 app.post("/api/admin/users", async (req, res) => {
   if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
-  const users = await allUsers();
-  const rows = await Promise.all(users.map(async (u) => {
-    const acct = await getSafetyAccount(u.identity);
-    const summary = await creditSummary(u.identity);
-    const costUsd = Math.round(u.creditsUsed * CREDIT_USD * 100) / 100;
-    // Net revenue estimate (subscriptions ≈ 85% after Apple; top-ups ≈ Stripe fee).
-    let netUsd = 0;
-    for (const p of u.purchases) netUsd += p.kind === "topup" || p.kind === "web_subscription"
-      ? Math.max(0, p.amountUsd * 0.971 - 0.30)
-      : p.amountUsd * 0.85;
-    netUsd = Math.round(netUsd * 100) / 100;
-    const neighbors = new Set<string>();
-    for (const ip of u.ips) for (const i of await identitiesForIp(ip)) if (i !== u.identity) neighbors.add(i);
-    // Other device numbers signed into the same Apple account.
-    const linkedDevices = u.apple?.sub ? (await devicesForApple(u.apple.sub)).filter((d) => d !== u.identity) : [];
-    return {
-      ...u,
-      balance: summary.balance,
-      status: acct.status,
-      strikes: acct.strikes,
-      costUsd,
-      grossRevenueUsd: u.revenueUsd,
-      netRevenueUsd: netUsd,
-      profitUsd: Math.round((netUsd - costUsd) * 100) / 100,
-      ipNeighbors: Array.from(neighbors),
-      linkedDevices
-    };
-  }));
-  // Totals for the header.
-  const totals = rows.reduce((t, r) => ({
-    users: t.users + 1,
-    gross: t.gross + r.grossRevenueUsd,
-    net: t.net + r.netRevenueUsd,
-    cost: t.cost + r.costUsd,
-    profit: t.profit + r.profitUsd
-  }), { users: 0, gross: 0, net: 0, cost: 0, profit: 0 });
-  res.json({ users: rows, totals });
+  const accounts = await Promise.all((await canonicalAdminIdentities()).map(buildAdminAccount));
+  const rows = accounts.map((account) => account.row).sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+  const totals = rows.reduce((total, row) => ({
+    users: total.users + 1,
+    highValue: total.highValue + (row.highValue ? 1 : 0),
+    questions: total.questions + row.totalQuestions,
+    gross: total.gross + row.grossRevenueUsd,
+    net: total.net + row.netRevenueUsd,
+    cost: total.cost + row.costUsd,
+    profit: total.profit + row.profitUsd
+  }), { users: 0, highValue: 0, questions: 0, gross: 0, net: 0, cost: 0, profit: 0 });
+  res.json({ users: rows, totals: Object.fromEntries(Object.entries(totals).map(([key, value]) => [key, typeof value === "number" ? money(value) : value])), emailConfigured: isEngagementEmailConfigured(), pushConfigured: isPushConfigured() });
 });
+
+app.post("/api/admin/account", async (req, res) => {
+  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  res.json({ account: (await buildAdminAccount(identity)).detail });
+});
+
+app.post("/api/admin/engagement-preview", async (req, res) => {
+  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  const channel: EngagementChannel = req.body?.channel === "email" ? "email" : "push";
+  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  const account = await buildAdminAccount(identity);
+  res.json({ preview: await recommendedEngagement(account.user, channel), enabled: channel === "push" ? account.user.engagement.pushEnabled : account.user.engagement.emailEnabled });
+});
+
+app.post("/api/admin/engagement-send", async (req, res) => {
+  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  const channel: EngagementChannel = req.body?.channel === "email" ? "email" : "push";
+  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  const account = await buildAdminAccount(identity);
+  const enabled = channel === "push" ? account.user.engagement.pushEnabled : account.user.engagement.emailEnabled;
+  if (!enabled) { res.status(409).json({ error: `The user has not enabled personalized ${channel}.` }); return; }
+  const result = await sendPersonalizedEngagement(account.user, channel, account.deviceIds, "admin");
+  res.status(result.ok ? 200 : 502).json(result);
+});
+
+let engagementTickBusy = false;
+async function tickPersonalizedEngagement(): Promise<void> {
+  if (engagementTickBusy || (!isPushConfigured() && !isEngagementEmailConfigured())) return;
+  engagementTickBusy = true;
+  try {
+    for (const identity of await canonicalAdminIdentities()) {
+      const account = await buildAdminAccount(identity);
+      let sentPush = false;
+      if (isPushConfigured() && await shouldSendAutomatic(account.user, "push")) {
+        sentPush = (await sendPersonalizedEngagement(account.user, "push", account.deviceIds, "automatic")).ok;
+      }
+      if (!sentPush && isEngagementEmailConfigured() && await shouldSendAutomatic(account.user, "email")) {
+        await sendPersonalizedEngagement(account.user, "email", account.deviceIds, "automatic");
+      }
+    }
+  } catch (error) {
+    console.error("Personalized engagement tick:", error);
+  } finally {
+    engagementTickBusy = false;
+  }
+}
+setInterval(() => { void tickPersonalizedEngagement(); }, 60 * 60 * 1000);
 
 // Travel time for the commute Live Activity, by mode (driving w/ traffic,
 // walking, bicycling, transit) via Google Directions. 502 if no key/route so
@@ -1597,7 +2002,12 @@ async function runAssistant(
   const hasActions = !!finalized.action || (Array.isArray(finalized.actions) && finalized.actions.length > 0);
   const deferVoiceSynthesis = voiceMode && supportsDeferredActionSynthesis && hasActions && !!deviceId;
   if (deviceId) {
-    let usageUsd = totalUsageUsd(measured.usage);
+    const modelAndSearchUsd = totalUsageUsd(measured.usage);
+    const voiceOutputUsd = voiceMode && !deferVoiceSynthesis
+      ? ttsCostUsd(speechCharacterCount(finalized.spokenText || ""))
+      : 0;
+    const ownerCostUsd = modelAndSearchUsd + (voiceMode ? Math.max(0, voiceInputUsd) + voiceOutputUsd : 0);
+    let usageUsd = modelAndSearchUsd;
     // Voice: free within the per-cycle allowance on Plus Voice / Pro (base credits
     // only); beyond that, or on top-ups / other tiers, pay per spoken character.
     let voiceSynthesisIncluded = false;
@@ -1606,7 +2016,7 @@ async function runAssistant(
       if (voiceSynthesisIncluded && tier !== "free") await noteFreeVoice(deviceId);
       else {
         usageUsd += Math.max(0, voiceInputUsd);
-        if (!deferVoiceSynthesis) usageUsd += ttsCostUsd(speechCharacterCount(finalized.spokenText || ""));
+        usageUsd += voiceOutputUsd;
       }
     }
     const limitReason = usageLimitForCost(usageSummary, Math.ceil(usageUsd / CREDIT_USD));
@@ -1619,6 +2029,12 @@ async function runAssistant(
     }
     const s = await spendUsageUsd(deviceId, usageUsd);
     await noteSpend(deviceId, s.spent);
+    await noteInteraction(deviceId, {
+      channel: voiceMode ? "voice" : "text",
+      feature: assistantFeature(finalized),
+      credits: s.spent,
+      costUsd: ownerCostUsd
+    });
     const deferredVoiceSynthesisToken = deferVoiceSynthesis
       ? createVoiceSynthesisToken(deviceId, voiceSynthesisIncluded)
       : undefined;
@@ -1667,7 +2083,13 @@ app.post("/api/assistant", async (req, res) => {
     try {
       const measured = await measureUsage(() => getGeneralAnswer(state));
       const general = measured.value;
-      await chargeMeasuredUsage(deviceId, measured.usage);
+      const spent = await chargeMeasuredUsage(deviceId, measured.usage);
+      await noteInteraction(deviceId, {
+        channel: voiceMode ? "voice" : "text",
+        feature: "chat",
+        credits: spent,
+        costUsd: totalUsageUsd(measured.usage)
+      });
       res.json(
         finalizeResponse(
           { spokenText: general.text, action: null, memoryPatch: { pendingClarification: null }, needsExecution: false },
@@ -1866,8 +2288,10 @@ app.post("/api/voice/synthesize", async (req, res) => {
       }
     }
     const audio = await synthesize(text, voiceId, variability);
+    const speechUsd = ttsCostUsd(speechCharacterCount(text));
+    await noteChannelCost(deviceId, "voice", speechUsd);
     if (!correctionIsIncluded) {
-      const charged = await spendUsageUsd(deviceId, ttsCostUsd(speechCharacterCount(text)));
+      const charged = await spendUsageUsd(deviceId, speechUsd);
       await noteSpend(deviceId, charged.spent);
     }
     res.json({ audioBase64: audio, mime: "audio/mpeg", spokenText: text });

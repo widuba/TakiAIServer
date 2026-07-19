@@ -1,7 +1,7 @@
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { SignedDataVerifier, Environment } from "@apple/app-store-server-library";
-import type { Tier } from "./credits.js";
+import { IN_APP_CREDIT_PRODUCTS, type Tier } from "./credits.js";
 import { storeGet, storeSet } from "./store.js";
 
 /* ============================================================================
@@ -46,6 +46,14 @@ export interface TxInfo {
   bundleId?: string;
   tier: Tier;
   periodKey: string;      // unique per BILLING PERIOD → grant a cycle once
+}
+
+export interface CreditTxInfo {
+  productId: string;
+  transactionId: string;
+  environment?: string;
+  bundleId?: string;
+  priceCents: number;
 }
 
 // Apple's root CA (bundled). Fails closed: if it can't load, Sandbox/Production
@@ -101,19 +109,18 @@ function toTxInfo(payload: any): TxInfo | null {
   };
 }
 
-// Verify (Sandbox/Production) or decode (Xcode/local) a signed transaction.
-export async function verifyTransaction(jws: string): Promise<TxInfo | null> {
+async function verifiedTransactionPayload(jws: string): Promise<any | null> {
   const peek = decodePayload(jws);
   if (!peek) return null;
   const env = String(peek.environment || "");
 
   // Local Xcode / LocalTesting: no Apple-signed chain to verify — decode only.
   if (env === "Xcode" || env === "LocalTesting") {
-    return toTxInfo(peek);
+    return peek;
   }
 
   // Emergency override.
-  if (ALLOW_UNVERIFIED) return toTxInfo(peek);
+  if (ALLOW_UNVERIFIED) return peek;
 
   // Sandbox / Production: cryptographic verification is REQUIRED.
   const environment = env === "Production" ? Environment.PRODUCTION
@@ -126,12 +133,84 @@ export async function verifyTransaction(jws: string): Promise<TxInfo | null> {
     return null;
   }
   try {
-    const decoded = await verifier.verifyAndDecodeTransaction(jws);
-    return toTxInfo(decoded);
+    return await verifier.verifyAndDecodeTransaction(jws);
   } catch (e) {
     console.error("IAP: transaction verification failed:", (e as Error)?.message);
     return null;
   }
+}
+
+// Verify (Sandbox/Production) or decode (Xcode/local) a subscription transaction.
+export async function verifyTransaction(jws: string): Promise<TxInfo | null> {
+  const payload = await verifiedTransactionPayload(jws);
+  return payload ? toTxInfo(payload) : null;
+}
+
+// Verify a consumable credit-pack transaction independently of subscriptions.
+export async function verifyCreditTransaction(jws: string): Promise<CreditTxInfo | null> {
+  const payload = await verifiedTransactionPayload(jws);
+  if (!payload) return null;
+  const productId = String(payload.productId || "");
+  const pack = IN_APP_CREDIT_PRODUCTS[productId];
+  const transactionId = String(payload.transactionId || "");
+  if (!pack || !transactionId) return null;
+  if (payload.bundleId && payload.bundleId !== BUNDLE_ID) return null;
+  return {
+    productId,
+    transactionId,
+    environment: payload.environment,
+    bundleId: payload.bundleId,
+    priceCents: pack.priceCents
+  };
+}
+
+type CreditClaimResult = "claimed" | "existing" | "conflict";
+const creditClaimChains = new Map<string, Promise<unknown>>();
+const safeIdentity = (identity: string) => identity.replace(/[^a-zA-Z0-9_-]/g, "_");
+
+// Consumables are bearer receipts, so account-level idempotency is not enough:
+// the same signed transaction must never be grantable to two different users.
+export function claimCreditTransaction(transactionId: string, identity: string): Promise<CreditClaimResult> {
+  if (!transactionId || !identity) return Promise.resolve("conflict");
+  const prior = creditClaimChains.get(transactionId) || Promise.resolve();
+  const current = prior.then(async () => {
+    const key = `iapcredit:${transactionId}`;
+    const existing = await storeGet<{ identity: string }>(key, { identity: "" });
+    if (existing.identity && existing.identity !== identity) return "conflict";
+    if (existing.identity === identity) return "existing";
+    await storeSet(key, { identity });
+    const reverseKey = `iapcreditidentity:${safeIdentity(identity)}`;
+    const reverse = await storeGet<{ transactionIds: string[] }>(reverseKey, { transactionIds: [] });
+    if (!reverse.transactionIds.includes(transactionId)) {
+      reverse.transactionIds.push(transactionId);
+      await storeSet(reverseKey, { transactionIds: reverse.transactionIds.slice(-1000) });
+    }
+    return "claimed";
+  });
+  creditClaimChains.set(transactionId, current.then(() => undefined, () => undefined));
+  return current;
+}
+
+// When a device signs in with Apple, its credit ledger moves to the Apple
+// account. Move the global receipt ownership too, so an unfinished transaction
+// can be safely acknowledged after the identity changes.
+export async function rebindCreditTransactions(fromIdentity: string, toIdentity: string): Promise<void> {
+  if (!fromIdentity || !toIdentity || fromIdentity === toIdentity) return;
+  const fromKey = `iapcreditidentity:${safeIdentity(fromIdentity)}`;
+  const toKey = `iapcreditidentity:${safeIdentity(toIdentity)}`;
+  const from = await storeGet<{ transactionIds: string[] }>(fromKey, { transactionIds: [] });
+  if (!from.transactionIds.length) return;
+  const to = await storeGet<{ transactionIds: string[] }>(toKey, { transactionIds: [] });
+  for (const transactionId of from.transactionIds) {
+    const key = `iapcredit:${transactionId}`;
+    const owner = await storeGet<{ identity: string }>(key, { identity: "" });
+    if (!owner.identity || owner.identity === fromIdentity) {
+      await storeSet(key, { identity: toIdentity });
+      if (!to.transactionIds.includes(transactionId)) to.transactionIds.push(transactionId);
+    }
+  }
+  await storeSet(toKey, { transactionIds: to.transactionIds.slice(-1000) });
+  await storeSet(fromKey, { transactionIds: [] });
 }
 
 /* ---- Ownership map + App Store Server Notifications --------------------- */

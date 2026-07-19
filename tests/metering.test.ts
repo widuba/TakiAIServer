@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { geminiListPriceUsd, googleSearchListPriceUsd, sttCostUsd, ttsCostUsd } from "../src/metering.js";
-import { ATTACHMENT_BASE_CREDITS, FREE_VOICE_PER_CYCLE, TIERS, attachmentBaseCostCredits, isFreeVoice, worstCaseContributionUsd } from "../src/credits.js";
+import { ATTACHMENT_BASE_CREDITS, FREE_VOICE_PER_CYCLE, IN_APP_CREDIT_PRODUCTS, TIERS, attachmentBaseCostCredits, inAppCreditsForProduct, isFreeVoice, topupCentsPerCredit, topupPriceCents, worstCaseContributionUsd } from "../src/credits.js";
 import { detectPersonalSearch } from "../src/planner.js";
 
 test("one credit always represents exactly $0.001 of vendor usage", () => {
@@ -55,6 +55,22 @@ test("voice continues against credits after included turns and binary attachment
   assert.equal(attachmentBaseCostCredits([
     { kind: "image" }, { kind: "file" }, { kind: "url" }, { kind: "text" }
   ]), 80);
+});
+
+test("additional-credit discounts and in-app double-rate packs stay server authoritative", () => {
+  assert.equal(topupCentsPerCredit("free"), 1);
+  assert.equal(topupCentsPerCredit("plus"), 1);
+  assert.equal(topupCentsPerCredit("plus_voice"), 0.8);
+  assert.equal(topupCentsPerCredit("pro"), 0.6);
+  assert.equal(topupPriceCents(500, "free"), 500);
+  assert.equal(topupPriceCents(500, "plus_voice"), 400);
+  assert.equal(topupPriceCents(500, "pro"), 300);
+
+  const productId = "com.davidwiduba.takiai.credits.999";
+  assert.equal(IN_APP_CREDIT_PRODUCTS[productId].priceCents, 999);
+  assert.equal(inAppCreditsForProduct(productId, "free"), 500);
+  assert.equal(inAppCreditsForProduct(productId, "plus_voice"), 625);
+  assert.equal(inAppCreditsForProduct(productId, "pro"), 833);
 });
 
 test("unified personal search only captures explicit broad searches", () => {

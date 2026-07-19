@@ -10,6 +10,7 @@ dist/
 # Ephemeral runtime data
 push-tokens.json
 la-tokens.json
+/store-*.json
 # Old snapshots / backups
 backups/
 *.backup*
