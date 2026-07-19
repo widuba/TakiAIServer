@@ -42,6 +42,20 @@ export interface TrackerSnapshot {
 
 const PRICE_HEADERS = { "User-Agent": "Mozilla/5.0 (compatible; TakiAI/1.0)" };
 
+async function fetchYahooJson(path: string, label: string): Promise<any> {
+  let lastError: unknown = null;
+  for (const host of ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]) {
+    try {
+      const response: any = await withTimeout(fetch(`https://${host}${path}`, { headers: PRICE_HEADERS }), 6500, label);
+      if (!response.ok) throw new Error(`${label} returned ${response.status}`);
+      return await response.json();
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(`${label} unavailable`);
+}
+
 const CRYPTO_WORD =
   /\b(bitcoin|btc|ethereum|eth|dogecoin|doge|solana|sol|cardano|ada|xrp|ripple|litecoin|ltc|bnb|polkadot|dot|shiba inu|shib|polygon|matic|avalanche|avax|chainlink|link|tron|trx|monero|xmr|stellar|xlm|usd coin|usdc|tether|usdt)\b/i;
 
@@ -221,11 +235,8 @@ async function resolveStockSymbol(query: string, entity: string): Promise<{ symb
   if (COMPANY_TICKERS[entity]) return { symbol: COMPANY_TICKERS[entity], name: titleCase(entity) };
   // 3) Yahoo search — prefer a US-listed common stock that is NOT a fund/ETF.
   try {
-    const s: any = await withTimeout(
-      fetch(`https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(entity)}&quotesCount=10&newsCount=0`, { headers: PRICE_HEADERS }),
-      6000, "Stock search"
-    );
-    const quotes: any[] = ((await s.json())?.quotes || []).filter((x: any) => x?.symbol);
+    const search = await fetchYahooJson(`/v1/finance/search?q=${encodeURIComponent(entity)}&quotesCount=10&newsCount=0`, "Stock search");
+    const quotes: any[] = (search?.quotes || []).filter((x: any) => x?.symbol);
     const US = new Set(["NYQ", "NMS", "NGM", "NCM", "ASE", "PCX", "BATS"]);
     const fundish = (x: any) => /\b(etf|fund|trust|index|portfolio|etn)\b/i.test(`${x.shortname || ""} ${x.longname || ""}`);
     const q =
@@ -255,11 +266,8 @@ async function fetchStockQuote(query: string): Promise<TrackerSnapshot | null> {
     if (!resolved) return null;
     const symbol = resolved.symbol;
     const name = resolved.name;
-    const r: any = await withTimeout(
-      fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1m&range=1d&includePrePost=true`, { headers: PRICE_HEADERS }),
-      6000, "Stock price"
-    );
-    const result = (await r.json())?.chart?.result?.[0];
+    const chart = await fetchYahooJson(`/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1m&range=1d&includePrePost=true`, "Stock price");
+    const result = chart?.chart?.result?.[0];
     const meta = result?.meta;
     if (!meta) return null;
     let price: number | null = typeof meta.regularMarketPrice === "number" ? meta.regularMarketPrice : null;
@@ -307,7 +315,10 @@ function sportsDateKey(timeZone: string): string {
 }
 
 const sportsWords = (value: string) => value.toLowerCase().replace(/[^a-z0-9 ]/g, " ")
-  .split(/\s+/).filter((word) => word.length > 1 && !["the", "game", "match", "score", "track", "follow", "versus", "vs"].includes(word));
+  .split(/\s+/).filter((word) => word.length > 1 && ![
+    "the", "game", "match", "event", "score", "track", "follow", "versus", "vs",
+    "today", "tonight", "tomorrow", "live", "right", "now", "please"
+  ].includes(word));
 
 export function espnSportsSnapshotFromResponse(data: any, query: string, timeZone: string = TIME_ZONE): TrackerSnapshot | null {
   const wanted = sportsWords(query);
@@ -355,21 +366,22 @@ export function espnSportsSnapshotFromResponse(data: any, query: string, timeZon
 }
 
 async function fetchEspnSportsScore(query: string, timeZone: string): Promise<TrackerSnapshot | null> {
-  const league = ESPN_LEAGUES.find((candidate) => candidate.match.test(query));
-  if (!league) return null;
-  try {
-    const sourceUrl = `https://site.api.espn.com/apis/site/v2/sports/${league.path}/scoreboard?dates=${sportsDateKey(timeZone)}&limit=100`;
-    const response: any = await withTimeout(fetch(
-      sourceUrl,
-      { headers: PRICE_HEADERS }
-    ), 8000, "Sports scoreboard");
-    if (!response.ok) return null;
-    const snapshot = espnSportsSnapshotFromResponse(await response.json(), query, timeZone);
-    return snapshot ? { ...snapshot, sources: [{ title: "espn.com", url: sourceUrl }] } : null;
-  } catch (error) {
-    console.error("Sports scoreboard error:", error);
-    return null;
-  }
+  const preferred = ESPN_LEAGUES.filter((candidate) => candidate.match.test(query));
+  const leagues = preferred.length ? preferred : ESPN_LEAGUES;
+  const uniquePaths = Array.from(new Set(leagues.map((league) => league.path)));
+  const snapshots = await Promise.all(uniquePaths.map(async (path) => {
+    try {
+      const sourceUrl = `https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard?dates=${sportsDateKey(timeZone)}&limit=100`;
+      const response: any = await withTimeout(fetch(sourceUrl, { headers: PRICE_HEADERS }), 8000, "Sports scoreboard");
+      if (!response.ok) return null;
+      const snapshot = espnSportsSnapshotFromResponse(await response.json(), query, timeZone);
+      return snapshot ? { ...snapshot, sources: [{ title: "espn.com", url: sourceUrl }] } : null;
+    } catch (error) {
+      console.error("Sports scoreboard error:", error);
+      return null;
+    }
+  }));
+  return snapshots.find((snapshot) => snapshot !== null) || null;
 }
 
 async function fetchSportsScore(query: string, timeZone: string = TIME_ZONE): Promise<TrackerSnapshot | null> {
@@ -453,10 +465,114 @@ Respond with ONLY compact JSON (no markdown, no code fences):
 
 // Pull the current snapshot for a tracker. Used both when starting the activity
 // and by the device's refresh loop (/api/quote, /api/score).
-// Live flight status via grounded search (same free, no-key path as sports
-// scores). Returns a snapshot the Live Activity renders, or null if not found.
+type FlightStatsAirport = {
+  fs?: string;
+  iata?: string;
+  times?: {
+    scheduled?: { time?: string; ampm?: string; timezone?: string };
+    estimatedActual?: { title?: string; time?: string; ampm?: string; timezone?: string };
+  };
+};
+
+function compactFlightClock(value: any): string {
+  const time = String(value?.time || "").trim();
+  const ampm = String(value?.ampm || "").trim().toLowerCase();
+  return `${time}${ampm ? ampm.charAt(0) : ""}`;
+}
+
+function flightTimeLine(airport: FlightStatsAirport, phase: "departed" | "arrived", statusDescription: string): string {
+  const scheduled = compactFlightClock(airport?.times?.scheduled);
+  const estimate = airport?.times?.estimatedActual;
+  const estimateTime = compactFlightClock(estimate);
+  const estimateTitle = String(estimate?.title || "").toLowerCase();
+  let note = statusDescription || "scheduled";
+  if (estimateTime && estimateTitle.includes("actual")) note = `${phase} ${estimateTime}`;
+  else if (estimateTime && estimateTime !== scheduled) note = `est ${estimateTime}`;
+  else if (/on time/i.test(statusDescription)) note = "on time";
+  return `${scheduled || estimateTime || "—"}|${note}`.slice(0, 30);
+}
+
+export function flightStatsSnapshotFromHtml(html: string, requestedFlight: string, sourceUrl: string): TrackerSnapshot | null {
+  const marker = "__NEXT_DATA__ =";
+  const start = html.indexOf(marker);
+  if (start < 0) return null;
+  const jsonStart = html.indexOf("{", start + marker.length);
+  if (jsonStart < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let jsonEnd = -1;
+  for (let index = jsonStart; index < html.length; index += 1) {
+    const character = html[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === "\"") inString = false;
+      continue;
+    }
+    if (character === "\"") { inString = true; continue; }
+    if (character === "{") depth += 1;
+    else if (character === "}") {
+      depth -= 1;
+      if (depth === 0) { jsonEnd = index + 1; break; }
+    }
+  }
+  if (jsonEnd < 0) return null;
+  const raw = html.slice(jsonStart, jsonEnd);
+  let data: any;
+  try { data = JSON.parse(raw); } catch { return null; }
+  const flight = data?.props?.initialState?.flightTracker?.flight;
+  const header = flight?.resultHeader;
+  const carrier = String(header?.carrier?.fs || "").toUpperCase();
+  const number = String(header?.flightNumber || "").toUpperCase();
+  const actualCode = `${carrier}${number}`;
+  const expectedCode = requestedFlight.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (!flight || !carrier || !number || actualCode !== expectedCode) return null;
+
+  const departure = flight.departureAirport as FlightStatsAirport;
+  const arrival = flight.arrivalAirport as FlightStatsAirport;
+  const depCode = String(departure?.iata || departure?.fs || header?.departureAirportFS || "DEP").toUpperCase();
+  const arrCode = String(arrival?.iata || arrival?.fs || header?.arrivalAirportFS || "ARR").toUpperCase();
+  const statusDescription = String(flight?.status?.statusDescription || header?.statusDescription || flight?.status?.status || "Scheduled").trim();
+  const status = String(flight?.status?.status || statusDescription).trim();
+  const rawColor = String(flight?.status?.color || "").toLowerCase();
+  const color = rawColor === "red" || rawColor === "yellow" ? rawColor : "green";
+  const trend = color === "red" ? "down" : color === "green" ? "up" : "flat";
+
+  return {
+    title: `${actualCode} · ${depCode}→${arrCode}`.slice(0, 30),
+    symbol: "airplane",
+    line1: flightTimeLine(departure, "departed", statusDescription),
+    line2: flightTimeLine(arrival, "arrived", statusDescription),
+    trend,
+    status: `${status}${statusDescription && statusDescription !== status ? ` · ${statusDescription}` : ""}`.slice(0, 44),
+    depColor: color,
+    arrColor: color,
+    sources: [{ title: "flightstats.com", url: sourceUrl }]
+  };
+}
+
+async function fetchFlightStatsStatus(query: string): Promise<TrackerSnapshot | null> {
+  const flight = (extractFlightCode(query) || query).toUpperCase().replace(/\s+/g, "");
+  const match = flight.match(/^([A-Z0-9]{2})(\d{1,4}[A-Z]?)$/);
+  if (!match) return null;
+  const sourceUrl = `https://www.flightstats.com/v2/flight-tracker/${encodeURIComponent(match[1])}/${encodeURIComponent(match[2])}`;
+  try {
+    const response: any = await withTimeout(fetch(sourceUrl, { headers: PRICE_HEADERS }), 10000, "FlightStats");
+    if (!response.ok) return null;
+    return flightStatsSnapshotFromHtml(await response.text(), flight, sourceUrl);
+  } catch (error) {
+    console.error("FlightStats error:", error);
+    return null;
+  }
+}
+
+// Live flight status uses FlightStats' structured public tracker first and
+// grounded search as a fallback. Returns a snapshot the Live Activity renders.
 async function fetchFlightStatus(query: string, timeZone: string = TIME_ZONE): Promise<TrackerSnapshot | null> {
   const flight = query.toUpperCase().replace(/\s+/g, "");
+  const structured = await fetchFlightStatsStatus(flight);
+  if (structured) return structured;
   const nowLocal = new Date().toLocaleString("en-US", { timeZone, dateStyle: "full", timeStyle: "short" });
   const prompt = `Right now it is ${nowLocal}.
 Report the CURRENT status of airline flight "${flight}" for today (or its most recent/next occurrence if it operates daily).

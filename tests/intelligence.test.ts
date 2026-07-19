@@ -15,7 +15,7 @@ import { billableAudioDurationMs, normalizeTextForSpeech, speechCharacterCount, 
 import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
-import { espnSportsSnapshotFromResponse, parseTrackCommand, ship24StatusFromResponse } from "../src/tracker.js";
+import { espnSportsSnapshotFromResponse, flightStatsSnapshotFromHtml, parseTrackCommand, ship24StatusFromResponse } from "../src/tracker.js";
 import { looksLikeComparisonRequest, looksLikeFlightQuestion, looksLikeStockQuestion } from "../src/tools.js";
 import { parseUserPersona, personaPromptBlock } from "../src/persona.js";
 import { normalizeChatTitle } from "../src/chatTitle.js";
@@ -391,6 +391,44 @@ test("structured sports scoreboards produce a current Live Activity snapshot", (
   assert.equal(snapshot?.line1, "BOS 2 – NYY 3");
   assert.equal(snapshot?.line2, "Yankees lead");
   assert.equal(snapshot?.status, "Top 7th");
+  assert.equal(espnSportsSnapshotFromResponse({
+    events: [{ competitions: [{
+      status: { type: { state: "pre", shortDetail: "7:05 PM" } },
+      competitors: [
+        { homeAway: "home", team: { displayName: "Baltimore Orioles", shortDisplayName: "Orioles", abbreviation: "BAL" } },
+        { homeAway: "away", team: { displayName: "Toronto Blue Jays", shortDisplayName: "Blue Jays", abbreviation: "TOR" } }
+      ]
+    }] }]
+  }, "the Orioles game tonight")?.title, "Blue Jays vs Orioles");
+});
+
+test("structured FlightStats pages produce a verified flight Live Activity snapshot", () => {
+  const page = {
+    props: { initialState: { flightTracker: { flight: {
+      resultHeader: {
+        carrier: { fs: "UA" }, flightNumber: "123", departureAirportFS: "LHR",
+        arrivalAirportFS: "EWR", status: "Scheduled", statusDescription: "On time"
+      },
+      status: { status: "Scheduled", statusDescription: "On time", color: "green" },
+      departureAirport: {
+        iata: "LHR",
+        times: { scheduled: { time: "7:45", ampm: "AM" }, estimatedActual: { title: "Estimated", time: "7:45", ampm: "AM" } }
+      },
+      arrivalAirport: {
+        iata: "EWR",
+        times: { scheduled: { time: "10:30", ampm: "AM" }, estimatedActual: { title: "Estimated", time: "10:30", ampm: "AM" } }
+      }
+    } } } }
+  };
+  const url = "https://www.flightstats.com/v2/flight-tracker/UA/123";
+  const html = `<script>__NEXT_DATA__ = ${JSON.stringify(page)};__NEXT_LOADED_PAGES__=[];</script>`;
+  const snapshot = flightStatsSnapshotFromHtml(html, "UA123", url);
+  assert.equal(snapshot?.title, "UA123 · LHR→EWR");
+  assert.equal(snapshot?.line1, "7:45a|on time");
+  assert.equal(snapshot?.line2, "10:30a|on time");
+  assert.equal(snapshot?.status, "Scheduled · On time");
+  assert.equal(snapshot?.sources?.[0]?.url, url);
+  assert.equal(flightStatsSnapshotFromHtml(html, "UA124", url), null);
 });
 
 test("ordinary words followed by years are not mistaken for flights", () => {
