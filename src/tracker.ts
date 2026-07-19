@@ -96,7 +96,8 @@ const TRACKER_MODEL = String(process.env.GEMINI_TRACKER_MODEL || MAIN_MODEL).tri
 const TRACKER_TIMEOUT_MS = Number(process.env.TRACKER_TIMEOUT_MS || 35000);
 
 function groundingSources(response: any): AssistantSource[] {
-  const metadata = response?.candidates?.[0]?.groundingMetadata;
+  const candidate = response?.candidates?.[0];
+  const metadata = candidate?.groundingMetadata || candidate?.grounding_metadata;
   const chunks = metadata?.groundingChunks || metadata?.grounding_chunks || [];
   const seen = new Set<string>();
   const sources: AssistantSource[] = [];

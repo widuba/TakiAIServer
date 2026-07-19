@@ -2015,7 +2015,8 @@ export function appUrlForName(appName: string) {
 /* ---- Grounded web answer (current facts, not calendarable events) ------- */
 
 function getGroundingSourceCount(response: any) {
-  const gm = response?.candidates?.[0]?.groundingMetadata;
+  const candidate = response?.candidates?.[0];
+  const gm = candidate?.groundingMetadata || candidate?.grounding_metadata;
   const chunks = gm?.groundingChunks || gm?.grounding_chunks || [];
   const supports = gm?.groundingSupports || gm?.grounding_supports || [];
   const webQueries = gm?.webSearchQueries || gm?.web_search_queries || [];
@@ -2027,7 +2028,8 @@ function getGroundingSourceCount(response: any) {
 }
 
 function getGroundingSources(response: any) {
-  const gm = response?.candidates?.[0]?.groundingMetadata;
+  const candidate = response?.candidates?.[0];
+  const gm = candidate?.groundingMetadata || candidate?.grounding_metadata;
   const chunks = gm?.groundingChunks || gm?.grounding_chunks || [];
   const seen = new Set<string>();
   const sources: { title: string; url: string }[] = [];
