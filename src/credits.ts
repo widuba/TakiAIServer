@@ -21,7 +21,7 @@ export { CREDIT_USD } from "./metering.js";
 /* ---- CONFIG (tune these) ------------------------------------------------- */
 
 export const GRANT_EXPIRY_DAYS = 90;      // credits expire 90 days after purchase
-export const FREE_STARTER_CREDITS = 100;  // a fresh device gets this once, so the app works pre-subscription
+export const FREE_STARTER_CREDITS = 250;  // a fresh device gets this once, so the app works pre-subscription
 const NON_EXPIRING_GRANT_DATE = Date.UTC(9999, 11, 31);
 
 export type Tier = "free" | "plus" | "plus_voice" | "pro";
@@ -45,7 +45,7 @@ export const TIERS: Record<Tier, TierConfig> = {
 
 // Voice pricing. Plus Voice / Pro get a per-cycle allowance of included speech;
 // after that, voice continues at list-price STT/TTS cost against normal credits.
-// Free gets five lifetime included turns, then follows that same paid path.
+// Free gets five lifetime turns. A subscription is required after that cap.
 export const FREE_VOICE_PER_CYCLE: Record<Tier, number> = { free: 0, plus: 0, plus_voice: 150, pro: 300 };
 export const FREE_VOICE_LIMIT = 5;
 export const APP_STORE_COMMISSION_RATE = 0.15;
@@ -66,6 +66,10 @@ export function isFreeVoice(tier: Tier, baseCredits: number, voiceCycleUsed: num
   if (tier === "free") return voiceLifetimeUsed < FREE_VOICE_LIMIT;
   const cap = FREE_VOICE_PER_CYCLE[tier] || 0;
   return cap > 0 && baseCredits > 0 && voiceCycleUsed < cap;
+}
+
+export function hasVoiceAccess(tier: Tier, voiceLifetimeUsed = 0): boolean {
+  return tier !== "free" || voiceLifetimeUsed < FREE_VOICE_LIMIT;
 }
 // Credits charged for a paid voice turn (beyond the free allowance).
 export function worstCaseContributionUsd(tier: Tier): number {
@@ -102,6 +106,9 @@ export interface CreditAccount {
   processedTx?: string[];
   // Consumable StoreKit transactions are permanent and must only grant once.
   processedConsumableTx?: string[];
+  // Remains true after purchased credits are spent or expire, so Membership can
+  // keep the expiry-history control hidden for people who have never bought any.
+  hasPurchasedCredits?: boolean;
   // Lifetime count of voice questions asked (enforces the free-tier voice cap).
   voiceCount?: number;
   // FREE voice turns used THIS billing cycle (reset on renewal). Enforces the
@@ -130,6 +137,8 @@ export interface CreditSummary {
   nextExpiry: number | null; // epoch ms of the soonest-expiring grant
   // Per-grant breakdown so the UI can show "1,000 credits expire Sep 27".
   expiring: { credits: number; expiresAt: number }[];
+  purchasedExpiring: { credits: number; expiresAt: number }[];
+  hasPurchasedCredits: boolean;
   durable: boolean;
   voiceUsed: number;          // voice questions asked (for the free-tier cap)
   // Remaining BASE subscription credits (source "subscription:*"). Free/included
@@ -166,16 +175,29 @@ async function load(deviceId: string): Promise<CreditAccount> {
   });
   acct.deviceId = deviceId;
   if (!Array.isArray(acct.grants)) acct.grants = [];
-  // Drop fully-expired / emptied grants to keep the blob small.
   const now = Date.now();
+  // Migrate credit packs from the earlier non-expiring implementation.
+  for (const grant of acct.grants) {
+    if (isPurchasedGrant(grant) && grant.expiresAt >= NON_EXPIRING_GRANT_DATE) {
+      grant.expiresAt = grant.grantedAt + GRANT_EXPIRY_DAYS * 86400000;
+    }
+  }
+  // Drop fully-expired / emptied grants to keep the blob small.
   acct.grants = acct.grants.filter((g) => g.expiresAt > now && g.remaining > 0);
   if (!Array.isArray(acct.topupAllowances)) acct.topupAllowances = [];
   for (const grant of acct.grants) {
-    if (/topup/i.test(grant.source) && !acct.topupAllowances.some((item) => item.id === grant.id)) {
-      acct.topupAllowances.push({ id: grant.id, amount: grant.amount, expiresAt: grant.expiresAt });
+    if (/topup/i.test(grant.source)) {
+      const allowance = acct.topupAllowances.find((item) => item.id === grant.id);
+      if (allowance) allowance.expiresAt = grant.expiresAt;
+      else acct.topupAllowances.push({ id: grant.id, amount: grant.amount, expiresAt: grant.expiresAt });
     }
   }
   acct.topupAllowances = acct.topupAllowances.filter((item) => item.expiresAt > now && item.amount > 0);
+  if (acct.hasPurchasedCredits !== true) {
+    acct.hasPurchasedCredits = acct.grants.some((grant) => isPurchasedGrant(grant))
+      || (acct.processedConsumableTx?.length || 0) > 0
+      || acct.topupAllowances.length > 0;
+  }
   rollUsageWindows(acct, now);
   return acct;
 }
@@ -201,6 +223,19 @@ function addGrant(acct: CreditAccount, source: string, amount: number, expiresAt
 export function balanceOf(acct: CreditAccount): number {
   const now = Date.now();
   return acct.grants.reduce((sum, g) => (g.expiresAt > now ? sum + g.remaining : sum), 0);
+}
+
+export function isPurchasedGrant(grant: Pick<CreditGrant, "source">): boolean {
+  return /topup/i.test(grant.source);
+}
+
+// A subscription balance is always consumed before purchased credits. Within
+// each bucket, use the soonest-expiring grant first.
+export function compareGrantSpendOrder(a: CreditGrant, b: CreditGrant): number {
+  const priority = (grant: CreditGrant) => grant.source.startsWith("subscription:")
+    ? 0
+    : isPurchasedGrant(grant) ? 2 : 1;
+  return priority(a) - priority(b) || a.expiresAt - b.expiresAt || a.grantedAt - b.grantedAt;
 }
 
 function ensureStarter(acct: CreditAccount): boolean {
@@ -278,6 +313,8 @@ function summarize(acct: CreditAccount): CreditSummary {
     balance: balanceOf(acct),
     nextExpiry: live.find((g) => g.expiresAt < NON_EXPIRING_GRANT_DATE)?.expiresAt ?? null,
     expiring: live.filter((g) => g.expiresAt < NON_EXPIRING_GRANT_DATE).map((g) => ({ credits: g.remaining, expiresAt: g.expiresAt })),
+    purchasedExpiring: live.filter(isPurchasedGrant).map((g) => ({ credits: g.remaining, expiresAt: g.expiresAt })),
+    hasPurchasedCredits: acct.hasPurchasedCredits === true,
     durable: isDurable(),
     voiceUsed: acct.voiceCount || 0,
     baseCredits: live.filter((g) => g.source.startsWith("subscription:")).reduce((s, g) => s + g.remaining, 0),
@@ -312,6 +349,7 @@ export async function grantCredits(identity: string, amount: number, source: str
     if (grant && /topup/i.test(source)) {
       acct.topupAllowances = acct.topupAllowances || [];
       acct.topupAllowances.push({ id: grant.id, amount: grant.amount, expiresAt: grant.expiresAt });
+      acct.hasPurchasedCredits = true;
     }
     acct.starterGiven = true;
     await save(acct);
@@ -379,10 +417,11 @@ export async function grantForConsumableTransaction(
     if (acct.processedConsumableTx.includes(transactionId)) {
       return { granted: false, credits, priceCents: pack.priceCents, summary: summarize(acct) };
     }
-    const grant = addGrant(acct, `iap_topup:${productId}`, credits, NON_EXPIRING_GRANT_DATE);
+    const grant = addGrant(acct, `iap_topup:${productId}`, credits);
     if (grant) {
       acct.topupAllowances = acct.topupAllowances || [];
       acct.topupAllowances.push({ id: grant.id, amount: grant.amount, expiresAt: grant.expiresAt });
+      acct.hasPurchasedCredits = true;
     }
     acct.processedConsumableTx.push(transactionId);
     if (acct.processedConsumableTx.length > 500) acct.processedConsumableTx = acct.processedConsumableTx.slice(-500);
@@ -438,7 +477,7 @@ export async function spend(deviceId: string, cost: number): Promise<CreditSumma
     let need = Math.max(0, Math.round(cost));
     const ordered = acct.grants
       .filter((g) => g.expiresAt > now && g.remaining > 0)
-      .sort((a, b) => a.expiresAt - b.expiresAt);
+      .sort(compareGrantSpendOrder);
     for (const g of ordered) {
       if (need <= 0) break;
       const take = Math.min(g.remaining, need);
@@ -469,7 +508,7 @@ export async function spendUsageUsd(deviceId: string, costUsd: number): Promise<
     const requested = need;
     const ordered = acct.grants
       .filter((grant) => grant.expiresAt > now && grant.remaining > 0)
-      .sort((a, b) => a.expiresAt - b.expiresAt);
+      .sort(compareGrantSpendOrder);
     for (const grant of ordered) {
       if (need <= 0) break;
       const take = Math.min(grant.remaining, need);
@@ -552,6 +591,7 @@ export async function mergeCredits(
           to.grants.push(converted);
           to.topupAllowances = to.topupAllowances || [];
           to.topupAllowances.push({ id: converted.id, amount: converted.remaining, expiresAt: converted.expiresAt });
+          to.hasPurchasedCredits = true;
           to.retiredSubscriptionIds = to.retiredSubscriptionIds || [];
           if (options.secondaryTransactionId && !to.retiredSubscriptionIds.includes(options.secondaryTransactionId)) {
             to.retiredSubscriptionIds.push(options.secondaryTransactionId);
@@ -569,9 +609,13 @@ export async function mergeCredits(
     to.processedConsumableTx = [...(to.processedConsumableTx || []), ...(from.processedConsumableTx || [])]
       .filter((id, index, all) => all.indexOf(id) === index)
       .slice(-500);
+    to.voiceCount = Math.max(0, to.voiceCount || 0) + Math.max(0, from.voiceCount || 0);
+    to.voiceCycleCount = Math.max(to.voiceCycleCount || 0, from.voiceCycleCount || 0);
+    to.hasPurchasedCredits = to.hasPurchasedCredits === true || from.hasPurchasedCredits === true
+      || to.grants.some(isPurchasedGrant);
     await save(to);
     // Empty the source so its credits can't be claimed again.
-    await save({ deviceId: fromId, tier: "free", grants: [], starterGiven: true, processedTx: [], processedConsumableTx: [], topupAllowances: [], updatedAt: Date.now() });
+    await save({ deviceId: fromId, tier: "free", grants: [], starterGiven: true, processedTx: [], processedConsumableTx: [], topupAllowances: [], voiceCount: 0, voiceCycleCount: 0, updatedAt: Date.now() });
     return summarize(to);
   });
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { geminiListPriceUsd, googleSearchListPriceUsd, sttCostUsd, ttsCostUsd } from "../src/metering.js";
-import { ATTACHMENT_BASE_CREDITS, FREE_VOICE_PER_CYCLE, IN_APP_CREDIT_PRODUCTS, TIERS, attachmentBaseCostCredits, inAppCreditsForProduct, isFreeVoice, topupCentsPerCredit, topupPriceCents, worstCaseContributionUsd } from "../src/credits.js";
+import { ATTACHMENT_BASE_CREDITS, FREE_STARTER_CREDITS, FREE_VOICE_LIMIT, FREE_VOICE_PER_CYCLE, GRANT_EXPIRY_DAYS, IN_APP_CREDIT_PRODUCTS, TIERS, attachmentBaseCostCredits, compareGrantSpendOrder, hasVoiceAccess, inAppCreditsForProduct, isFreeVoice, topupCentsPerCredit, topupPriceCents, worstCaseContributionUsd, type CreditGrant } from "../src/credits.js";
 import { detectPersonalSearch } from "../src/planner.js";
 
 test("one credit always represents exactly $0.001 of vendor usage", () => {
@@ -46,15 +46,41 @@ test("every paid tier remains contribution-positive at worst-case included usage
   assert.equal(TIERS.pro.creditsPerCycle, 15_000);
 });
 
-test("voice continues against credits after included turns and binary attachments have a forty-credit floor", () => {
-  assert.equal(isFreeVoice("free", 100, 0, 4), true);
-  assert.equal(isFreeVoice("free", 100, 0, 5), false);
+test("free accounts receive 250 credits and stop Voice after five lifetime questions", () => {
+  assert.equal(FREE_STARTER_CREDITS, 250);
+  assert.equal(FREE_VOICE_LIMIT, 5);
+  assert.equal(isFreeVoice("free", 250, 0, 4), true);
+  assert.equal(isFreeVoice("free", 250, 0, 5), false);
+  assert.equal(hasVoiceAccess("free", 4), true);
+  assert.equal(hasVoiceAccess("free", 5), false);
+  assert.equal(hasVoiceAccess("plus", 500), true);
+});
+
+test("paid voice continues against credits after included turns and binary attachments have a forty-credit floor", () => {
   assert.equal(isFreeVoice("plus_voice", 1000, 149), true);
   assert.equal(isFreeVoice("plus_voice", 1000, 150), false);
   assert.equal(ATTACHMENT_BASE_CREDITS, 40);
   assert.equal(attachmentBaseCostCredits([
     { kind: "image" }, { kind: "file" }, { kind: "url" }, { kind: "text" }
   ]), 80);
+});
+
+test("purchased credits expire after 90 days and are spent after subscription credits", () => {
+  assert.equal(GRANT_EXPIRY_DAYS, 90);
+  const grant = (source: string, expiresAt: number): CreditGrant => ({
+    id: source,
+    amount: 100,
+    remaining: 100,
+    grantedAt: 1,
+    expiresAt,
+    source
+  });
+  const ordered = [
+    grant("iap_topup:pack", 10),
+    grant("subscription:plus", 30),
+    grant("free_starter", 20)
+  ].sort(compareGrantSpendOrder);
+  assert.deepEqual(ordered.map((item) => item.source), ["subscription:plus", "free_starter", "iap_topup:pack"]);
 });
 
 test("additional-credit discounts and in-app double-rate packs stay server authoritative", () => {

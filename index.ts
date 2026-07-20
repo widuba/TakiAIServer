@@ -23,7 +23,7 @@ import { extractFlightCode, normalizeTrackerKind } from "./src/entityClassifier.
 import { setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, clearAlertsForReset, type Alert } from "./src/alerts.js";
 import { isDurable, storeDelete, storeGet, storeSet } from "./src/store.js";
-import { summary as creditSummary, spendUsageUsd, reset as resetCredits, isFreeVoice, noteFreeVoice, tierCatalog, grantForTransaction, grantForConsumableTransaction, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, noteVoiceQuestion, grantCredits, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_PER_CYCLE, CREDIT_USD, type Tier } from "./src/credits.js";
+import { summary as creditSummary, spendUsageUsd, reset as resetCredits, isFreeVoice, hasVoiceAccess, noteFreeVoice, tierCatalog, grantForTransaction, grantForConsumableTransaction, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, noteVoiceQuestion, grantCredits, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, FREE_VOICE_PER_CYCLE, CREDIT_USD, type Tier } from "./src/credits.js";
 import { measureUsage, sttCostUsd, totalUsageUsd, ttsCostUsd } from "./src/metering.js";
 import { verifyTransaction, verifyCreditTransaction, claimCreditTransaction, rebindCreditTransactions, linkTransactionIdentity, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
 import { revokeAppleAuthorizationCode, verifyAppleIdentityToken } from "./src/appleauth.js";
@@ -44,6 +44,7 @@ import { bypassResetGeneration, hasCurrentResetGeneration, RESET_EPOCH_HEADER } 
 // StoreKit IAP shipped — grants only happen via verified transactions now.)
 const ADMIN_SECRET = (process.env.ADMIN_SECRET || "").trim();
 const OUT_OF_CREDITS_MSG = "You're out of credits — top up or upgrade in Membership to keep asking.";
+const FREE_VOICE_LIMIT_MSG = `You've used your ${FREE_VOICE_LIMIT} free voice questions. Choose a plan to keep using Voice.`;
 const DAILY_LIMIT_MSG = "You've reached today's usage limit. You can ask again after the daily reset shown in Membership.";
 const MONTHLY_LIMIT_MSG = "You've reached this month's usage limit. You can ask again after the monthly reset shown in Membership.";
 
@@ -608,6 +609,10 @@ app.post("/api/vision", async (req, res) => {
     visionBaseCredits = sum.baseCredits;
     visionVoiceUsed = sum.voiceCycleUsed;
     visionVoiceLifetimeUsed = sum.voiceUsed;
+    if (voiceMode && !hasVoiceAccess(sum.tier, sum.voiceUsed)) {
+      res.json({ spokenText: FREE_VOICE_LIMIT_MSG, voiceLimitReached: true, credits: { ...sum, cost: 0 } });
+      return;
+    }
     const usageMessage = usageLimitMessage(sum);
     const fixedLimitReason = usageLimitForCost(sum, ATTACHMENT_BASE_CREDITS);
     if (sum.balance < ATTACHMENT_BASE_CREDITS || usageMessage || fixedLimitReason) {
@@ -685,6 +690,10 @@ app.post("/api/attachments", async (req, res) => {
     baseCredits = sum.baseCredits;
     voiceUsed = sum.voiceCycleUsed;
     voiceLifetimeUsed = sum.voiceUsed;
+    if (voiceMode && !hasVoiceAccess(sum.tier, sum.voiceUsed)) {
+      res.json({ spokenText: FREE_VOICE_LIMIT_MSG, voiceLimitReached: true, credits: { ...sum, cost: 0 } });
+      return;
+    }
     const usageMessage = usageLimitMessage(sum);
     const fixedLimitReason = attachmentCredits ? usageLimitForCost(sum, attachmentCredits) : null;
     if (sum.balance < Math.max(MIN_REQUEST_CREDITS, attachmentCredits) || usageMessage || fixedLimitReason) {
@@ -772,7 +781,12 @@ app.post("/api/register-device", async (req, res) => {
   const region = typeof req.body?.region === "string" ? req.body.region : "";
   try {
     const deviceId = await assignDeviceNumber(region);
-    res.json({ deviceId });
+    // Registration creates the account record and starter ledger together. A
+    // device ID can therefore never exist only on the phone or be invisible in
+    // the admin dashboard.
+    await noteUser(deviceId, clientIp(req), String(req.headers?.["user-agent"] || ""));
+    const credits = await creditSummary(deviceId);
+    res.json({ deviceId, credits });
   } catch (e) {
     console.error("register-device error:", e);
     res.status(502).json({ error: "could not register device" });
@@ -786,6 +800,9 @@ app.post("/api/device/info", async (req, res) => {
   if (!(await storeGet<boolean>(`devnum:used:${deviceId}`, false)) && !(await hasCreditsAccount(deviceId))) {
     res.status(404).json({ error: "unknown device" }); return;
   }
+  // Repair accounts created by older builds that issued an ID without adding a
+  // complete dashboard record. Validation runs whenever the app launches.
+  await noteUser(deviceId, clientIp(req), String(req.headers?.["user-agent"] || ""));
   await noteDevice(deviceId, {
     name: typeof b.name === "string" ? b.name : "",
     model: typeof b.model === "string" ? b.model : "",
@@ -880,6 +897,14 @@ async function captureRequestDeviceInfo(req: any, takiName: string): Promise<voi
 app.get("/api/credits", async (req, res) => {
   const deviceId = typeof req.query.deviceId === "string" ? req.query.deviceId.trim() : "";
   if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
+  if (!deviceId.startsWith("apple:") && !/^\d{8}$/.test(deviceId)) {
+    res.status(400).json({ error: "registered deviceId required" }); return;
+  }
+  if (/^\d{8}$/.test(deviceId)
+      && !(await storeGet<boolean>(`devnum:used:${deviceId}`, false))
+      && !(await hasCreditsAccount(deviceId))) {
+    res.status(404).json({ error: "device account not found; register this installation again" }); return;
+  }
   // Report access status so the app can hard-block a banned/suspended account on
   // launch (full-screen), not just when the user asks something.
   let access: "active" | "suspended" | "banned" = "active";
@@ -1035,7 +1060,7 @@ function publicPurchaseAccount(v: PurchaseAccount) {
 app.post("/api/credits/purchase-link", async (req, res) => {
   const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
   const storefront = typeof req.body?.storefront === "string" ? req.body.storefront.toUpperCase() : "";
-  if (storefront !== "USA") { res.status(403).json({ error: "Web purchase links are unavailable in this storefront" }); return; }
+  if (storefront !== "USA" && storefront !== "US") { res.status(403).json({ error: "Web purchase links are unavailable in this storefront" }); return; }
   const account = await validateTopupAccount(identity);
   if (!account.valid) { res.status(400).json({ error: account.reason || "Account unavailable" }); return; }
   const token = signPurchaseLink({ identity: account.publicId, exp: Date.now() + 10 * 60_000, nonce: randomUUID(), purpose: "credits" });
@@ -1514,7 +1539,11 @@ app.post("/api/account/apple", async (req, res) => {
       const role = transactionId === primary ? "primary" : "secondary";
       await setTransactionRole(transactionId, accountId, role);
     }
-  } catch (e) { console.error("apple link:", e); }
+  } catch (e) {
+    console.error("apple link:", e);
+    res.status(502).json({ error: "Taki couldn't finish connecting this Apple account. Please try again." });
+    return;
+  }
   const linkedDevices = (await devicesForApple(identdata.sub)).filter((d) => d !== deviceId);
   const accountUser = await userForIdentity(accountId);
   res.json({ accountId, deviceId, email: identdata.email || accountUser.apple?.email, linkedDevices, duplicateSubscriptionNeedsCancellation, engagement: accountUser.engagement, ...(await creditSummary(accountId)), tiers: tierCatalog() });
@@ -2160,6 +2189,13 @@ async function runAssistant(
     baseCredits = sum.baseCredits;
     voiceCycleUsed = sum.voiceCycleUsed;
     voiceLifetimeUsed = sum.voiceUsed;
+    if (voiceMode && !hasVoiceAccess(sum.tier, sum.voiceUsed)) {
+      return {
+        ...finalizeResponse({ spokenText: FREE_VOICE_LIMIT_MSG, action: null, memoryPatch: { pendingClarification: null }, needsExecution: false }, state),
+        voiceLimitReached: true,
+        credits: { ...sum, cost: 0 }
+      };
+    }
     // Cut users off BEFORE they hit 0 — they need at least a standard request's
     // worth of credits to ask anything.
     const usageMessage = usageLimitMessage(sum);
@@ -2321,6 +2357,16 @@ app.post("/api/voice", async (req, res) => {
   if (deviceId) {
     const sum = await creditSummary(deviceId);
     freeTier = sum.tier === "free";
+    if (!hasVoiceAccess(sum.tier, sum.voiceUsed)) {
+      let audio = "";
+      try { audio = await synthesize(FREE_VOICE_LIMIT_MSG, voiceId, voiceVariability); } catch { /* text remains available */ }
+      res.json({
+        transcript: "", spokenText: FREE_VOICE_LIMIT_MSG,
+        action: null, actions: null, audioBase64: audio, mime: "audio/mpeg",
+        voiceLimitReached: true, credits: { ...sum, cost: 0 }
+      });
+      return;
+    }
     const usageMessage = usageLimitMessage(sum);
     if (sum.balance < MIN_REQUEST_CREDITS || usageMessage) {
       res.json({
