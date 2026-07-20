@@ -2538,6 +2538,7 @@ const VOICE_SAMPLE_LINE = "The colors of the sky fade with the setting sun.";
 const voiceSampleCache = new Map<string, string>();
 app.get("/api/voice/sample", async (req, res) => {
   if (!isVoiceConfigured()) { res.status(503).json({ error: "voice not configured" }); return; }
+  res.set("Cache-Control", "public, max-age=604800, immutable");
   const voiceId = typeof req.query?.voiceId === "string" ? req.query.voiceId.trim() : "";
   const key = voiceId || "default";
   const cached = voiceSampleCache.get(key);

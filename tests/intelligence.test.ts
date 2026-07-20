@@ -558,7 +558,8 @@ test("usage limits add purchased credits to both plan windows", () => {
   assert.deepEqual(usageLimitsFor("plus", 5_000), { daily: 5_150, monthly: 8_000 });
   assert.deepEqual(usageLimitsFor("plus_voice", 0), { daily: 200, monthly: 4_000 });
   assert.deepEqual(usageLimitsFor("pro", 0), { daily: 750, monthly: 15_000 });
-  assert.deepEqual(usageLimitsFor("free", 0), { daily: 13, monthly: 250 });
+  assert.deepEqual(usageLimitsFor("free", 0), { daily: 250, monthly: 250 });
+  assert.deepEqual(usageLimitsFor("free", 500), { daily: 750, monthly: 750 });
 });
 
 test("Apple account merges distinguish restored and genuinely duplicate subscriptions", () => {

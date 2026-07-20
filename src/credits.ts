@@ -273,6 +273,12 @@ function rollUsageWindows(acct: CreditAccount, now = Date.now()): void {
 export function usageLimitsFor(tier: Tier, additionalCredits: number): { daily: number; monthly: number } {
   const base = tier === "free" ? FREE_STARTER_CREDITS : TIERS[tier].creditsPerCycle;
   const additional = Math.max(0, Math.floor(additionalCredits));
+  if (tier === "free") {
+    // Free credits are a finite balance, not a monthly subscription allowance.
+    // Keep both guardrails equal to the full available grant so a free account
+    // is never restricted by the paid-plan 5% daily formula.
+    return { daily: base + additional, monthly: base + additional };
+  }
   return {
     daily: Math.ceil(base * 0.05) + additional,
     monthly: base + additional
