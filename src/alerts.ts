@@ -49,6 +49,11 @@ const ALERT_TTL_MS = 1000 * 60 * 60 * 24 * 7; // auto-expire stale alerts after 
 let alerts: Alert[] = [];
 let loaded = false;
 
+export function clearAlertsForReset(): void {
+  alerts = [];
+  loaded = true;
+}
+
 async function load(): Promise<void> {
   if (loaded) return;
   alerts = await storeGet<Alert[]>(KEY, []);

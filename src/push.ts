@@ -254,6 +254,12 @@ export async function getLiveActivities(): Promise<LARegistration[]> {
   return [...laRegs.values()];
 }
 
+export async function clearPushStateForReset(): Promise<void> {
+  await laReady;
+  tokens.clear();
+  laRegs.clear();
+}
+
 // Push a content-state update (or an end) to one Live Activity push token.
 // Pass contentState = null for an "end" with no final state.
 export function sendLiveActivityUpdate(

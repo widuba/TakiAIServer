@@ -16,12 +16,12 @@ import { parseIncomingStyleProfiles } from "./src/messageStyle.js";
 import { parseUserPersona } from "./src/persona.js";
 import {
   registerToken, forgetToken, broadcast, getTokens, isPushConfigured,
-  registerLiveActivity, unregisterLiveActivity, getLiveActivities, sendLiveActivityUpdate
+  registerLiveActivity, unregisterLiveActivity, getLiveActivities, sendLiveActivityUpdate, clearPushStateForReset
 } from "./src/push.js";
 import { cachedTrackerSnapshot } from "./src/tracker.js";
 import { extractFlightCode, normalizeTrackerKind } from "./src/entityClassifier.js";
 import { setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
-import { addAlert, listAlerts, cancelAlerts, pollAlerts, type Alert } from "./src/alerts.js";
+import { addAlert, listAlerts, cancelAlerts, pollAlerts, clearAlertsForReset, type Alert } from "./src/alerts.js";
 import { isDurable, storeDelete, storeGet, storeSet } from "./src/store.js";
 import { summary as creditSummary, spendUsageUsd, reset as resetCredits, isFreeVoice, noteFreeVoice, tierCatalog, grantForTransaction, grantForConsumableTransaction, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, noteVoiceQuestion, grantCredits, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_PER_CYCLE, CREDIT_USD, type Tier } from "./src/credits.js";
 import { measureUsage, sttCostUsd, totalUsageUsd, ttsCostUsd } from "./src/metering.js";
@@ -36,6 +36,7 @@ import { emailProviderConfigured, createOAuthState, buildAuthUrl, completeOAuth,
 import { extractDurableMemories } from "./src/userMemory.js";
 import { createChatTitle } from "./src/chatTitle.js";
 import { engagementSummary, isEngagementEmailConfigured, recordEngagementOpen, recordEngagementSession, recommendedEngagement, sendPersonalizedEngagement, shouldSendAutomatic, type EngagementChannel } from "./src/engagement.js";
+import { performFullReset, previewFullReset, type FullResetPreview } from "./src/fullReset.js";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
 // Render. (The purchase-simulating grant endpoint was removed when real
@@ -47,6 +48,10 @@ const MONTHLY_LIMIT_MSG = "You've reached this month's usage limit. You can ask 
 
 type PendingVoiceSynthesis = { deviceId: string; included: boolean; expiresAt: number };
 const pendingVoiceSyntheses = new Map<string, PendingVoiceSynthesis>();
+const FULL_RESET_PHRASE = "DELETE EVERY TAKI ACCOUNT AND ALL DATA";
+const fullResetPreviews = new Map<string, { expiresAt: number; fingerprint: string }>();
+let fullResetInProgress = false;
+let activeRequests = 0;
 
 function isAdminAuthorized(value: unknown): boolean {
   if (!ADMIN_SECRET || typeof value !== "string") return false;
@@ -138,6 +143,22 @@ app.use(cors());
 // Keep the raw body around so the Stripe webhook can verify its signature (Stripe
 // signs the exact bytes, not the parsed JSON).
 app.use(express.json({ limit: "16mb", verify: (req, _res, buf) => { (req as any).rawBody = buf; } }));
+app.use((_req, res, next) => {
+  if (fullResetInProgress) {
+    res.status(503).json({ error: "Taki AI is completing an administrative reset. Try again shortly." });
+    return;
+  }
+  activeRequests += 1;
+  let finished = false;
+  const release = () => {
+    if (finished) return;
+    finished = true;
+    activeRequests = Math.max(0, activeRequests - 1);
+  };
+  res.once("finish", release);
+  res.once("close", release);
+  next();
+});
 
 // --- Stripe (web credit top-ups). Gated on env; endpoints 503 when unset. ---
 const STRIPE_KEY = process.env.STRIPE_SECRET_KEY || "";
@@ -168,13 +189,15 @@ function verifyPurchaseLink(token: unknown): PurchaseLinkPayload | null {
   } catch { return null; }
 }
 
-app.get("/health", (_req, res) => {
+app.get("/health", async (_req, res) => {
+  const reset = await storeGet<{ epoch?: number }>("system:reset", {});
   res.json({
     ok: true,
     app: "Taki AI server",
     mode: "planner-first-modular-v3",
     version: "2026-07-12-intelligence-v3",
-    models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL }
+    models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL },
+    resetEpoch: Number(reset.epoch || 0)
   });
 });
 
@@ -1644,6 +1667,139 @@ app.post("/api/admin/delete-user", async (req, res) => {
   if (!identity) { res.status(400).json({ error: "identity required" }); return; }
   await deleteUser(identity);
   res.json({ ok: true, identity, deleted: true });
+});
+
+function resetPreviewForAdmin(preview: FullResetPreview) {
+  const { fingerprint: _fingerprint, activeStripeSubscriptionIds: _subscriptionIds, ...safe } = preview;
+  return safe;
+}
+
+async function fullResetPreviewWithStripe(): Promise<FullResetPreview> {
+  const preview = await previewFullReset();
+  if (!stripe) return preview;
+
+  const candidates = new Set(preview.activeStripeSubscriptionIds);
+  for await (const session of stripe.checkout.sessions.list({ limit: 100 })) {
+    if (session.mode !== "subscription" || session.metadata?.purchaseType !== "plan") continue;
+    const id = typeof session.subscription === "string" ? session.subscription : session.subscription?.id;
+    if (id) candidates.add(id);
+  }
+
+  const active: string[] = [];
+  for (const id of candidates) {
+    try {
+      const subscription = await stripe.subscriptions.retrieve(id);
+      if (subscription.status !== "canceled" && subscription.status !== "incomplete_expired") active.push(id);
+    } catch (error: any) {
+      if (error?.code !== "resource_missing") throw error;
+    }
+  }
+  active.sort();
+  preview.activeStripeSubscriptionIds = active;
+  preview.activeStripeSubscriptions = active.length;
+  preview.fingerprint = `${preview.fingerprint}:stripe:${active.join(",")}`;
+  return preview;
+}
+
+async function waitForOtherRequests(): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  while (activeRequests > 1 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  if (activeRequests > 1) throw new Error("Other requests are still running. Wait a moment and retry the reset.");
+}
+
+async function cancelStripeSubscriptionsForFullReset(ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  if (!stripe) throw new Error("Stripe is not configured, so active subscriptions cannot be canceled safely.");
+  const failures: string[] = [];
+  for (const id of ids) {
+    try {
+      const subscription = await stripe.subscriptions.retrieve(id);
+      if (subscription.status !== "canceled" && subscription.status !== "incomplete_expired") {
+        await stripe.subscriptions.cancel(id);
+      }
+    } catch (error: any) {
+      // A deleted Stripe object cannot continue billing and is safe to treat as
+      // already canceled. Every other error blocks the data reset.
+      if (error?.code !== "resource_missing") failures.push(id);
+    }
+  }
+  if (failures.length) {
+    throw new Error(`${failures.length} Stripe subscription${failures.length === 1 ? "" : "s"} could not be canceled.`);
+  }
+}
+
+// Generates a short-lived snapshot. The destructive request must present this
+// token and the database must still match it, preventing a reset based on stale
+// counts or a confirmation copied from an earlier session.
+app.post("/api/admin/full-reset-preview", async (req, res) => {
+  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
+  try {
+    const preview = await fullResetPreviewWithStripe();
+    const previewToken = randomUUID();
+    const expiresAt = Date.now() + 5 * 60_000;
+    fullResetPreviews.clear();
+    fullResetPreviews.set(previewToken, { expiresAt, fingerprint: preview.fingerprint });
+    res.json({
+      ok: true,
+      preview: resetPreviewForAdmin(preview),
+      previewToken,
+      expiresAt,
+      confirmationPhrase: FULL_RESET_PHRASE,
+      appleSubscriptionWarning: "Apple subscriptions are managed by the App Store and are not canceled by this reset."
+    });
+  } catch (error) {
+    console.error("Full reset preview failed:", error);
+    res.status(503).json({ error: "Production storage could not be enumerated. Nothing was deleted." });
+  }
+});
+
+app.post("/api/admin/full-reset", async (req, res) => {
+  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
+  const previewToken = typeof req.body?.previewToken === "string" ? req.body.previewToken : "";
+  const pending = fullResetPreviews.get(previewToken);
+  if (!pending || pending.expiresAt < Date.now()) {
+    res.status(409).json({ error: "The reset preview expired. Run a new preview." });
+    return;
+  }
+  if (req.body?.confirmation !== FULL_RESET_PHRASE) {
+    res.status(400).json({ error: "The reset confirmation phrase did not match." });
+    return;
+  }
+
+  let resetCommitted = false;
+  try {
+    fullResetInProgress = true;
+    await waitForOtherRequests();
+    const current = await fullResetPreviewWithStripe();
+    if (current.fingerprint !== pending.fingerprint) {
+      fullResetInProgress = false;
+      fullResetPreviews.delete(previewToken);
+      res.status(409).json({ error: "Production data changed after the preview. Review a fresh preview before resetting." });
+      return;
+    }
+    if (current.activeStripeSubscriptionIds.length && req.body?.cancelStripeSubscriptions !== true) {
+      fullResetInProgress = false;
+      res.status(409).json({ error: "Active Stripe subscriptions must be canceled before their account records can be deleted." });
+      return;
+    }
+
+    await cancelStripeSubscriptionsForFullReset(current.activeStripeSubscriptionIds);
+    await clearPushStateForReset();
+    clearAlertsForReset();
+    const resetEpoch = Date.now();
+    const result = await performFullReset(resetEpoch);
+    resetCommitted = true;
+    fullResetPreviews.clear();
+    pendingVoiceSyntheses.clear();
+    res.on("finish", () => setTimeout(() => process.exit(0), 750));
+    res.json({ ok: true, resetEpoch, canceledStripeSubscriptions: current.activeStripeSubscriptionIds.length, ...result });
+  } catch (error) {
+    if (!resetCommitted) fullResetInProgress = false;
+    console.error("Full reset failed:", error);
+    res.status(503).json({ error: error instanceof Error ? error.message : "The full reset failed. Nothing else was attempted." });
+  }
 });
 
 function money(value: number, digits = 2): number {
