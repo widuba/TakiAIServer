@@ -37,6 +37,7 @@ import { extractDurableMemories } from "./src/userMemory.js";
 import { createChatTitle } from "./src/chatTitle.js";
 import { engagementSummary, isEngagementEmailConfigured, recordEngagementOpen, recordEngagementSession, recommendedEngagement, sendPersonalizedEngagement, shouldSendAutomatic, type EngagementChannel } from "./src/engagement.js";
 import { performFullReset, previewFullReset, type FullResetPreview } from "./src/fullReset.js";
+import { bypassResetGeneration, hasCurrentResetGeneration, RESET_EPOCH_HEADER } from "./src/resetGeneration.js";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
 // Render. (The purchase-simulating grant endpoint was removed when real
@@ -203,6 +204,33 @@ app.get("/health", async (_req, res) => {
 
 app.get(["/admin", "/admin/"], (_req, res) => {
   res.sendFile(fileURLToPath(new URL("./admin.html", import.meta.url)));
+});
+
+let resetEpochCache = { value: 0, readAt: 0 };
+async function currentResetEpoch(): Promise<number> {
+  if (Date.now() - resetEpochCache.readAt < 5_000) return resetEpochCache.value;
+  const reset = await storeGet<{ epoch?: number }>("system:reset", {});
+  resetEpochCache = { value: Math.floor(Number(reset.epoch || 0)), readAt: Date.now() };
+  return resetEpochCache.value;
+}
+
+// A full reset invalidates every prior installation generation. External
+// callbacks and the web checkout stay available, while app/API traffic must
+// prove it has observed the current reset epoch before any route can write.
+app.use(async (req, res, next) => {
+  if (!req.path.startsWith("/api/") || bypassResetGeneration(req.path)) { next(); return; }
+  try {
+    const requiredEpoch = await currentResetEpoch();
+    if (hasCurrentResetGeneration(requiredEpoch, req.headers[RESET_EPOCH_HEADER])) { next(); return; }
+    res.status(428).json({
+      error: "This Taki AI installation must be updated and reopened after the account reset.",
+      code: "reset_required",
+      resetEpoch: requiredEpoch
+    });
+  } catch (error) {
+    console.error("Reset generation check failed:", error);
+    res.status(503).json({ error: "Taki AI could not verify this installation yet. Try again shortly." });
+  }
 });
 
 // --- Push (APNs) --------------------------------------------------------------
