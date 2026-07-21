@@ -20,7 +20,7 @@ import {
 } from "./src/push.js";
 import { cachedTrackerSnapshot } from "./src/tracker.js";
 import { extractFlightCode, normalizeTrackerKind } from "./src/entityClassifier.js";
-import { clearPushToken, setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
+import { clearPushToken, getPushToken, setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, clearAlertsForReset, type Alert } from "./src/alerts.js";
 import { isDurable, storeDelete, storeGet, storeSet } from "./src/store.js";
 import { summary as creditSummary, spendUsageUsd, reset as resetCredits, isFreeVoice, noteFreeVoice, tierCatalog, grantForTransaction, grantForConsumableTransaction, grantWebTopup, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, noteVoiceQuestion, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, CREDIT_USD, type Tier } from "./src/credits.js";
@@ -187,7 +187,7 @@ app.get("/health", async (_req, res) => {
     ok: true,
     app: "Taki AI server",
     mode: "planner-first-modular-v3",
-    version: "2026-07-12-intelligence-v3",
+    version: "2026-07-21-audit-v2",
     durableStorage: isDurable(),
     models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL },
     resetEpoch: Number(reset.epoch || 0)
@@ -231,25 +231,23 @@ app.use(async (req, res, next) => {
 app.post("/api/register-push", async (req, res) => {
   const token = typeof req.body?.token === "string" ? req.body.token : "";
   const deviceId = normalizeTopupIdentity(typeof req.body?.deviceId === "string" ? req.body.deviceId : "");
-  if (!token) {
-    res.status(400).json({ error: "token required" });
+  if (!token || !/^\d{8}$/.test(deviceId)) {
+    res.status(400).json({ error: "token and valid deviceId required" });
     return;
   }
-  if (deviceId && !/^\d{8}$/.test(deviceId)) {
-    res.status(400).json({ error: "valid deviceId required" });
-    return;
-  }
+  if (!(await isKnownIdentity(deviceId))) { res.status(401).json({ error: "registered device required" }); return; }
   registerToken(token);
   // Tie the token to the device id so the nudge engine can target this device.
-  if (deviceId) await setPushToken(deviceId, token);
+  await setPushToken(deviceId, token);
   res.json({ ok: true, configured: isPushConfigured(), devices: getTokens().length });
 });
 
 // The device syncs its upcoming nudge manifest on every foreground; the cron
 // loop below fires each when due (so nudges arrive with the app closed).
 app.post("/api/nudges/sync", async (req, res) => {
-  const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
-  if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
+  const deviceId = normalizeTopupIdentity(typeof req.body?.deviceId === "string" ? req.body.deviceId : "");
+  if (!/^\d{8}$/.test(deviceId)) { res.status(400).json({ error: "valid deviceId required" }); return; }
+  if (!(await isKnownIdentity(deviceId))) { res.status(401).json({ error: "registered device required" }); return; }
   const count = await syncNudges(deviceId, Array.isArray(req.body?.nudges) ? req.body.nudges : []);
   res.json({ ok: true, count, pushConfigured: isPushConfigured() });
 });
@@ -258,8 +256,12 @@ app.post("/api/nudges/sync", async (req, res) => {
 app.post("/api/unregister-push", async (req, res) => {
   const token = typeof req.body?.token === "string" ? req.body.token : "";
   const deviceId = normalizeTopupIdentity(typeof req.body?.deviceId === "string" ? req.body.deviceId : "");
-  if (token) forgetToken(token);
-  if (/^\d{8}$/.test(deviceId)) await clearPushToken(deviceId);
+  if (!/^\d{8}$/.test(deviceId) || !(await isKnownIdentity(deviceId))) {
+    res.status(401).json({ error: "registered device required" }); return;
+  }
+  const registeredToken = await getPushToken(deviceId);
+  if (token && token === registeredToken) forgetToken(token);
+  await clearPushToken(deviceId);
   res.json({ ok: true });
 });
 
@@ -289,7 +291,7 @@ app.post("/api/test-push", async (req, res) => {
 // for messages IT generates (replace confirmations, permission prompts) so every
 // word the assistant says matches the selected persona — not just server replies.
 app.post("/api/style", async (req, res) => {
-  const text = typeof req.body?.text === "string" ? req.body.text : "";
+  const text = typeof req.body?.text === "string" ? req.body.text.slice(0, 4000) : "";
   if (!text.trim()) {
     res.status(400).json({ error: "text required" });
     return;
@@ -313,16 +315,18 @@ app.post("/api/style", async (req, res) => {
 app.post("/api/register-la", async (req, res) => {
   const id = typeof req.body?.id === "string" ? req.body.id : "";
   const token = typeof req.body?.token === "string" ? req.body.token : "";
-  if (!id || !token) {
-    res.status(400).json({ error: "id and token required" });
+  const deviceId = normalizeTopupIdentity(typeof req.body?.deviceId === "string" ? req.body.deviceId : "");
+  if (!id || !token || !/^\d{8}$/.test(deviceId)) {
+    res.status(400).json({ error: "id, token, and valid deviceId required" });
     return;
   }
+  if (!(await isKnownIdentity(deviceId))) { res.status(401).json({ error: "registered device required" }); return; }
   const meta = req.body?.meta && typeof req.body.meta === "object" ? req.body.meta : {};
   const requestedKind = typeof req.body?.kind === "string" ? req.body.kind : "finance";
   const query = typeof meta?.query === "string" ? meta.query : "";
   const environment = req.body?.environment === "production" ? "production" : req.body?.environment === "sandbox" ? "sandbox" : undefined;
   try {
-    await registerLiveActivity({ id, kind: normalizeTrackerKind(requestedKind, query), meta, token, environment });
+    await registerLiveActivity({ id, deviceId, kind: normalizeTrackerKind(requestedKind, query), meta, token, environment });
     res.json({ ok: true, configured: isPushConfigured() });
   } catch (error) {
     console.error("Live Activity registration failed:", error);
@@ -332,8 +336,12 @@ app.post("/api/register-la", async (req, res) => {
 
 app.post("/api/unregister-la", async (req, res) => {
   const id = typeof req.body?.id === "string" ? req.body.id : "";
+  const deviceId = normalizeTopupIdentity(typeof req.body?.deviceId === "string" ? req.body.deviceId : "");
+  if (!id || !/^\d{8}$/.test(deviceId) || !(await isKnownIdentity(deviceId))) {
+    res.status(401).json({ error: "registered device required" }); return;
+  }
   try {
-    if (id) await unregisterLiveActivity(id);
+    await unregisterLiveActivity(id, deviceId);
     res.json({ ok: true });
   } catch {
     res.status(503).json({ error: "Live Activity registration could not be removed" });
@@ -353,6 +361,7 @@ const deadToken = (r: { status: number; reason?: string }) =>
 // actually changed (pushing identical frames every 15s wastes Apple's Live
 // Activity budget and invites throttling).
 const lastPushed = new Map<string, string>();
+const livePushKey = (registration: { id: string; deviceId?: string }) => `${registration.deviceId || "legacy"}:${registration.id}`;
 
 // Data trackers: re-fetch (cached) and push every 15s. Product prices use a
 // much longer cache TTL than market/game data.
@@ -366,8 +375,8 @@ setInterval(async () => {
     for (const reg of await getLiveActivities()) {
       if (Date.now() - reg.startedAt > LA_MAX_MS) {
         await sendLiveActivityUpdate(reg.token, null, "end", reg.environment);
-        await unregisterLiveActivity(reg.id);
-        lastPushed.delete(reg.id);
+        await unregisterLiveActivity(reg.id, reg.deviceId || "legacy");
+        lastPushed.delete(livePushKey(reg));
         continue;
       }
       if (reg.kind !== "finance" && reg.kind !== "product" && reg.kind !== "sports" && reg.kind !== "flight" && reg.kind !== "package") continue;
@@ -385,10 +394,11 @@ setInterval(async () => {
           content.actionURL = String(reg.meta.url);
         }
         const sig = JSON.stringify(content);
-        if (lastPushed.get(reg.id) === sig) continue;
+        const pushKey = livePushKey(reg);
+        if (lastPushed.get(pushKey) === sig) continue;
         const result = await sendLiveActivityUpdate(reg.token, content, "update", reg.environment);
-        if (deadToken(result)) { await unregisterLiveActivity(reg.id); lastPushed.delete(reg.id); }
-        else lastPushed.set(reg.id, sig);
+        if (deadToken(result)) { await unregisterLiveActivity(reg.id, reg.deviceId || "legacy"); lastPushed.delete(pushKey); }
+        else lastPushed.set(pushKey, sig);
       } catch (error) {
         console.error("Live Activity push error:", error);
       }
@@ -413,7 +423,7 @@ setInterval(async () => {
       const startEpoch = Number(meta.eventStartEpoch);
       if (Number.isFinite(startEpoch) && startEpoch * 1000 < Date.now()) {
         await sendLiveActivityUpdate(reg.token, null, "end", reg.environment);
-        await unregisterLiveActivity(reg.id);
+        await unregisterLiveActivity(reg.id, reg.deviceId || "legacy");
         continue;
       }
       try {
@@ -426,7 +436,7 @@ setInterval(async () => {
           line2: meta.destName ? `to ${meta.destName}` : "",
           trend: "flat", progress: -1, targetEpoch: departEpoch, status: "Leave in"
         }, "update", reg.environment);
-        if (deadToken(r)) await unregisterLiveActivity(reg.id);
+        if (deadToken(r)) await unregisterLiveActivity(reg.id, reg.deviceId || "legacy");
       } catch (error) {
         console.error("Commute push error:", error);
       }
@@ -446,6 +456,7 @@ app.post("/api/alerts", async (req, res) => {
   const kind = b.kind === "price" || b.kind === "score" ? b.kind : "";
   const query = typeof b.query === "string" ? b.query.trim() : "";
   if (!/^\d{8}$/.test(deviceId) || !kind || !query) { res.status(400).json({ error: "deviceId, kind, and query required" }); return; }
+  if (!(await isKnownIdentity(deviceId))) { res.status(401).json({ error: "registered device required" }); return; }
   const base = { id: `alert-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, deviceId, createdAt: Date.now(), query, label: typeof b.label === "string" && b.label ? b.label : query };
   let alert: Alert;
   if (kind === "price") {
@@ -462,6 +473,7 @@ app.post("/api/alerts", async (req, res) => {
 app.get("/api/alerts", async (req, res) => {
   const deviceId = normalizeTopupIdentity(typeof req.query.deviceId === "string" ? req.query.deviceId : "");
   if (!/^\d{8}$/.test(deviceId)) { res.status(400).json({ error: "deviceId required" }); return; }
+  if (!(await isKnownIdentity(deviceId))) { res.status(401).json({ error: "registered device required" }); return; }
   res.json({ alerts: await listAlerts(deviceId), durable: isDurable() });
 });
 
@@ -469,6 +481,7 @@ app.post("/api/alerts/cancel", async (req, res) => {
   const b = req.body || {};
   const deviceId = normalizeTopupIdentity(typeof b.deviceId === "string" ? b.deviceId : "");
   if (!/^\d{8}$/.test(deviceId)) { res.status(400).json({ error: "deviceId required" }); return; }
+  if (!(await isKnownIdentity(deviceId))) { res.status(401).json({ error: "registered device required" }); return; }
   const filter = (b.id || b.kind || b.query)
     ? { id: typeof b.id === "string" ? b.id : undefined, kind: typeof b.kind === "string" ? b.kind : undefined, query: typeof b.query === "string" ? b.query : undefined }
     : undefined;
@@ -489,6 +502,7 @@ setInterval(() => { void tickNudges(); }, 60 * 1000);
 // Live tracker snapshot for an active Live Activity. The device polls
 // this to keep the lock-screen / Dynamic Island tracker fresh.
 app.get("/api/track", async (req, res) => {
+  const deviceId = normalizeTopupIdentity(typeof req.query.deviceId === "string" ? req.query.deviceId : "");
   const requestedKind = typeof req.query.kind === "string" ? req.query.kind : "";
   const query = typeof req.query.q === "string" ? req.query.q : "";
   const kind = normalizeTrackerKind(requestedKind, query);
@@ -496,6 +510,9 @@ app.get("/api/track", async (req, res) => {
   if ((kind !== "finance" && kind !== "product" && kind !== "sports" && kind !== "flight" && kind !== "package") || !query) {
     res.status(400).json({ error: "kind (finance|product|sports|flight|package) and q are required" });
     return;
+  }
+  if (!/^\d{8}$/.test(deviceId) || !(await isKnownIdentity(deviceId))) {
+    res.status(401).json({ error: "registered device required" }); return;
   }
   try {
     const safeQuery = kind === "flight" ? extractFlightCode(query) || query : query;
@@ -514,12 +531,16 @@ app.get("/api/track", async (req, res) => {
 
 // Compact weather for the home-screen widget (used by the app to push a snapshot).
 app.get("/api/widget-weather", async (req, res) => {
+  const deviceId = normalizeTopupIdentity(typeof req.query.deviceId === "string" ? req.query.deviceId : "");
   const lat = Number(req.query.lat);
   const lon = Number(req.query.lon);
   const tz = typeof req.query.tz === "string" ? req.query.tz : undefined;
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
     res.status(400).json({ error: "lat and lon are required" });
     return;
+  }
+  if (!/^\d{8}$/.test(deviceId) || !(await isKnownIdentity(deviceId))) {
+    res.status(401).json({ error: "registered device required" }); return;
   }
   try {
     const snap = await withTimeout(getWeatherSnapshot(lat, lon, tz), 20000, "Widget weather");
@@ -539,9 +560,9 @@ app.get("/api/widget-weather", async (req, res) => {
 // we return a navigable place (calendar location geocoded, or a venue inferred
 // via grounded web search). Returns 404 when no real place can be pinned.
 app.post("/api/resolve-destination", async (req, res) => {
-  const title = typeof req.body?.title === "string" ? req.body.title : "";
-  const location = typeof req.body?.location === "string" ? req.body.location : "";
-  const notes = typeof req.body?.notes === "string" ? req.body.notes : "";
+  const title = typeof req.body?.title === "string" ? req.body.title.slice(0, 500) : "";
+  const location = typeof req.body?.location === "string" ? req.body.location.slice(0, 1000) : "";
+  const notes = typeof req.body?.notes === "string" ? req.body.notes.slice(0, 4000) : "";
   const lat = Number(req.body?.lat);
   const lon = Number(req.body?.lon);
   if (!title && !location) {
@@ -578,12 +599,12 @@ app.post("/api/resolve-destination", async (req, res) => {
 // Given the user's phrasing + their upcoming events, let the model pick which
 // event they mean (for the "time to leave" / countdown Live Activity).
 app.post("/api/match-event", async (req, res) => {
-  const query = typeof req.body?.query === "string" ? req.body.query : "";
+  const query = typeof req.body?.query === "string" ? req.body.query.slice(0, 2000) : "";
   const rawEvents = Array.isArray(req.body?.events) ? req.body.events : [];
   const events = rawEvents.slice(0, 50).map((e: any) => ({
-    title: typeof e?.title === "string" ? e.title : "",
-    when: typeof e?.when === "string" ? e.when : "",
-    location: typeof e?.location === "string" ? e.location : ""
+    title: typeof e?.title === "string" ? e.title.slice(0, 500) : "",
+    when: typeof e?.when === "string" ? e.when.slice(0, 200) : "",
+    location: typeof e?.location === "string" ? e.location.slice(0, 1000) : ""
   }));
   if (!query || events.length === 0) {
     res.json({ index: -1 });
@@ -606,7 +627,7 @@ app.post("/api/match-event", async (req, res) => {
 app.post("/api/vision", async (req, res) => {
   const image = typeof req.body?.image === "string" ? req.body.image : "";
   const mime = typeof req.body?.mime === "string" ? req.body.mime : "image/jpeg";
-  const question = typeof req.body?.question === "string" ? req.body.question : "";
+  const question = typeof req.body?.question === "string" ? req.body.question.slice(0, 8000) : "";
   const timeZone = typeof req.body?.timeZone === "string" ? req.body.timeZone : undefined;
   const userProfile = parseUserPersona(req.body?.profile, req.body?.addressUser);
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
@@ -664,7 +685,7 @@ app.post("/api/vision", async (req, res) => {
 app.post("/api/attachments", async (req, res) => {
   const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments.slice(0, 6) : [];
   const attachmentCredits = attachmentBaseCostCredits(attachments);
-  const question = typeof req.body?.question === "string" ? req.body.question : "";
+  const question = typeof req.body?.question === "string" ? req.body.question.slice(0, 8000) : "";
   const timeZone = typeof req.body?.timeZone === "string" ? req.body.timeZone : undefined;
   const userProfile = parseUserPersona(req.body?.profile, req.body?.addressUser);
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
@@ -1318,6 +1339,7 @@ app.get("/api/email/connect", async (req, res) => {
   const deviceId = typeof req.query.deviceId === "string" ? req.query.deviceId.trim() : "";
   if (provider !== "gmail" && provider !== "outlook") { res.status(400).json({ error: "provider must be gmail or outlook" }); return; }
   if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
+  if (!(await requireCreditIdentity(deviceId, res))) return;
   if (!emailProviderConfigured(provider)) { res.status(503).json({ error: `${provider} isn't configured yet` }); return; }
   const state = await createOAuthState(deviceId, provider);
   const url = buildAuthUrl(provider, state);
@@ -1352,6 +1374,7 @@ app.get("/api/email/callback", async (req, res) => {
 app.get("/api/email/status", async (req, res) => {
   const deviceId = typeof req.query.deviceId === "string" ? req.query.deviceId.trim() : "";
   if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
+  if (!(await requireCreditIdentity(deviceId, res))) return;
   const conn = await loadConnection(deviceId);
   res.json({
     connected: !!(conn && conn.refreshToken),
@@ -1366,6 +1389,7 @@ app.get("/api/email/search", async (req, res) => {
   const deviceId = typeof req.query.deviceId === "string" ? req.query.deviceId.trim() : "";
   const query = typeof req.query.q === "string" ? req.query.q.trim() : "";
   if (!deviceId || !query) { res.status(400).json({ error: "deviceId and q required" }); return; }
+  if (!(await requireCreditIdentity(deviceId, res))) return;
   try {
     res.json(await searchConnectedEmail(deviceId, query, 5));
   } catch (error) {
@@ -1377,6 +1401,7 @@ app.get("/api/email/search", async (req, res) => {
 app.post("/api/email/disconnect", async (req, res) => {
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
+  if (!(await requireCreditIdentity(deviceId, res))) return;
   await disconnectEmail(deviceId);
   res.json({ connected: false });
 });
@@ -1390,6 +1415,7 @@ app.post("/api/email/send", async (req, res) => {
   const subject = typeof b.subject === "string" ? b.subject.slice(0, 300) : "";
   const body = typeof b.body === "string" ? b.body.slice(0, 20000) : "";
   if (!deviceId || !to || !body) { res.status(400).json({ ok: false, error: "deviceId, to, and body are required" }); return; }
+  if (!(await requireCreditIdentity(deviceId, res))) return;
   const gate = await safetyGate(deviceId, `${subject}\n${body}`, req);
   if (gate) { res.status(403).json({ ok: false, error: "blocked" }); return; }
   const asDraft = b.draft === true;
@@ -2143,6 +2169,7 @@ setInterval(() => { void tickPersonalizedEngagement(); }, 60 * 60 * 1000);
 // walking, bicycling, transit) via Google Directions. 502 if no key/route so
 // the device can fall back to MapKit for driving/walking.
 app.post("/api/travel-time", async (req, res) => {
+  const deviceId = normalizeTopupIdentity(typeof req.body?.deviceId === "string" ? req.body.deviceId : "");
   const fromLat = Number(req.body?.fromLat);
   const fromLon = Number(req.body?.fromLon);
   const toLat = Number(req.body?.toLat);
@@ -2151,6 +2178,9 @@ app.post("/api/travel-time", async (req, res) => {
   if (![fromLat, fromLon, toLat, toLon].every(Number.isFinite)) {
     res.status(400).json({ error: "from/to coordinates required" });
     return;
+  }
+  if (!/^\d{8}$/.test(deviceId) || !(await isKnownIdentity(deviceId))) {
+    res.status(401).json({ error: "registered device required" }); return;
   }
   try {
     const result = await withTimeout(getTravelTime(fromLat, fromLon, toLat, toLon, mode), 11000, "Travel time");
@@ -2216,7 +2246,8 @@ async function runAssistant(
   deviceId: string,
   voiceMode: boolean,
   supportsDeferredActionSynthesis = false,
-  voiceInputUsd = 0
+  voiceInputUsd = 0,
+  beforeUsageCommit?: (details: { response: any; deferVoiceSynthesis: boolean; includedVoice: boolean }) => Promise<void>
 ): Promise<any> {
   let tier: Tier = "free";
   let baseCredits = 0;     // remaining base-subscription credits (for free-voice check)
@@ -2268,6 +2299,9 @@ async function runAssistant(
     // The block check comes first: a refused turn must not burn an included
     // voice turn the user never got to hear.
     if (charge.block) return usageBlockedPayload(charge.block);
+    if (beforeUsageCommit) {
+      await beforeUsageCommit({ response: finalized, deferVoiceSynthesis, includedVoice: charge.includedVoice });
+    }
     if (charge.consumeIncludedVoice) await noteFreeVoice(deviceId);
     const voiceSynthesisIncluded = charge.includedVoice;
     const s = await spendUsageUsd(deviceId, charge.usageUsd);
@@ -2291,8 +2325,8 @@ async function runAssistant(
 }
 
 app.post("/api/assistant", async (req, res) => {
-  const userMessage = String(req.body?.message || "");
-  const rawContext = typeof req.body?.context === "string" ? req.body.context : "";
+  const userMessage = String(req.body?.message || "").slice(0, 12_000);
+  const rawContext = typeof req.body?.context === "string" ? req.body.context.slice(-120_000) : "";
   const deviceLocation: DeviceLocation | undefined = req.body?.deviceLocation;
   const timeZone: string | undefined = typeof req.body?.timeZone === "string" ? req.body.timeZone : undefined;
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
@@ -2340,7 +2374,7 @@ app.post("/api/voice", async (req, res) => {
   const deviceTranscript = typeof req.body?.transcript === "string" ? req.body.transcript.trim().slice(0, 4000) : "";
   const audioDurationMs = billableAudioDurationMs(audioBase64, req.body?.audioDurationMs);
   const mime = typeof req.body?.mime === "string" ? req.body.mime : "audio/m4a";
-  const rawContext = typeof req.body?.context === "string" ? req.body.context : "";
+  const rawContext = typeof req.body?.context === "string" ? req.body.context.slice(-120_000) : "";
   const timeZone: string | undefined = typeof req.body?.timeZone === "string" ? req.body.timeZone : undefined;
   const deviceLocation: DeviceLocation | undefined = req.body?.deviceLocation;
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
@@ -2384,12 +2418,18 @@ app.post("/api/voice", async (req, res) => {
       return;
     }
     const state = buildConversationState(transcript, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, true, deviceId);
+    let audio = "";
     const result = await runAssistant(
       state,
       deviceId,
       true,
       req.body?.deferredActionSynthesis === true,
-      usedCloudTranscription ? sttCostUsd(audioDurationMs) : 0
+      usedCloudTranscription ? sttCostUsd(audioDurationMs) : 0,
+      async ({ response, deferVoiceSynthesis }) => {
+        if (deferVoiceSynthesis) return;
+        audio = await synthesize(response.spokenText || "", voiceId, voiceVariability);
+        if (!audio) throw new Error("Voice synthesis returned no audio");
+      }
     );
     if (result?.usageBlocked) { res.status(402).json(result); return; }
     let voiceUsed: number | undefined;
@@ -2400,9 +2440,6 @@ app.post("/api/voice", async (req, res) => {
         result.credits = { ...result.credits, ...updated, cost: result.credits.cost };
       }
     }
-    const audio = result.deferVoiceSynthesis
-      ? ""
-      : await synthesize(result.spokenText || "", voiceId, voiceVariability);
     res.json({ ...result, transcript, transcriptionSource: deviceTranscript ? "device" : "cloud", audioBase64: audio, mime: "audio/mpeg", voiceUsed });
   } catch (error) {
     console.error("Voice route error:", error);
@@ -2512,6 +2549,7 @@ app.post("/api/voice/synthesize", async (req, res) => {
     const plan = planCorrectionSynthesis(pending, account, speechCharacterCount(text));
     if (!plan.allowed) { res.status(402).json({ error: plan.message }); return; }
     const audio = await synthesize(text, voiceId, variability);
+    if (!audio) throw new Error("Voice synthesis returned no audio");
     const speechUsd = ttsCostUsd(speechCharacterCount(text));
     await noteChannelCost(deviceId, "voice", speechUsd);
     if (!plan.included) {

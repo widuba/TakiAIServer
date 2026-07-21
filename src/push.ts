@@ -211,6 +211,7 @@ export async function broadcast(msg: PushMessage): Promise<PushResult[]> {
 
 export interface LARegistration {
   id: string;       // logical activity id (matches the device)
+  deviceId: string; // physical owner; prevents another device replacing this id
   kind: string;     // "finance" | "sports" | "commute"
   meta: Record<string, any>; // kind-specific: {query} or commute route params
   token: string;    // ActivityKit push token (hex)
@@ -220,11 +221,12 @@ export interface LARegistration {
 
 const LA_STORE_PATH = path.join(__dirname, "..", "la-tokens.json");
 const LA_STORE_KEY = "live-activity-registrations:v2";
+const laKey = (deviceId: string, id: string) => `${deviceId}:${id}`;
 
 function readLA(): Map<string, LARegistration> {
   try {
     const arr = JSON.parse(fs.readFileSync(LA_STORE_PATH, "utf8"));
-    return new Map((Array.isArray(arr) ? arr : []).map((r: LARegistration) => [r.id, r]));
+    return new Map((Array.isArray(arr) ? arr : []).map((r: LARegistration) => [laKey(r.deviceId || "legacy", r.id), r]));
   } catch {
     return new Map();
   }
@@ -239,7 +241,7 @@ function mutateLiveActivities<T>(fn: () => Promise<T>): Promise<T> {
 }
 const laReady = (async () => {
   const durable = await storeGet<LARegistration[]>(LA_STORE_KEY, []);
-  if (durable.length) laRegs = new Map(durable.map((registration) => [registration.id, registration]));
+  if (durable.length) laRegs = new Map(durable.map((registration) => [laKey(registration.deviceId || "legacy", registration.id), registration]));
   else if (laRegs.size) await storeSet(LA_STORE_KEY, [...laRegs.values()]);
 })();
 
@@ -252,20 +254,26 @@ async function persistLA() {
   await storeSet(LA_STORE_KEY, [...laRegs.values()]);
 }
 
-export async function registerLiveActivity(reg: { id: string; kind: string; meta: Record<string, any>; token: string; environment?: "sandbox" | "production" }): Promise<void> {
+export async function registerLiveActivity(reg: { id: string; deviceId: string; kind: string; meta: Record<string, any>; token: string; environment?: "sandbox" | "production" }): Promise<void> {
   await laReady;
-  if (!reg.id || !reg.token) return;
+  if (!reg.id || !reg.deviceId || !reg.token) return;
   await mutateLiveActivities(async () => {
-    const existing = laRegs.get(reg.id);
-    laRegs.set(reg.id, { ...reg, startedAt: existing?.startedAt ?? Date.now() });
+    const key = laKey(reg.deviceId, reg.id);
+    const existing = laRegs.get(key);
+    laRegs.delete(laKey("legacy", reg.id));
+    laRegs.set(key, { ...reg, startedAt: existing?.startedAt ?? Date.now() });
+    const owned = [...laRegs.entries()]
+      .filter(([, item]) => item.deviceId === reg.deviceId)
+      .sort((a, b) => a[1].startedAt - b[1].startedAt);
+    for (const [oldestKey] of owned.slice(0, Math.max(0, owned.length - 12))) laRegs.delete(oldestKey);
     await persistLA();
   });
 }
 
-export async function unregisterLiveActivity(id: string): Promise<void> {
+export async function unregisterLiveActivity(id: string, deviceId: string): Promise<void> {
   await laReady;
   await mutateLiveActivities(async () => {
-    if (laRegs.delete(id)) await persistLA();
+    if (laRegs.delete(laKey(deviceId, id))) await persistLA();
   });
 }
 
