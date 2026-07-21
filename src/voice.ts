@@ -188,15 +188,20 @@ export async function synthesize(text: string, voiceId?: string, variability?: n
   const vid = voiceId && voiceId.trim() ? voiceId.trim() : VOICE_ID;
   const spokenText = normalizeTextForSpeech(text);
   try {
-    // 44.1 kHz / 64 kbps keeps speech clear without a large transfer.
+    // Higher MP3 bitrate improves consonant clarity without changing ElevenLabs'
+    // per-character charge. Flash v2.5 remains the low-latency, half-price model.
     const res: any = await withTimeout(
-      fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(vid)}?output_format=mp3_44100_64`, {
+      fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(vid)}?output_format=mp3_44100_128`, {
         method: "POST",
         headers: { "xi-api-key": ELEVEN_KEY, "Content-Type": "application/json", Accept: "audio/mpeg" },
         body: JSON.stringify({
           text: spokenText.slice(0, 2500),
           model_id: TTS_MODEL,
-          voice_settings: { stability: stabilityForVariability(variability), similarity_boost: 0.75 }
+          voice_settings: {
+            stability: stabilityForVariability(variability),
+            similarity_boost: 0.82,
+            use_speaker_boost: true
+          }
         })
       }),
       20000, "TTS"

@@ -23,7 +23,7 @@ import { extractFlightCode, normalizeTrackerKind } from "./src/entityClassifier.
 import { setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, clearAlertsForReset, type Alert } from "./src/alerts.js";
 import { isDurable, storeDelete, storeGet, storeSet } from "./src/store.js";
-import { summary as creditSummary, spendUsageUsd, reset as resetCredits, isFreeVoice, hasVoiceAccess, noteFreeVoice, tierCatalog, grantForTransaction, grantForConsumableTransaction, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, noteVoiceQuestion, grantCredits, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_LIMIT, FREE_VOICE_PER_CYCLE, CREDIT_USD, type Tier } from "./src/credits.js";
+import { summary as creditSummary, spendUsageUsd, reset as resetCredits, isFreeVoice, hasVoiceAccess, noteFreeVoice, tierCatalog, grantForTransaction, grantForConsumableTransaction, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, noteVoiceQuestion, grantCredits, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_PER_CYCLE, CREDIT_USD, type Tier } from "./src/credits.js";
 import { measureUsage, sttCostUsd, totalUsageUsd, ttsCostUsd } from "./src/metering.js";
 import { verifyTransaction, verifyCreditTransaction, claimCreditTransaction, rebindCreditTransactions, linkTransactionIdentity, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
 import { revokeAppleAuthorizationCode, verifyAppleIdentityToken } from "./src/appleauth.js";
@@ -44,7 +44,6 @@ import { bypassResetGeneration, hasCurrentResetGeneration, RESET_EPOCH_HEADER } 
 // StoreKit IAP shipped — grants only happen via verified transactions now.)
 const ADMIN_SECRET = (process.env.ADMIN_SECRET || "").trim();
 const OUT_OF_CREDITS_MSG = "You're out of credits — top up or upgrade in Membership to keep asking.";
-const FREE_VOICE_LIMIT_MSG = `You've used your ${FREE_VOICE_LIMIT} free voice questions. Choose a plan to keep using Voice.`;
 const DAILY_LIMIT_MSG = "You've reached today's usage limit. You can ask again after the daily reset shown in Membership.";
 const MONTHLY_LIMIT_MSG = "You've reached this month's usage limit. You can ask again after the monthly reset shown in Membership.";
 
@@ -81,11 +80,6 @@ function takeVoiceSynthesisToken(token: string, deviceId: string): PendingVoiceS
   return pending;
 }
 
-function usageLimitMessage(summary: { limitReached?: boolean; limitReason?: string | null }): string | null {
-  if (!summary.limitReached) return null;
-  return summary.limitReason === "monthly" ? MONTHLY_LIMIT_MSG : DAILY_LIMIT_MSG;
-}
-
 function usageLimitForCost(summary: any, cost: number): "daily" | "monthly" | null {
   if (summary?.daily && summary.daily.used + cost > summary.daily.limit) return "daily";
   if (summary?.monthly && summary.monthly.used + cost > summary.monthly.limit) return "monthly";
@@ -94,6 +88,47 @@ function usageLimitForCost(summary: any, cost: number): "daily" | "monthly" | nu
 
 function usageMessageForReason(reason: "daily" | "monthly"): string {
   return reason === "monthly" ? MONTHLY_LIMIT_MSG : DAILY_LIMIT_MSG;
+}
+
+type UsageBlockReason = "credits" | "daily" | "monthly" | "voice";
+
+function usageBlockFor(
+  summary: any,
+  requiredCredits = MIN_REQUEST_CREDITS,
+  voiceMode = false
+): { reason: UsageBlockReason; credits: any; requiredCredits: number } | null {
+  const required = Math.max(MIN_REQUEST_CREDITS, Math.ceil(requiredCredits));
+  let reason: UsageBlockReason | null = null;
+  if (voiceMode && !hasVoiceAccess(summary.tier, summary.voiceUsed)) reason = "voice";
+  else if (summary.limitReached && (summary.limitReason === "daily" || summary.limitReason === "monthly")) reason = summary.limitReason;
+  else {
+    const windowReason = usageLimitForCost(summary, required);
+    if (windowReason) reason = windowReason;
+    else if (summary.balance < required) reason = "credits";
+  }
+  if (!reason) return null;
+  return {
+    reason,
+    requiredCredits: required,
+    credits: {
+      ...summary,
+      cost: 0,
+      outOfCredits: reason === "credits",
+      limitReached: reason === "daily" || reason === "monthly",
+      limitReason: reason === "daily" || reason === "monthly" ? reason : summary.limitReason
+    }
+  };
+}
+
+function usageBlockedPayload(block: NonNullable<ReturnType<typeof usageBlockFor>>) {
+  return {
+    error: "This request cannot start because the account does not currently have enough available usage.",
+    code: "usage_blocked",
+    usageBlocked: true,
+    reason: block.reason,
+    requiredCredits: block.requiredCredits,
+    credits: block.credits
+  };
 }
 
 async function chargeMeasuredUsage(deviceId: string, usage: { geminiUsd: number; searchUsd: number }): Promise<number> {
@@ -609,25 +644,8 @@ app.post("/api/vision", async (req, res) => {
     visionBaseCredits = sum.baseCredits;
     visionVoiceUsed = sum.voiceCycleUsed;
     visionVoiceLifetimeUsed = sum.voiceUsed;
-    if (voiceMode && !hasVoiceAccess(sum.tier, sum.voiceUsed)) {
-      res.json({ spokenText: FREE_VOICE_LIMIT_MSG, voiceLimitReached: true, credits: { ...sum, cost: 0 } });
-      return;
-    }
-    const usageMessage = usageLimitMessage(sum);
-    const fixedLimitReason = usageLimitForCost(sum, ATTACHMENT_BASE_CREDITS);
-    if (sum.balance < ATTACHMENT_BASE_CREDITS || usageMessage || fixedLimitReason) {
-      const limitMessage = usageMessage || (fixedLimitReason ? usageMessageForReason(fixedLimitReason) : null);
-      res.json({
-        spokenText: limitMessage || OUT_OF_CREDITS_MSG,
-        credits: {
-          ...sum, cost: 0,
-          outOfCredits: !limitMessage && sum.balance < ATTACHMENT_BASE_CREDITS,
-          limitReached: !!limitMessage,
-          limitReason: fixedLimitReason || sum.limitReason
-        }
-      });
-      return;
-    }
+    const block = usageBlockFor(sum, ATTACHMENT_BASE_CREDITS, voiceMode);
+    if (block) { res.status(402).json(usageBlockedPayload(block)); return; }
   }
   try {
     const measured = await measureUsage(() => withTimeout(answerAboutImage(image, mime, question, userProfile, timeZone), 28000, "Vision"));
@@ -643,11 +661,8 @@ app.post("/api/vision", async (req, res) => {
         else usageUsd += speechUsd;
       }
       const fresh = await creditSummary(deviceId);
-      const limitReason = usageLimitForCost(fresh, Math.ceil(usageUsd / CREDIT_USD));
-      if (limitReason) {
-        res.json({ spokenText: usageMessageForReason(limitReason), credits: { ...fresh, cost: 0 } });
-        return;
-      }
+      const block = usageBlockFor(fresh, Math.ceil(usageUsd / CREDIT_USD), voiceMode);
+      if (block) { res.status(402).json(usageBlockedPayload(block)); return; }
       const s = await spendUsageUsd(deviceId, usageUsd);
       if (voiceMode && tier === "free") await noteVoiceQuestion(deviceId);
       await noteSpend(deviceId, s.spent);
@@ -690,25 +705,8 @@ app.post("/api/attachments", async (req, res) => {
     baseCredits = sum.baseCredits;
     voiceUsed = sum.voiceCycleUsed;
     voiceLifetimeUsed = sum.voiceUsed;
-    if (voiceMode && !hasVoiceAccess(sum.tier, sum.voiceUsed)) {
-      res.json({ spokenText: FREE_VOICE_LIMIT_MSG, voiceLimitReached: true, credits: { ...sum, cost: 0 } });
-      return;
-    }
-    const usageMessage = usageLimitMessage(sum);
-    const fixedLimitReason = attachmentCredits ? usageLimitForCost(sum, attachmentCredits) : null;
-    if (sum.balance < Math.max(MIN_REQUEST_CREDITS, attachmentCredits) || usageMessage || fixedLimitReason) {
-      const limitMessage = usageMessage || (fixedLimitReason ? usageMessageForReason(fixedLimitReason) : null);
-      res.json({
-        spokenText: limitMessage || OUT_OF_CREDITS_MSG,
-        credits: {
-          ...sum, cost: 0,
-          outOfCredits: !limitMessage && sum.balance < Math.max(MIN_REQUEST_CREDITS, attachmentCredits),
-          limitReached: !!limitMessage,
-          limitReason: fixedLimitReason || sum.limitReason
-        }
-      });
-      return;
-    }
+    const block = usageBlockFor(sum, Math.max(MIN_REQUEST_CREDITS, attachmentCredits), voiceMode);
+    if (block) { res.status(402).json(usageBlockedPayload(block)); return; }
   }
 
   try {
@@ -725,11 +723,8 @@ app.post("/api/attachments", async (req, res) => {
       else usageUsd += speechUsd;
     }
     const fresh = await creditSummary(deviceId);
-    const limitReason = usageLimitForCost(fresh, Math.ceil(usageUsd / CREDIT_USD));
-    if (limitReason) {
-      res.json({ spokenText: usageMessageForReason(limitReason), sources: answer.sources, credits: { ...fresh, cost: 0 } });
-      return;
-    }
+    const block = usageBlockFor(fresh, Math.ceil(usageUsd / CREDIT_USD), voiceMode);
+    if (block) { res.status(402).json(usageBlockedPayload(block)); return; }
     const spent = await spendUsageUsd(deviceId, usageUsd);
     if (voiceMode && tier === "free") await noteVoiceQuestion(deviceId);
     await noteSpend(deviceId, spent.spent);
@@ -918,6 +913,22 @@ app.get("/api/credits", async (req, res) => {
     else if (acct.status === "suspended") { access = "suspended"; accessMessage = SUSPENDED_MSG; }
   } catch (e) { console.error("credits access check:", e); }
   res.json({ ...(await creditSummary(deviceId)), tiers: tierCatalog(), access, accessMessage });
+});
+
+// Fast, non-AI affordability check. The app calls this immediately before text,
+// attachment, or voice work so blocked requests never reach Gemini or ElevenLabs.
+app.post("/api/credits/preflight", async (req, res) => {
+  const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
+  if (!deviceId) { res.status(400).json({ error: "deviceId is required" }); return; }
+  const kind = req.body?.kind === "voice" ? "voice" : req.body?.kind === "attachment" ? "attachment" : "text";
+  const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments.slice(0, 6) : [];
+  const requiredCredits = kind === "attachment"
+    ? Math.max(MIN_REQUEST_CREDITS, attachmentBaseCostCredits(attachments))
+    : MIN_REQUEST_CREDITS;
+  const summary = await creditSummary(deviceId);
+  const block = usageBlockFor(summary, requiredCredits, kind === "voice");
+  if (block) { res.status(402).json(usageBlockedPayload(block)); return; }
+  res.json({ allowed: true, requiredCredits, credits: { ...summary, cost: 0 } });
 });
 
 /* ---- Web credit top-ups (Stripe Checkout) ------------------------------- */
@@ -2189,22 +2200,8 @@ async function runAssistant(
     baseCredits = sum.baseCredits;
     voiceCycleUsed = sum.voiceCycleUsed;
     voiceLifetimeUsed = sum.voiceUsed;
-    if (voiceMode && !hasVoiceAccess(sum.tier, sum.voiceUsed)) {
-      return {
-        ...finalizeResponse({ spokenText: FREE_VOICE_LIMIT_MSG, action: null, memoryPatch: { pendingClarification: null }, needsExecution: false }, state),
-        voiceLimitReached: true,
-        credits: { ...sum, cost: 0 }
-      };
-    }
-    // Cut users off BEFORE they hit 0 — they need at least a standard request's
-    // worth of credits to ask anything.
-    const usageMessage = usageLimitMessage(sum);
-    if (sum.balance < MIN_REQUEST_CREDITS || usageMessage) {
-      return {
-        ...finalizeResponse({ spokenText: usageMessage || OUT_OF_CREDITS_MSG, action: null, memoryPatch: { pendingClarification: null }, needsExecution: false }, state),
-        credits: { ...sum, cost: 0, outOfCredits: !usageMessage, limitReached: !!usageMessage }
-      };
-    }
+    const block = usageBlockFor(sum, MIN_REQUEST_CREDITS, voiceMode);
+    if (block) return usageBlockedPayload(block);
   }
   const measured = await measureUsage(async () => {
     const plan = await withTimeout(planAssistantResponse(state), 45000, "Assistant plan");
@@ -2239,14 +2236,8 @@ async function runAssistant(
         usageUsd += voiceOutputUsd;
       }
     }
-    const limitReason = usageLimitForCost(usageSummary, Math.ceil(usageUsd / CREDIT_USD));
-    if (limitReason) {
-      const spokenText = usageMessageForReason(limitReason);
-      return {
-        ...finalizeResponse({ spokenText, action: null, memoryPatch: { pendingClarification: null }, needsExecution: false }, state),
-        credits: { ...usageSummary, cost: 0 }
-      };
-    }
+    const block = usageBlockFor(usageSummary, Math.ceil(usageUsd / CREDIT_USD), voiceMode);
+    if (block) return usageBlockedPayload(block);
     const s = await spendUsageUsd(deviceId, usageUsd);
     await noteSpend(deviceId, s.spent);
     await noteInteraction(deviceId, {
@@ -2296,7 +2287,9 @@ app.post("/api/assistant", async (req, res) => {
   }
 
   try {
-    res.json(await runAssistant(state, deviceId, voiceMode));
+    const result = await runAssistant(state, deviceId, voiceMode);
+    if (result?.usageBlocked) { res.status(402).json(result); return; }
+    res.json(result);
   } catch (error) {
     console.error("Assistant route error:", error);
     // Last resort: a plain answer that still respects the wire shape.
@@ -2357,25 +2350,8 @@ app.post("/api/voice", async (req, res) => {
   if (deviceId) {
     const sum = await creditSummary(deviceId);
     freeTier = sum.tier === "free";
-    if (!hasVoiceAccess(sum.tier, sum.voiceUsed)) {
-      let audio = "";
-      try { audio = await synthesize(FREE_VOICE_LIMIT_MSG, voiceId, voiceVariability); } catch { /* text remains available */ }
-      res.json({
-        transcript: "", spokenText: FREE_VOICE_LIMIT_MSG,
-        action: null, actions: null, audioBase64: audio, mime: "audio/mpeg",
-        voiceLimitReached: true, credits: { ...sum, cost: 0 }
-      });
-      return;
-    }
-    const usageMessage = usageLimitMessage(sum);
-    if (sum.balance < MIN_REQUEST_CREDITS || usageMessage) {
-      res.json({
-        transcript: "", spokenText: usageMessage || OUT_OF_CREDITS_MSG,
-        action: null, actions: null, audioBase64: "", mime: "audio/mpeg",
-        credits: { ...sum, cost: 0, outOfCredits: !usageMessage, limitReached: !!usageMessage }
-      });
-      return;
-    }
+    const block = usageBlockFor(sum, MIN_REQUEST_CREDITS, true);
+    if (block) { res.status(402).json(usageBlockedPayload(block)); return; }
   }
 
   try {
@@ -2404,6 +2380,7 @@ app.post("/api/voice", async (req, res) => {
       req.body?.deferredActionSynthesis === true,
       usedCloudTranscription ? sttCostUsd(audioDurationMs) : 0
     );
+    if (result?.usageBlocked) { res.status(402).json(result); return; }
     let voiceUsed: number | undefined;
     if (freeTier && deviceId) {
       voiceUsed = await noteVoiceQuestion(deviceId);
