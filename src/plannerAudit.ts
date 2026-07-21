@@ -20,6 +20,7 @@ const EXECUTABLE_MODEL_INTENTS = new Set<PlannerIntent>([
   "open_app",
   "maps_search",
   "maps_directions",
+  "calendar_directions",
   "contact_create",
   "health_query",
   "music_control",
@@ -86,6 +87,7 @@ function questionFor(intent: PlannerIntent, action: Partial<AssistantAction> | n
     case "open_app": return "Which app should I open?";
     case "maps_search": return "What place should I search for?";
     case "maps_directions": return "Where do you want directions to?";
+    case "calendar_directions": return "Which calendar event should I use?";
     case "contact_create": return "Who's the contact, and what's their number or email?";
     case "health_query": return "Which health measurement and day do you mean?";
     case "music_control": return "What should I play or control?";
@@ -141,6 +143,9 @@ export function auditPlannerOutput(plan: PlannerModelOutput, state: Conversation
   }
   if (plan.intent === "maps_directions") {
     checks.push({ value: a.mapsDestination, question: "Where do you want directions to?", reason: "destination was not grounded" });
+  }
+  if (plan.intent === "calendar_directions") {
+    checks.push({ value: a.calendarQuery, question: "Which calendar event should I use?", reason: "calendar subject was not grounded" });
   }
   if (plan.intent === "open_app") {
     checks.push({ value: a.appName, question: "Which app should I open?", reason: "app name was not grounded" });

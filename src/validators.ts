@@ -96,6 +96,8 @@ export function validateAction(action: AssistantAction | null): string | null {
 
   if (action.type === "maps_search" && !action.mapsQuery) return "What should I search for in Maps?";
   if (action.type === "maps_directions" && !action.mapsDestination) return "Where do you want directions to?";
+  // An empty query intentionally means the closest calendar event with a location.
+  if (action.type === "calendar_directions" && action.calendarQuery == null) action.calendarQuery = "";
   if (action.type === "open_app" && !action.appUrl && !action.appName) return "Which app should I open?";
 
   if (action.type === "alarm_set" || action.type === "timer_set") {

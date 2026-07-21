@@ -3,7 +3,7 @@ import test from "node:test";
 import { capabilityAnswerFor } from "../src/capabilities.js";
 import { buildConversationState } from "../src/context.js";
 import { auditPlannerOutput } from "../src/plannerAudit.js";
-import { fastVoiceReply, looksLikePlainVoiceKnowledgeQuestion, planAssistantResponse, planShareRequest } from "../src/planner.js";
+import { calendarDirectionsQuery, fastVoiceReply, looksLikePlainVoiceKnowledgeQuestion, planAssistantResponse, planShareRequest } from "../src/planner.js";
 import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
 import { finalizeResponse, resolveCalendarUpdateDates, validateAction } from "../src/validators.js";
@@ -155,6 +155,23 @@ test("calendar share commands become native share actions with a requested day",
   assert.ok(result.action?.startDate);
   assert.ok(result.action?.endDate);
   assert.ok(Date.parse(result.action!.endDate!) > Date.parse(result.action!.startDate!));
+});
+
+test("calendar-to-driving commands resolve device calendar data before the final handoff", async () => {
+  assert.equal(calendarDirectionsQuery("Get the address from my calendar entry and go there."), "");
+  assert.equal(calendarDirectionsQuery("What is on my calendar tomorrow?"), null);
+
+  const result = await planAssistantResponse(stateFor("Get the address from my calendar entry and go there."));
+  assert.equal(result.action?.type, "calendar_directions");
+  assert.equal(result.action?.calendarQuery, "");
+  assert.equal(result.action?.daysAhead, 30);
+  assert.match(result.spokenText, /check your calendar/i);
+});
+
+test("specific calendar driving commands retain the event subject", async () => {
+  const result = await planAssistantResponse(stateFor("Get the address for my dentist appointment and drive there"));
+  assert.equal(result.action?.type, "calendar_directions");
+  assert.match(result.action?.calendarQuery || "", /dentist appointment/i);
 });
 
 test("send-to-contact phrasing remains a message command, not a generic share", async () => {

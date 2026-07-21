@@ -397,6 +397,18 @@ FORWARD INFORMATION FROM THE USER'S OWN CALENDAR:
 - Examples: "text Bill my dentist appointment details" -> calendar_forward/message;
   "email tomorrow's calendar to pat@example.com" -> calendar_forward/email_list.
 
+MULTI-STEP REQUESTS:
+- Complete supported read-only lookup steps in one pass. Do not pause to confirm calendar reads,
+  contact lookup, destination resolution, web research, calculations, or drafting.
+- Ask only before the final consequential handoff when it was not already an explicit direct
+  command. Never claim that Maps, Messages, Mail, Calendar, Reminders, or another app changed
+  state until the device reports success.
+- Calendar -> destination -> driving uses calendar_directions and one final Maps confirmation.
+- Calendar -> text/email uses calendar_forward. Web research -> text/email uses researchQuery;
+  set wantsCalendar when the same verified event should also be added to Calendar.
+- Online event -> Calendar uses calendar_create_from_context. Verified online information ->
+  share sheet uses share_content. Keep every intermediate fact grounded in device data or sources.
+
 LEARNED WRITING STYLE per recipient (apply to the compose_message / compose_email
 body for the matching person ONLY). This is important: fully REWRITE the body in this
 voice — commit hard, don't just barely tilt it. When a direction says "very", go all
@@ -449,6 +461,9 @@ WEATHER -> "weather_answer". "Where am I" -> "location_answer".
 PLACES / DIRECTIONS:
 - "where is it / find X near me" -> "maps_search" (action.mapsQuery, set place).
 - "how long to get there / directions to X" -> "maps_directions" (action.mapsDestination, set place).
+- "get the address/location from my calendar event and go there" -> "calendar_directions"
+  (action.calendarQuery is the event title or empty for the event closest to now). The device
+  resolves the real address and asks once before the final Google Maps handoff.
 
 LOCAL ACTIONS when enough info exists:
   compose_message, compose_email, calendar_forward, call_phone, calendar_create (explicit date/time),
@@ -511,7 +526,7 @@ ACTION FIELD SCHEMA (include only what applies):
   metric, musicAction, musicQuery, homeAction, homeTarget, homeValue, photoDays
 Allowed action "type": compose_message, compose_email, calendar_forward, call_phone, calendar_create,
   calendar_update, calendar_delete, calendar_search, reminder_create, reminder_search, open_app,
-  maps_search, maps_directions, contact_create, health_query, music_control, home_control,
+  maps_search, maps_directions, calendar_directions, contact_create, health_query, music_control, home_control,
   photos_show, photos_search
 
 Return exactly:
@@ -785,6 +800,27 @@ export function detectPersonalSearch(message: string): string | null {
   return query.length >= 2 ? query.slice(0, 80) : null;
 }
 
+export function calendarDirectionsQuery(message: string): string | null {
+  const lower = message.toLowerCase();
+  const calendarCue = /\b(calendar|schedule|appointment|meeting|event|entry)\b/.test(lower);
+  const routeCue = /\b(directions?|navigate|navigation|route|drive|take me|get there|go there|head there|open google maps)\b/.test(lower);
+  if (!calendarCue || !routeCue) return null;
+
+  const query = message
+    .replace(/\b(?:get|find|grab|use|look up|pull)\s+(?:the\s+)?(?:address|location|destination)\s+(?:from|for|of)\b/gi, " ")
+    .replace(/\b(?:and|then)\s+(?:drive|navigate|route|go|take me|head|get)\s+(?:me\s+)?(?:to\s+)?(?:it|there)?\b/gi, " ")
+    .replace(/\b(?:open\s+)?google maps\b/gi, " ")
+    .replace(/\b(?:give me|get|show|open|start|take me|drive|navigate|navigation|route|directions?)\b/gi, " ")
+    .replace(/\b(?:to|for|from|in|on)\s+(?:my\s+|the\s+)?(?:calendar|schedule)\b/gi, " ")
+    .replace(/\b(?:my|the)\s+(?:calendar|schedule)\s+(?:entry|event)?\b/gi, " ")
+    .replace(/\b(?:calendar|schedule)\s+(?:entry|event)\b/gi, " ")
+    .replace(/\b(?:address|location|destination|there|it|please)\b/gi, " ")
+    .replace(/[?.!,]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return query.slice(0, 100);
+}
+
 export async function planAssistantResponse(state: ConversationState): Promise<AssistantPlan> {
   if (!state.message.trim()) {
     return answerPlan("What would you like me to do?");
@@ -831,6 +867,20 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
   if (looksLikeMathQuestion(state.message)) {
     const res = await computeMath(state.message);
     if (res) return answerPlan(res, { lastIntent: "answer_only" });
+  }
+
+  // Resolve the destination from EventKit on the device, then ask once before
+  // the final driving handoff. Empty query means the event closest to now.
+  {
+    const query = calendarDirectionsQuery(state.message);
+    if (query !== null) {
+      const action = blankAction("calendar_directions");
+      action.calendarQuery = query;
+      action.daysAhead = 30;
+      return actionPlan("I'll check your calendar for the destination.", action, {
+        lastIntent: "calendar_directions"
+      });
+    }
   }
 
   // "Remember I'm vegetarian" -> store a long-term fact (device appends it to the
@@ -2242,6 +2292,14 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         lastMentionedPlace: place,
         lastIntent: "maps_directions"
       });
+    }
+
+    case "calendar_directions": {
+      return actionPlan("I'll check your calendar for the destination.", {
+        ...blankAction("calendar_directions"),
+        calendarQuery: String(plan.action?.calendarQuery || "").trim(),
+        daysAhead: plan.action?.daysAhead ?? 30
+      }, { lastIntent: "calendar_directions" });
     }
 
     case "answer_only":
