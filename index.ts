@@ -20,11 +20,12 @@ import {
 } from "./src/push.js";
 import { cachedTrackerSnapshot } from "./src/tracker.js";
 import { extractFlightCode, normalizeTrackerKind } from "./src/entityClassifier.js";
-import { setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
+import { clearPushToken, setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, clearAlertsForReset, type Alert } from "./src/alerts.js";
 import { isDurable, storeDelete, storeGet, storeSet } from "./src/store.js";
-import { summary as creditSummary, spendUsageUsd, reset as resetCredits, isFreeVoice, hasVoiceAccess, noteFreeVoice, tierCatalog, grantForTransaction, grantForConsumableTransaction, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, noteVoiceQuestion, grantCredits, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, FREE_VOICE_PER_CYCLE, CREDIT_USD, type Tier } from "./src/credits.js";
+import { summary as creditSummary, spendUsageUsd, reset as resetCredits, isFreeVoice, noteFreeVoice, tierCatalog, grantForTransaction, grantForConsumableTransaction, grantWebTopup, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, noteVoiceQuestion, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, CREDIT_USD, type Tier } from "./src/credits.js";
 import { measureUsage, sttCostUsd, totalUsageUsd, ttsCostUsd } from "./src/metering.js";
+import { decideAssistantCharge, planCorrectionSynthesis, usageBlockFor, usageBlockedPayload, voiceTurnEstimateCredits } from "./src/usage.js";
 import { verifyTransaction, verifyCreditTransaction, claimCreditTransaction, rebindCreditTransactions, linkTransactionIdentity, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
 import { revokeAppleAuthorizationCode, verifyAppleIdentityToken } from "./src/appleauth.js";
 import { purgeAppleAccount } from "./src/accountDeletion.js";
@@ -32,20 +33,18 @@ import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestR
 import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, noteInteraction, noteChannelCost, noteSession, noteEngagementPreferences, userForIdentity, identitiesForIp, allUsers, deleteUser, type UserRecord } from "./src/users.js";
 import { TIERS } from "./src/credits.js";
 import { billableAudioDurationMs, transcribe, synthesize, listVoices, isVoiceConfigured, speechCharacterCount } from "./src/voice.js";
-import { emailProviderConfigured, createOAuthState, buildAuthUrl, completeOAuth, loadConnection, disconnectEmail, sendEmail, saveDraft, searchConnectedEmail, type EmailProvider } from "./src/email.js";
+import { emailProviderConfigured, createOAuthState, buildAuthUrl, completeOAuth, loadConnection, disconnectEmail, moveEmailConnection, sendEmail, saveDraft, searchConnectedEmail, type EmailProvider } from "./src/email.js";
 import { extractDurableMemories } from "./src/userMemory.js";
 import { createChatTitle } from "./src/chatTitle.js";
 import { engagementSummary, isEngagementEmailConfigured, recordEngagementOpen, recordEngagementSession, recommendedEngagement, sendPersonalizedEngagement, shouldSendAutomatic, type EngagementChannel } from "./src/engagement.js";
 import { performFullReset, previewFullReset, type FullResetPreview } from "./src/fullReset.js";
 import { bypassResetGeneration, hasCurrentResetGeneration, RESET_EPOCH_HEADER } from "./src/resetGeneration.js";
+import { isKnownIdentity } from "./src/identity.js";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
 // Render. (The purchase-simulating grant endpoint was removed when real
 // StoreKit IAP shipped — grants only happen via verified transactions now.)
 const ADMIN_SECRET = (process.env.ADMIN_SECRET || "").trim();
-const OUT_OF_CREDITS_MSG = "You're out of credits — top up or upgrade in Membership to keep asking.";
-const DAILY_LIMIT_MSG = "You've reached today's usage limit. You can ask again after the daily reset shown in Membership.";
-const MONTHLY_LIMIT_MSG = "You've reached this month's usage limit. You can ask again after the monthly reset shown in Membership.";
 
 type PendingVoiceSynthesis = { deviceId: string; included: boolean; expiresAt: number };
 const pendingVoiceSyntheses = new Map<string, PendingVoiceSynthesis>();
@@ -69,70 +68,26 @@ function createVoiceSynthesisToken(deviceId: string, included: boolean): string 
     }
   }
   const token = randomUUID();
-  pendingVoiceSyntheses.set(token, { deviceId, included, expiresAt: now + 2 * 60_000 });
+  // Long enough to survive the phone leaving Taki to run the action (opening
+  // Messages, granting a permission) — the token is the only thing that can
+  // grant included speech, so an early expiry would silently start charging.
+  pendingVoiceSyntheses.set(token, { deviceId, included, expiresAt: now + 5 * 60_000 });
   return token;
 }
 
 function takeVoiceSynthesisToken(token: string, deviceId: string): PendingVoiceSynthesis | null {
   const pending = pendingVoiceSyntheses.get(token);
-  if (!pending || pending.deviceId !== deviceId || pending.expiresAt <= Date.now()) return null;
+  if (!pending || pending.deviceId !== deviceId) return null;
+  if (pending.expiresAt <= Date.now()) {
+    pendingVoiceSyntheses.delete(token);
+    return null;
+  }
   pendingVoiceSyntheses.delete(token);
   return pending;
 }
 
-function usageLimitForCost(summary: any, cost: number): "daily" | "monthly" | null {
-  if (summary?.daily && summary.daily.used + cost > summary.daily.limit) return "daily";
-  if (summary?.monthly && summary.monthly.used + cost > summary.monthly.limit) return "monthly";
-  return null;
-}
-
-function usageMessageForReason(reason: "daily" | "monthly"): string {
-  return reason === "monthly" ? MONTHLY_LIMIT_MSG : DAILY_LIMIT_MSG;
-}
-
-type UsageBlockReason = "credits" | "daily" | "monthly" | "voice";
-
-function usageBlockFor(
-  summary: any,
-  requiredCredits = MIN_REQUEST_CREDITS,
-  voiceMode = false
-): { reason: UsageBlockReason; credits: any; requiredCredits: number } | null {
-  const required = Math.max(MIN_REQUEST_CREDITS, Math.ceil(requiredCredits));
-  let reason: UsageBlockReason | null = null;
-  if (voiceMode && !hasVoiceAccess(summary.tier, summary.voiceUsed)) reason = "voice";
-  else if (summary.limitReached && (summary.limitReason === "daily" || summary.limitReason === "monthly")) reason = summary.limitReason;
-  else {
-    const windowReason = usageLimitForCost(summary, required);
-    if (windowReason) reason = windowReason;
-    else if (summary.balance < required) reason = "credits";
-  }
-  if (!reason) return null;
-  return {
-    reason,
-    requiredCredits: required,
-    credits: {
-      ...summary,
-      cost: 0,
-      outOfCredits: reason === "credits",
-      limitReached: reason === "daily" || reason === "monthly",
-      limitReason: reason === "daily" || reason === "monthly" ? reason : summary.limitReason
-    }
-  };
-}
-
-function usageBlockedPayload(block: NonNullable<ReturnType<typeof usageBlockFor>>) {
-  return {
-    error: "This request cannot start because the account does not currently have enough available usage.",
-    code: "usage_blocked",
-    usageBlocked: true,
-    reason: block.reason,
-    requiredCredits: block.requiredCredits,
-    credits: block.credits
-  };
-}
-
 async function chargeMeasuredUsage(deviceId: string, usage: { geminiUsd: number; searchUsd: number }): Promise<number> {
-  if (!deviceId) return 0;
+  if (!deviceId) throw new Error("Cannot meter usage without an account identity");
   const charged = await spendUsageUsd(deviceId, usage.geminiUsd + usage.searchUsd);
   await noteSpend(deviceId, charged.spent);
   return charged.spent;
@@ -233,6 +188,7 @@ app.get("/health", async (_req, res) => {
     app: "Taki AI server",
     mode: "planner-first-modular-v3",
     version: "2026-07-12-intelligence-v3",
+    durableStorage: isDurable(),
     models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL },
     resetEpoch: Number(reset.epoch || 0)
   });
@@ -272,16 +228,20 @@ app.use(async (req, res, next) => {
 // --- Push (APNs) --------------------------------------------------------------
 // The device registers its APNs token here so the server can send proactive
 // alerts (commute "leave now", fresh morning briefing, breaking updates).
-app.post("/api/register-push", (req, res) => {
+app.post("/api/register-push", async (req, res) => {
   const token = typeof req.body?.token === "string" ? req.body.token : "";
-  const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
+  const deviceId = normalizeTopupIdentity(typeof req.body?.deviceId === "string" ? req.body.deviceId : "");
   if (!token) {
     res.status(400).json({ error: "token required" });
     return;
   }
+  if (deviceId && !/^\d{8}$/.test(deviceId)) {
+    res.status(400).json({ error: "valid deviceId required" });
+    return;
+  }
   registerToken(token);
   // Tie the token to the device id so the nudge engine can target this device.
-  if (deviceId) void setPushToken(deviceId, token);
+  if (deviceId) await setPushToken(deviceId, token);
   res.json({ ok: true, configured: isPushConfigured(), devices: getTokens().length });
 });
 
@@ -295,15 +255,21 @@ app.post("/api/nudges/sync", async (req, res) => {
 });
 
 // Let a device unsubscribe (e.g. notifications turned off).
-app.post("/api/unregister-push", (req, res) => {
+app.post("/api/unregister-push", async (req, res) => {
   const token = typeof req.body?.token === "string" ? req.body.token : "";
+  const deviceId = normalizeTopupIdentity(typeof req.body?.deviceId === "string" ? req.body.deviceId : "");
   if (token) forgetToken(token);
+  if (/^\d{8}$/.test(deviceId)) await clearPushToken(deviceId);
   res.json({ ok: true });
 });
 
 // Fire a push to every registered device — used to verify the .p8 pipeline
 // end-to-end, and the building block every proactive trigger calls.
 app.post("/api/test-push", async (req, res) => {
+  if (!isAdminAuthorized(req.body?.secret)) {
+    res.status(403).json({ error: "forbidden" });
+    return;
+  }
   if (!isPushConfigured()) {
     res.status(503).json({ error: "APNs not configured — set APNS_KEY_PATH/APNS_KEY_ID/APNS_TEAM_ID in .env" });
     return;
@@ -328,15 +294,17 @@ app.post("/api/style", async (req, res) => {
     res.status(400).json({ error: "text required" });
     return;
   }
+  const deviceId = await requireCreditIdentity(req.body?.deviceId, res);
+  if (!deviceId) return;
   try {
     const persona = parseUserPersona(req.body?.profile);
     const measured = await measureUsage(() => withTimeout(styleInCharacter(text, persona), 8000, "Style"));
     const styled = measured.value;
-    await chargeMeasuredUsage(typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "", measured.usage);
+    await chargeMeasuredUsage(deviceId, measured.usage);
     res.json({ text: (styled || text).trim() });
   } catch (error) {
     console.error("Style error:", error);
-    res.json({ text }); // fall back to plain text
+    res.status(503).json({ error: "style unavailable", text });
   }
 });
 
@@ -434,31 +402,37 @@ setInterval(async () => {
 // (slower than finance — traffic drifts gradually, and this hits the Directions
 // API). Ends the activity once the event has started.
 const modeWord = (m: string) => (m === "walking" ? "walk" : m === "bicycling" ? "bike" : m === "transit" ? "transit" : "drive");
+let commutePushBusy = false;
 setInterval(async () => {
-  if (!isPushConfigured()) return;
-  for (const reg of await getLiveActivities()) {
-    if (reg.kind !== "commute") continue;
-    const meta = reg.meta || {};
-    const startEpoch = Number(meta.eventStartEpoch);
-    if (Number.isFinite(startEpoch) && startEpoch * 1000 < Date.now()) {
-      await sendLiveActivityUpdate(reg.token, null, "end", reg.environment);
-      await unregisterLiveActivity(reg.id);
-      continue;
+  if (!isPushConfigured() || commutePushBusy) return;
+  commutePushBusy = true;
+  try {
+    for (const reg of await getLiveActivities()) {
+      if (reg.kind !== "commute") continue;
+      const meta = reg.meta || {};
+      const startEpoch = Number(meta.eventStartEpoch);
+      if (Number.isFinite(startEpoch) && startEpoch * 1000 < Date.now()) {
+        await sendLiveActivityUpdate(reg.token, null, "end", reg.environment);
+        await unregisterLiveActivity(reg.id);
+        continue;
+      }
+      try {
+        const eta = await getTravelTime(Number(meta.originLat), Number(meta.originLon), Number(meta.destLat), Number(meta.destLon), String(meta.mode || "driving"));
+        if (!eta) continue;
+        const etaMin = Math.max(1, Math.round(eta.seconds / 60));
+        const departEpoch = Math.floor(startEpoch - eta.seconds - (Number(meta.leaveBufferMin) || 0) * 60);
+        const r = await sendLiveActivityUpdate(reg.token, {
+          line1: `${etaMin} min ${modeWord(eta.mode)}`,
+          line2: meta.destName ? `to ${meta.destName}` : "",
+          trend: "flat", progress: -1, targetEpoch: departEpoch, status: "Leave in"
+        }, "update", reg.environment);
+        if (deadToken(r)) await unregisterLiveActivity(reg.id);
+      } catch (error) {
+        console.error("Commute push error:", error);
+      }
     }
-    try {
-      const eta = await getTravelTime(Number(meta.originLat), Number(meta.originLon), Number(meta.destLat), Number(meta.destLon), String(meta.mode || "driving"));
-      if (!eta) continue;
-      const etaMin = Math.max(1, Math.round(eta.seconds / 60));
-      const departEpoch = Math.floor(startEpoch - eta.seconds - (Number(meta.leaveBufferMin) || 0) * 60);
-      const r = await sendLiveActivityUpdate(reg.token, {
-        line1: `${etaMin} min ${modeWord(eta.mode)}`,
-        line2: meta.destName ? `to ${meta.destName}` : "",
-        trend: "flat", progress: -1, targetEpoch: departEpoch, status: "Leave in"
-      }, "update", reg.environment);
-      if (deadToken(r)) await unregisterLiveActivity(reg.id);
-    } catch (error) {
-      console.error("Commute push error:", error);
-    }
+  } finally {
+    commutePushBusy = false;
   }
 }, 3 * 60 * 1000);
 
@@ -468,10 +442,11 @@ setInterval(async () => {
 // sends the alert spec it got back from the planner's alert_create action.
 app.post("/api/alerts", async (req, res) => {
   const b = req.body || {};
+  const deviceId = normalizeTopupIdentity(typeof b.deviceId === "string" ? b.deviceId : "");
   const kind = b.kind === "price" || b.kind === "score" ? b.kind : "";
   const query = typeof b.query === "string" ? b.query.trim() : "";
-  if (!kind || !query) { res.status(400).json({ error: "kind and query required" }); return; }
-  const base = { id: `alert-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, createdAt: Date.now(), query, label: typeof b.label === "string" && b.label ? b.label : query };
+  if (!/^\d{8}$/.test(deviceId) || !kind || !query) { res.status(400).json({ error: "deviceId, kind, and query required" }); return; }
+  const base = { id: `alert-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, deviceId, createdAt: Date.now(), query, label: typeof b.label === "string" && b.label ? b.label : query };
   let alert: Alert;
   if (kind === "price") {
     const target = Number(b.target);
@@ -481,19 +456,23 @@ app.post("/api/alerts", async (req, res) => {
     alert = { ...base, kind: "score", trigger: b.trigger === "final" ? "final" : "any" };
   }
   const result = await addAlert(alert);
-  res.json({ ...result, durable: isDurable() });
+  res.status(result.ok ? 200 : 409).json({ ...result, durable: isDurable() });
 });
 
-app.get("/api/alerts", async (_req, res) => {
-  res.json({ alerts: await listAlerts(), durable: isDurable() });
+app.get("/api/alerts", async (req, res) => {
+  const deviceId = normalizeTopupIdentity(typeof req.query.deviceId === "string" ? req.query.deviceId : "");
+  if (!/^\d{8}$/.test(deviceId)) { res.status(400).json({ error: "deviceId required" }); return; }
+  res.json({ alerts: await listAlerts(deviceId), durable: isDurable() });
 });
 
 app.post("/api/alerts/cancel", async (req, res) => {
   const b = req.body || {};
+  const deviceId = normalizeTopupIdentity(typeof b.deviceId === "string" ? b.deviceId : "");
+  if (!/^\d{8}$/.test(deviceId)) { res.status(400).json({ error: "deviceId required" }); return; }
   const filter = (b.id || b.kind || b.query)
     ? { id: typeof b.id === "string" ? b.id : undefined, kind: typeof b.kind === "string" ? b.kind : undefined, query: typeof b.query === "string" ? b.query : undefined }
     : undefined;
-  const removed = await cancelAlerts(filter);
+  const removed = await cancelAlerts(deviceId, filter);
   res.json({ ok: true, removed });
 });
 
@@ -569,6 +548,8 @@ app.post("/api/resolve-destination", async (req, res) => {
     res.status(400).json({ error: "title or location is required" });
     return;
   }
+  const deviceId = await requireCreditIdentity(req.body?.deviceId, res);
+  if (!deviceId) return;
   try {
     const measured = await measureUsage(() => withTimeout(
       inferEventDestination({
@@ -582,7 +563,7 @@ app.post("/api/resolve-destination", async (req, res) => {
       "Resolve destination"
     ));
     const dest = measured.value;
-    await chargeMeasuredUsage(typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "", measured.usage);
+    await chargeMeasuredUsage(deviceId, measured.usage);
     if (!dest) {
       res.status(404).json({ error: "could not resolve a destination" });
       return;
@@ -608,14 +589,16 @@ app.post("/api/match-event", async (req, res) => {
     res.json({ index: -1 });
     return;
   }
+  const deviceId = await requireCreditIdentity(req.body?.deviceId, res);
+  if (!deviceId) return;
   try {
     const measured = await measureUsage(() => withTimeout(matchEventToQuery(query, events), 10000, "Match event"));
     const index = measured.value;
-    await chargeMeasuredUsage(typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "", measured.usage);
+    await chargeMeasuredUsage(deviceId, measured.usage);
     res.json({ index });
   } catch (error) {
     console.error("Match event error:", error);
-    res.json({ index: -1 });
+    res.status(502).json({ error: "event matching unavailable" });
   }
 });
 
@@ -632,50 +615,46 @@ app.post("/api/vision", async (req, res) => {
     res.status(400).json({ error: "image is required" });
     return;
   }
+  if (!(await requireCreditIdentity(deviceId, res))) return;
   const visionGate = await safetyGate(deviceId, question, req);
   if (visionGate) { res.json({ spokenText: visionGate.message, blocked: true, ...(visionGate.block ? { access: visionGate.block, accessMessage: visionGate.message } : {}) }); return; }
   let tier: Tier = "free";
   let visionBaseCredits = 0;
   let visionVoiceUsed = 0;
   let visionVoiceLifetimeUsed = 0;
-  if (deviceId) {
-    const sum = await creditSummary(deviceId);
-    tier = sum.tier;
-    visionBaseCredits = sum.baseCredits;
-    visionVoiceUsed = sum.voiceCycleUsed;
-    visionVoiceLifetimeUsed = sum.voiceUsed;
-    const block = usageBlockFor(sum, ATTACHMENT_BASE_CREDITS, voiceMode);
-    if (block) { res.status(402).json(usageBlockedPayload(block)); return; }
-  }
+  const sum = await creditSummary(deviceId);
+  tier = sum.tier;
+  visionBaseCredits = sum.baseCredits;
+  visionVoiceUsed = sum.voiceCycleUsed;
+  visionVoiceLifetimeUsed = sum.voiceUsed;
+  const block = usageBlockFor(sum, ATTACHMENT_BASE_CREDITS, voiceMode);
+  if (block) { res.status(402).json(usageBlockedPayload(block)); return; }
   try {
     const measured = await measureUsage(() => withTimeout(answerAboutImage(image, mime, question, userProfile, timeZone), 28000, "Vision"));
     const spokenText = measured.value;
-    if (deviceId) {
-      const speechUsd = voiceMode ? ttsCostUsd(speechCharacterCount(spokenText || "")) : 0;
-      const ownerCostUsd = totalUsageUsd(measured.usage) + speechUsd;
-      let usageUsd = totalUsageUsd(measured.usage) + ATTACHMENT_BASE_CREDITS * CREDIT_USD;
-      if (voiceMode) {
-        if (isFreeVoice(tier, visionBaseCredits, visionVoiceUsed, visionVoiceLifetimeUsed)) {
-          if (tier !== "free") await noteFreeVoice(deviceId);
-        }
-        else usageUsd += speechUsd;
-      }
-      const fresh = await creditSummary(deviceId);
-      const block = usageBlockFor(fresh, Math.ceil(usageUsd / CREDIT_USD), voiceMode);
-      if (block) { res.status(402).json(usageBlockedPayload(block)); return; }
-      const s = await spendUsageUsd(deviceId, usageUsd);
-      if (voiceMode && tier === "free") await noteVoiceQuestion(deviceId);
-      await noteSpend(deviceId, s.spent);
-      await noteInteraction(deviceId, {
-        channel: voiceMode ? "voice" : "text",
-        feature: "photo",
-        credits: s.spent,
-        costUsd: ownerCostUsd
-      });
-      res.json({ spokenText, credits: { ...s, cost: s.spent } });
-    } else {
-      res.json({ spokenText });
-    }
+    const speechUsd = voiceMode ? ttsCostUsd(speechCharacterCount(spokenText || "")) : 0;
+    const ownerCostUsd = totalUsageUsd(measured.usage) + speechUsd;
+    const fresh = await creditSummary(deviceId);
+    const charge = decideAssistantCharge({
+      summary: fresh,
+      tier,
+      voiceMode,
+      includedVoice: voiceMode && isFreeVoice(tier, visionBaseCredits, visionVoiceUsed, visionVoiceLifetimeUsed),
+      baseUsd: totalUsageUsd(measured.usage) + ATTACHMENT_BASE_CREDITS * CREDIT_USD,
+      voiceOutputUsd: speechUsd
+    });
+    if (charge.block) { res.status(402).json(usageBlockedPayload(charge.block)); return; }
+    if (charge.consumeIncludedVoice) await noteFreeVoice(deviceId);
+    const s = await spendUsageUsd(deviceId, charge.usageUsd);
+    if (voiceMode && tier === "free") await noteVoiceQuestion(deviceId);
+    await noteSpend(deviceId, s.spent);
+    await noteInteraction(deviceId, {
+      channel: voiceMode ? "voice" : "text",
+      feature: "photo",
+      credits: s.spent,
+      costUsd: ownerCostUsd
+    });
+    res.json({ spokenText, credits: { ...s, cost: s.spent } });
   } catch (error) {
     console.error("Vision error:", error);
     res.status(502).json({ error: "vision unavailable" });
@@ -691,6 +670,7 @@ app.post("/api/attachments", async (req, res) => {
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   const voiceMode = req.body?.voiceMode === true;
   if (!attachments.length) { res.status(400).json({ error: "attachment is required" }); return; }
+  if (!(await requireCreditIdentity(deviceId, res))) return;
 
   const gate = await safetyGate(deviceId, question, req);
   if (gate) { res.json({ spokenText: gate.message, blocked: true, ...(gate.block ? { access: gate.block, accessMessage: gate.message } : {}) }); return; }
@@ -699,33 +679,31 @@ app.post("/api/attachments", async (req, res) => {
   let baseCredits = 0;
   let voiceUsed = 0;
   let voiceLifetimeUsed = 0;
-  if (deviceId) {
-    const sum = await creditSummary(deviceId);
-    tier = sum.tier;
-    baseCredits = sum.baseCredits;
-    voiceUsed = sum.voiceCycleUsed;
-    voiceLifetimeUsed = sum.voiceUsed;
-    const block = usageBlockFor(sum, Math.max(MIN_REQUEST_CREDITS, attachmentCredits), voiceMode);
-    if (block) { res.status(402).json(usageBlockedPayload(block)); return; }
-  }
+  const attachmentSummary = await creditSummary(deviceId);
+  tier = attachmentSummary.tier;
+  baseCredits = attachmentSummary.baseCredits;
+  voiceUsed = attachmentSummary.voiceCycleUsed;
+  voiceLifetimeUsed = attachmentSummary.voiceUsed;
+  const attachmentBlock = usageBlockFor(attachmentSummary, Math.max(MIN_REQUEST_CREDITS, attachmentCredits), voiceMode);
+  if (attachmentBlock) { res.status(402).json(usageBlockedPayload(attachmentBlock)); return; }
 
   try {
     const measured = await measureUsage(() => answerAboutAttachments(attachments, question, userProfile, timeZone));
     const answer = measured.value;
-    if (!deviceId) { res.json({ spokenText: answer.text, sources: answer.sources }); return; }
     const speechUsd = voiceMode ? ttsCostUsd(speechCharacterCount(answer.text)) : 0;
     const ownerCostUsd = totalUsageUsd(measured.usage) + speechUsd;
-    let usageUsd = totalUsageUsd(measured.usage) + attachmentCredits * CREDIT_USD;
-    if (voiceMode) {
-      if (isFreeVoice(tier, baseCredits, voiceUsed, voiceLifetimeUsed)) {
-        if (tier !== "free") await noteFreeVoice(deviceId);
-      }
-      else usageUsd += speechUsd;
-    }
     const fresh = await creditSummary(deviceId);
-    const block = usageBlockFor(fresh, Math.ceil(usageUsd / CREDIT_USD), voiceMode);
-    if (block) { res.status(402).json(usageBlockedPayload(block)); return; }
-    const spent = await spendUsageUsd(deviceId, usageUsd);
+    const charge = decideAssistantCharge({
+      summary: fresh,
+      tier,
+      voiceMode,
+      includedVoice: voiceMode && isFreeVoice(tier, baseCredits, voiceUsed, voiceLifetimeUsed),
+      baseUsd: totalUsageUsd(measured.usage) + attachmentCredits * CREDIT_USD,
+      voiceOutputUsd: speechUsd
+    });
+    if (charge.block) { res.status(402).json(usageBlockedPayload(charge.block)); return; }
+    if (charge.consumeIncludedVoice) await noteFreeVoice(deviceId);
+    const spent = await spendUsageUsd(deviceId, charge.usageUsd);
     if (voiceMode && tier === "free") await noteVoiceQuestion(deviceId);
     await noteSpend(deviceId, spent.spent);
     await noteInteraction(deviceId, {
@@ -792,7 +770,7 @@ app.post("/api/device/info", async (req, res) => {
   const b = req.body || {};
   const deviceId = typeof b.deviceId === "string" ? normalizeTopupIdentity(b.deviceId) : "";
   if (!/^\d{8}$/.test(deviceId)) { res.status(400).json({ error: "valid deviceId required" }); return; }
-  if (!(await storeGet<boolean>(`devnum:used:${deviceId}`, false)) && !(await hasCreditsAccount(deviceId))) {
+  if (!(await storeGet<boolean>(`devnum:used:${deviceId}`, false))) {
     res.status(404).json({ error: "unknown device" }); return;
   }
   // Repair accounts created by older builds that issued an ID without adding a
@@ -895,9 +873,7 @@ app.get("/api/credits", async (req, res) => {
   if (!deviceId.startsWith("apple:") && !/^\d{8}$/.test(deviceId)) {
     res.status(400).json({ error: "registered deviceId required" }); return;
   }
-  if (/^\d{8}$/.test(deviceId)
-      && !(await storeGet<boolean>(`devnum:used:${deviceId}`, false))
-      && !(await hasCreditsAccount(deviceId))) {
+  if (!(await isKnownIdentity(deviceId))) {
     res.status(404).json({ error: "device account not found; register this installation again" }); return;
   }
   // Report access status so the app can hard-block a banned/suspended account on
@@ -920,12 +896,17 @@ app.get("/api/credits", async (req, res) => {
 app.post("/api/credits/preflight", async (req, res) => {
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   if (!deviceId) { res.status(400).json({ error: "deviceId is required" }); return; }
+  if (!(await requireCreditIdentity(deviceId, res))) return;
   const kind = req.body?.kind === "voice" ? "voice" : req.body?.kind === "attachment" ? "attachment" : "text";
   const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments.slice(0, 6) : [];
+  const summary = await creditSummary(deviceId);
+  // A voice turn commits to STT + a planning call + TTS the moment it starts,
+  // so preflight has to ask for what the whole turn can cost — not the floor.
   const requiredCredits = kind === "attachment"
     ? Math.max(MIN_REQUEST_CREDITS, attachmentBaseCostCredits(attachments))
-    : MIN_REQUEST_CREDITS;
-  const summary = await creditSummary(deviceId);
+    : kind === "voice"
+      ? voiceTurnEstimateCredits(isFreeVoice(summary.tier, summary.baseCredits, summary.voiceCycleUsed, summary.voiceUsed))
+      : MIN_REQUEST_CREDITS;
   const block = usageBlockFor(summary, requiredCredits, kind === "voice");
   if (block) { res.status(402).json(usageBlockedPayload(block)); return; }
   res.json({ allowed: true, requiredCredits, credits: { ...summary, cost: 0 } });
@@ -957,6 +938,15 @@ function creditsKeyForIdentity(identity: string): string {
 async function hasCreditsAccount(identity: string): Promise<boolean> {
   const acct = await storeGet<any | null>(creditsKeyForIdentity(identity), null);
   return !!acct && acct.deviceId === identity && Number(acct.updatedAt || 0) > 0;
+}
+
+async function requireCreditIdentity(rawIdentity: unknown, res: any): Promise<string | null> {
+  const identity = typeof rawIdentity === "string" ? rawIdentity.trim() : "";
+  if (!identity || !(await isKnownIdentity(identity)) || !(await hasCreditsAccount(identity))) {
+    res.status(401).json({ error: "A registered Taki AI account is required." });
+    return null;
+  }
+  return identity;
 }
 
 type PurchaseAccount = {
@@ -1008,7 +998,7 @@ async function validateTopupAccount(identity: string): Promise<PurchaseAccount> 
   const issued = await storeGet<boolean>(`devnum:used:${id}`, false);
   const deviceUser = await userForIdentity(id);
   const appleSub = await appleForDevice(id);
-  if (!issued && !(await hasCreditsAccount(id)) && !deviceUser.firstSeenAt && !appleSub) {
+  if (!issued && !deviceUser.firstSeenAt && !appleSub) {
     return { valid: false, reason: "We couldn't find an account with that ID.", publicId: id, ledgerIdentity: id, isPro: false, tier: "free", appleSynced: false, email: "", displayName: "", devices: [] };
   }
   const ledgerIdentity = appleSub ? `apple:${appleSub}` : id;
@@ -1093,6 +1083,12 @@ const purchaseLookupWindows = new Map<string, { at: number; count: number }>();
 // summary. Email is masked because an eight-digit ID is not authentication.
 app.post("/api/credits/account-check", async (req, res) => {
   const ip = clientIp(req);
+  if (purchaseLookupWindows.size > 5_000) {
+    const cutoff = Date.now() - 5 * 60_000;
+    for (const [key, value] of purchaseLookupWindows) {
+      if (value.at < cutoff) purchaseLookupWindows.delete(key);
+    }
+  }
   const prior = purchaseLookupWindows.get(ip);
   const windowState = !prior || Date.now() - prior.at > 5 * 60_000 ? { at: Date.now(), count: 0 } : prior;
   if (windowState.count >= 12) { res.status(429).json({ valid: false, reason: "Too many account checks. Try again in a few minutes." }); return; }
@@ -1251,20 +1247,26 @@ app.post("/api/stripe/webhook", async (req, res) => {
             await noteRevenue(identity, { at: Date.now(), kind: "web_subscription", amountUsd: (s.amount_total || TIERS[tier].priceUsd * 100) / 100, credits: TIERS[tier].creditsPerCycle, tier });
           }
         }
-      } catch (e) { console.error("Stripe subscription grant error:", e); }
+      } catch (e) {
+        console.error("Stripe subscription grant error:", e);
+        res.status(500).json({ error: "webhook processing failed" });
+        return;
+      }
       res.json({ received: true });
       return;
     }
     const credits = parseInt(s.metadata?.credits || "0", 10);
-    const dedupeKey = `stripe:session:${s.id}`;
     try {
-      if (identity && credits > 0 && s.payment_status === "paid" && !(await storeGet<boolean>(dedupeKey, false))) {
-        await grantCredits(identity, credits, "web_topup");
-        await storeSet(dedupeKey, true);
-        await noteRevenue(identity, { at: Date.now(), kind: "topup", amountUsd: (s.amount_total || 0) / 100, credits });
+      if (identity && credits > 0 && s.payment_status === "paid") {
+        const grant = await grantWebTopup(identity, credits, s.id);
+        if (grant.granted) {
+          await noteRevenue(identity, { at: Date.now(), kind: "topup", amountUsd: (s.amount_total || 0) / 100, credits });
+        }
       }
     } catch (e) {
       console.error("Stripe grant error:", e);
+      res.status(500).json({ error: "webhook processing failed" });
+      return;
     }
   }
   if (event.type === "invoice.paid") {
@@ -1284,7 +1286,11 @@ app.post("/api/stripe/webhook", async (req, res) => {
             await noteRevenue(record.identity, { at: Date.now(), kind: "web_subscription", amountUsd: Number(invoice.amount_paid || 0) / 100, credits: TIERS[record.tier].creditsPerCycle, tier: record.tier });
           }
         }
-      } catch (e) { console.error("Stripe renewal grant error:", e); }
+      } catch (e) {
+        console.error("Stripe renewal grant error:", e);
+        res.status(500).json({ error: "webhook processing failed" });
+        return;
+      }
     }
   }
   if (event.type === "customer.subscription.deleted") {
@@ -1326,7 +1332,8 @@ app.get("/api/email/callback", async (req, res) => {
   const code = typeof req.query.code === "string" ? req.query.code : "";
   const state = typeof req.query.state === "string" ? req.query.state : "";
   const err = typeof req.query.error === "string" ? req.query.error : "";
-  const page = (title: string, body: string) => `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>body{margin:0;background:#07070e;color:#ececf6;font:16px/1.6 -apple-system,system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;text-align:center;padding:24px}a{display:inline-block;margin-top:20px;padding:13px 22px;border-radius:12px;background:linear-gradient(120deg,#8b5cf6,#4b8cff);color:#fff;text-decoration:none;font-weight:700}h1{font-size:22px;margin:0 0 8px}p{color:#9a9ab6;max-width:340px}</style></head><body><div><h1>${title}</h1><p>${body}</p><a href="takiai://email-connected">Return to Taki AI</a></div><script>setTimeout(function(){location.href="takiai://email-connected"},900)</script></body></html>`;
+  const escapeHTML = (value: string) => value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] || char);
+  const page = (title: string, body: string) => `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(title)}</title><style>body{box-sizing:border-box;margin:0;background:#1c1c1e;color:#f5f5f7;font:16px/1.6 -apple-system,system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;text-align:center;padding:24px}a{display:inline-block;margin-top:20px;padding:13px 22px;border-radius:12px;background:#f5f5f7;color:#171719;text-decoration:none;font-weight:700}h1{font-size:22px;margin:0 0 8px}p{color:#c7c7cc;max-width:340px}</style></head><body><div><h1>${escapeHTML(title)}</h1><p>${escapeHTML(body)}</p><a href="takiai://email-connected">Return to Taki AI</a></div><script>setTimeout(function(){location.href="takiai://email-connected"},900)</script></body></html>`;
   if (err || !code || !state) {
     res.status(400).send(page("Couldn't connect", "The sign-in was cancelled or failed. You can try again from Settings → Email."));
     return;
@@ -1405,6 +1412,7 @@ app.post("/api/email/send", async (req, res) => {
 app.get("/api/iap/credit-packs", async (req, res) => {
   const identity = typeof req.query.identity === "string" ? req.query.identity.trim() : "";
   if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  if (!(await requireCreditIdentity(identity, res))) return;
   const account = await creditSummary(identity);
   const packs = Object.entries(IN_APP_CREDIT_PRODUCTS).map(([productId, pack]) => ({
     productId,
@@ -1424,6 +1432,7 @@ app.post("/api/iap/verify", async (req, res) => {
   const b = req.body || {};
   const identity = typeof b.identity === "string" ? b.identity.trim() : (typeof b.deviceId === "string" ? b.deviceId.trim() : "");
   if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  if (!(await requireCreditIdentity(identity, res))) return;
   const jwsList: string[] = Array.isArray(b.transactions)
     ? b.transactions.filter((t: unknown) => typeof t === "string")
     : (typeof b.transaction === "string" ? [b.transaction] : []);
@@ -1432,12 +1441,14 @@ app.post("/api/iap/verify", async (req, res) => {
   let tier: Tier | null = null;
   let anyGranted = false;
   let consumableGranted = false;
+  let ownershipConflict = false;
   for (const jws of jwsList) {
     const creditInfo = await verifyCreditTransaction(jws);
     if (creditInfo) {
       const claim = await claimCreditTransaction(creditInfo.transactionId, identity);
       if (claim === "conflict") {
         console.warn("IAP credit transaction already belongs to another account", creditInfo.transactionId);
+        ownershipConflict = true;
         continue;
       }
       const purchase = await grantForConsumableTransaction(identity, creditInfo.transactionId, creditInfo.productId);
@@ -1455,7 +1466,12 @@ app.post("/api/iap/verify", async (req, res) => {
     if (!info) continue;
     // Remember who owns this subscription so server notifications (renewals,
     // refunds) can find the right ledger later.
-    await linkTransactionIdentity(info.originalTransactionId, identity);
+    const subscriptionClaim = await linkTransactionIdentity(info.originalTransactionId, identity);
+    if (subscriptionClaim === "conflict") {
+      ownershipConflict = true;
+      console.warn("IAP subscription already belongs to another account", info.originalTransactionId);
+      continue;
+    }
     // Skip clearly-expired auto-renewables (a stale entitlement).
     if (info.expiresDate && info.expiresDate < Date.now()) continue;
     const role = identity.startsWith("apple:")
@@ -1475,7 +1491,10 @@ app.post("/api/iap/verify", async (req, res) => {
     anyGranted = anyGranted || r.granted;
     tier = r.summary.tier;
   }
-  if (!tier) { res.status(400).json({ error: "no valid StoreKit transaction" }); return; }
+  if (!tier) {
+    res.status(ownershipConflict ? 409 : 400).json({ error: ownershipConflict ? "This App Store purchase is already linked to another Taki account." : "no valid StoreKit transaction" });
+    return;
+  }
   res.json({ ...(await creditSummary(identity)), granted: anyGranted, consumableGranted });
 });
 
@@ -1490,6 +1509,9 @@ app.post("/api/account/apple", async (req, res) => {
   const identdata = await verifyAppleIdentityToken(idToken);
   if (!identdata) { res.status(401).json({ error: "invalid Apple identity token" }); return; }
   if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
+  if (!/^\d{8}$/.test(deviceId) || !(await isKnownIdentity(deviceId))) {
+    res.status(401).json({ error: "registered device required" }); return;
+  }
   const fullName = typeof b.fullName === "string" ? b.fullName.trim() : "";
   const hasEntitlementSnapshot = Array.isArray(b.transactions);
   const entitlementJWS: string[] = hasEntitlementSnapshot
@@ -1517,8 +1539,13 @@ app.post("/api/account/apple", async (req, res) => {
     for (const jws of entitlementJWS) {
       const info = await verifyTransaction(jws);
       if (!info || (info.expiresDate && info.expiresDate < Date.now())) continue;
+      const claim = await linkTransactionIdentity(info.originalTransactionId, deviceId);
+      if (claim === "conflict") {
+        const binding = await getTransactionBinding(info.originalTransactionId);
+        if (binding.identity === accountId) activeTransactionIds.push(info.originalTransactionId);
+        continue;
+      }
       activeTransactionIds.push(info.originalTransactionId);
-      await linkTransactionIdentity(info.originalTransactionId, deviceId);
       await grantForTransaction(deviceId, info.tier, info.periodKey);
     }
     const deviceTransactions = hasEntitlementSnapshot
@@ -1545,6 +1572,7 @@ app.post("/api/account/apple", async (req, res) => {
     }
 
     await mergeCredits(deviceId, accountId, { subscriptionMode, secondaryTransactionId });
+    await moveEmailConnection(deviceId, accountId);
     await rebindCreditTransactions(deviceId, accountId);
     for (const transactionId of deviceTransactions) {
       const role = transactionId === primary ? "primary" : "secondary";
@@ -1599,8 +1627,8 @@ app.post("/api/account/delete", async (req, res) => {
 // App Store Server Notifications V2 — Apple POSTs {signedPayload} on renewals,
 // refunds, cancellations, expirations, etc. We verify it, find the owning
 // identity (by originalTransactionId), and update credits/tier automatically.
-// Set this URL in App Store Connect (Production + Sandbox). Always 200 on a
-// verified notification so Apple doesn't retry a handled one.
+// Set this URL in App Store Connect (Production + Sandbox). Return a non-2xx
+// response when persistence fails so Apple retries an unhandled notification.
 app.post("/api/iap/notifications", async (req, res) => {
   const signedPayload = typeof req.body?.signedPayload === "string" ? req.body.signedPayload : "";
   if (!signedPayload) { res.status(400).json({ error: "signedPayload required" }); return; }
@@ -1634,6 +1662,8 @@ app.post("/api/iap/notifications", async (req, res) => {
     }
   } catch (e) {
     console.error("IAP notification handling error:", e);
+    res.status(500).json({ error: "notification processing failed" });
+    return;
   }
   res.status(200).json({ ok: true });
 });
@@ -2224,21 +2254,23 @@ async function runAssistant(
       ? ttsCostUsd(speechCharacterCount(finalized.spokenText || ""))
       : 0;
     const ownerCostUsd = modelAndSearchUsd + (voiceMode ? Math.max(0, voiceInputUsd) + voiceOutputUsd : 0);
-    let usageUsd = modelAndSearchUsd;
     // Voice: free within the per-cycle allowance on Plus Voice / Pro (base credits
     // only); beyond that, or on top-ups / other tiers, pay per spoken character.
-    let voiceSynthesisIncluded = false;
-    if (voiceMode) {
-      voiceSynthesisIncluded = isFreeVoice(tier, baseCredits, voiceCycleUsed, voiceLifetimeUsed);
-      if (voiceSynthesisIncluded && tier !== "free") await noteFreeVoice(deviceId);
-      else {
-        usageUsd += Math.max(0, voiceInputUsd);
-        usageUsd += voiceOutputUsd;
-      }
-    }
-    const block = usageBlockFor(usageSummary, Math.ceil(usageUsd / CREDIT_USD), voiceMode);
-    if (block) return usageBlockedPayload(block);
-    const s = await spendUsageUsd(deviceId, usageUsd);
+    const charge = decideAssistantCharge({
+      summary: usageSummary,
+      tier,
+      voiceMode,
+      includedVoice: voiceMode && isFreeVoice(tier, baseCredits, voiceCycleUsed, voiceLifetimeUsed),
+      baseUsd: modelAndSearchUsd,
+      voiceInputUsd,
+      voiceOutputUsd
+    });
+    // The block check comes first: a refused turn must not burn an included
+    // voice turn the user never got to hear.
+    if (charge.block) return usageBlockedPayload(charge.block);
+    if (charge.consumeIncludedVoice) await noteFreeVoice(deviceId);
+    const voiceSynthesisIncluded = charge.includedVoice;
+    const s = await spendUsageUsd(deviceId, charge.usageUsd);
     await noteSpend(deviceId, s.spent);
     await noteInteraction(deviceId, {
       channel: voiceMode ? "voice" : "text",
@@ -2263,9 +2295,8 @@ app.post("/api/assistant", async (req, res) => {
   const rawContext = typeof req.body?.context === "string" ? req.body.context : "";
   const deviceLocation: DeviceLocation | undefined = req.body?.deviceLocation;
   const timeZone: string | undefined = typeof req.body?.timeZone === "string" ? req.body.timeZone : undefined;
-  // Credits metering: only when the app identifies itself (older builds without a
-  // deviceId are unmetered so they keep working).
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
+  if (!(await requireCreditIdentity(deviceId, res))) return;
   const voiceMode = req.body?.voiceMode === true;
   // Privacy: only the style vectors for recipients named in this message arrive
   // here — never a contact list or message history.
@@ -2292,31 +2323,9 @@ app.post("/api/assistant", async (req, res) => {
     res.json(result);
   } catch (error) {
     console.error("Assistant route error:", error);
-    // Last resort: a plain answer that still respects the wire shape.
-    try {
-      const measured = await measureUsage(() => getGeneralAnswer(state));
-      const general = measured.value;
-      const spent = await chargeMeasuredUsage(deviceId, measured.usage);
-      await noteInteraction(deviceId, {
-        channel: voiceMode ? "voice" : "text",
-        feature: "chat",
-        credits: spent,
-        costUsd: totalUsageUsd(measured.usage)
-      });
-      res.json(
-        finalizeResponse(
-          { spokenText: general.text, action: null, memoryPatch: { pendingClarification: null }, needsExecution: false },
-          state
-        )
-      );
-    } catch {
-      res.json({
-        spokenText: "I had trouble thinking through that. Try saying it a little more simply.",
-        action: null,
-        memory: state.priorMemory,
-        followUpEvent: state.priorMemory.lastMentionedEvent || null
-      });
-    }
+    // Do not make a second model call here: the first request may have completed
+    // before persistence failed, and retrying would double provider cost.
+    res.status(502).json({ error: "assistant unavailable" });
   }
 });
 
@@ -2335,7 +2344,11 @@ app.post("/api/voice", async (req, res) => {
   const timeZone: string | undefined = typeof req.body?.timeZone === "string" ? req.body.timeZone : undefined;
   const deviceLocation: DeviceLocation | undefined = req.body?.deviceLocation;
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
+  if (!(await requireCreditIdentity(deviceId, res))) return;
   const voiceId = typeof req.body?.voiceId === "string" ? req.body.voiceId : undefined;
+  if (voiceId && !(await listVoices()).some((voice) => voice.id === voiceId)) {
+    res.status(400).json({ error: "voice is not available" }); return;
+  }
   const voiceVariability = typeof req.body?.voiceVariability === "number"
     ? Math.max(0, Math.min(1, req.body.voiceVariability))
     : 0.5;
@@ -2347,12 +2360,10 @@ app.post("/api/voice", async (req, res) => {
   // The first five Free-tier turns include speech. Later turns continue normally
   // and charge STT/TTS against credits instead of hard-blocking Voice.
   let freeTier = false;
-  if (deviceId) {
-    const sum = await creditSummary(deviceId);
-    freeTier = sum.tier === "free";
-    const block = usageBlockFor(sum, MIN_REQUEST_CREDITS, true);
-    if (block) { res.status(402).json(usageBlockedPayload(block)); return; }
-  }
+  const voiceSummary = await creditSummary(deviceId);
+  freeTier = voiceSummary.tier === "free";
+  const voiceBlock = usageBlockFor(voiceSummary, MIN_REQUEST_CREDITS, true);
+  if (voiceBlock) { res.status(402).json(usageBlockedPayload(voiceBlock)); return; }
 
   try {
     // Prefer Apple's on-device transcription when the phone supplied one. This
@@ -2404,6 +2415,7 @@ app.post("/api/memory/extract", async (req, res) => {
   const message = typeof req.body?.message === "string" ? req.body.message.trim().slice(0, 2000) : "";
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   if (!message || !deviceId) { res.status(400).json({ error: "message and deviceId required" }); return; }
+  if (!(await requireCreditIdentity(deviceId, res))) return;
   const ip = clientIp(req);
   if ((await isBanned(deviceId, deviceId, ip)) || (await isTestRestricted(deviceId))) {
     res.status(403).json({ error: "access restricted" }); return;
@@ -2415,6 +2427,11 @@ app.post("/api/memory/extract", async (req, res) => {
   if (windowState.count >= 10) { res.status(429).json({ error: "memory extraction limit reached" }); return; }
   windowState.count += 1;
   memoryExtractWindows.set(rateKey, windowState);
+  if (memoryExtractWindows.size > 5_000) {
+    for (const [key, value] of memoryExtractWindows) {
+      if (now - value.startedAt >= 60_000) memoryExtractWindows.delete(key);
+    }
+  }
   const currentFacts = Array.isArray(req.body?.currentFacts) ? req.body.currentFacts : [];
   const measured = await measureUsage(() => extractDurableMemories(message, currentFacts, req.body?.teen === true));
   await chargeMeasuredUsage(deviceId, measured.usage);
@@ -2425,6 +2442,7 @@ app.post("/api/chat/title", async (req, res) => {
   const message = typeof req.body?.message === "string" ? req.body.message.trim().slice(0, 1200) : "";
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   if (!message || !deviceId) { res.status(400).json({ error: "message and deviceId required" }); return; }
+  if (!(await requireCreditIdentity(deviceId, res))) return;
   const ip = clientIp(req);
   if ((await isBanned(deviceId, deviceId, ip)) || (await isTestRestricted(deviceId))) {
     res.status(403).json({ error: "access restricted" }); return;
@@ -2442,7 +2460,8 @@ app.post("/api/chat/title", async (req, res) => {
 });
 
 // The account's available voices, for the app's voice picker.
-app.get("/api/voices", async (_req, res) => {
+app.get("/api/voices", async (req, res) => {
+  if (!(await requireCreditIdentity(req.query?.deviceId, res))) return;
   res.json({ voices: await listVoices() });
 });
 
@@ -2462,6 +2481,10 @@ app.post("/api/voice/synthesize", async (req, res) => {
     ? Math.max(0, Math.min(1, req.body.voiceVariability))
     : 0.5;
   if (!text || !deviceId) { res.status(400).json({ error: "text and deviceId required" }); return; }
+  if (!(await requireCreditIdentity(deviceId, res))) return;
+  if (voiceId && !(await listVoices()).some((voice) => voice.id === voiceId)) {
+    res.status(400).json({ error: "voice is not available" }); return;
+  }
   try {
     const ip = clientIp(req);
     if ((await isBanned(deviceId, deviceId, ip)) || (await isTestRestricted(deviceId))) {
@@ -2481,23 +2504,17 @@ app.post("/api/voice/synthesize", async (req, res) => {
         if (now - value.startedAt >= 60_000) correctionSynthWindows.delete(key);
       }
     }
+    // Included speech comes only from the single-use token issued with the
+    // deferred answer. A missing or expired token means this synthesis is paid
+    // for — and must clear the affordability check BEFORE ElevenLabs runs.
     const pending = deferredToken ? takeVoiceSynthesisToken(deferredToken, deviceId) : null;
     const account = await creditSummary(deviceId);
-    const correctionIsIncluded = pending?.included === true || (!pending && account.baseCredits > 0
-      && account.voiceCycleUsed > 0
-      && account.voiceCycleUsed <= (FREE_VOICE_PER_CYCLE[account.tier] || 0));
-    if (pending && !correctionIsIncluded) {
-      const cost = Math.ceil(ttsCostUsd(speechCharacterCount(text)) / CREDIT_USD);
-      const limitReason = usageLimitForCost(account, cost);
-      if (account.balance < cost || limitReason) {
-        res.status(402).json({ error: limitReason ? usageMessageForReason(limitReason) : OUT_OF_CREDITS_MSG });
-        return;
-      }
-    }
+    const plan = planCorrectionSynthesis(pending, account, speechCharacterCount(text));
+    if (!plan.allowed) { res.status(402).json({ error: plan.message }); return; }
     const audio = await synthesize(text, voiceId, variability);
     const speechUsd = ttsCostUsd(speechCharacterCount(text));
     await noteChannelCost(deviceId, "voice", speechUsd);
-    if (!correctionIsIncluded) {
+    if (!plan.included) {
       const charged = await spendUsageUsd(deviceId, speechUsd);
       await noteSpend(deviceId, charged.spent);
     }
@@ -2513,10 +2530,29 @@ app.post("/api/voice/synthesize", async (req, res) => {
 // costs ElevenLabs exactly once per voice, not once per swipe.
 const VOICE_SAMPLE_LINE = "The colors of the sky fade with the setting sun.";
 const voiceSampleCache = new Map<string, string>();
+const voiceSampleWindows = new Map<string, { startedAt: number; count: number }>();
 app.get("/api/voice/sample", async (req, res) => {
   if (!isVoiceConfigured()) { res.status(503).json({ error: "voice not configured" }); return; }
-  res.set("Cache-Control", "public, max-age=604800, immutable");
+  const deviceId = await requireCreditIdentity(req.query?.deviceId, res);
+  if (!deviceId) return;
   const voiceId = typeof req.query?.voiceId === "string" ? req.query.voiceId.trim() : "";
+  if (voiceId && !(await listVoices()).some((voice) => voice.id === voiceId)) {
+    res.status(400).json({ error: "voice is not available" });
+    return;
+  }
+  const now = Date.now();
+  const rateKey = `${deviceId}:${clientIp(req)}`;
+  const prior = voiceSampleWindows.get(rateKey);
+  const windowState = !prior || now - prior.startedAt >= 60_000 ? { startedAt: now, count: 0 } : prior;
+  if (windowState.count >= 20) { res.status(429).json({ error: "voice preview limit reached" }); return; }
+  windowState.count += 1;
+  voiceSampleWindows.set(rateKey, windowState);
+  if (voiceSampleWindows.size > 5_000) {
+    for (const [key, value] of voiceSampleWindows) {
+      if (now - value.startedAt >= 60_000) voiceSampleWindows.delete(key);
+    }
+  }
+  res.set("Cache-Control", "private, max-age=604800, immutable");
   const key = voiceId || "default";
   const cached = voiceSampleCache.get(key);
   if (cached) { res.json({ audioBase64: cached, mime: "audio/mpeg" }); return; }

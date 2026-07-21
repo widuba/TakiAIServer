@@ -1,5 +1,6 @@
 import { storeGet, storeSet } from "./store.js";
-import { broadcast, getTokens } from "./push.js";
+import { forgetToken, sendPush } from "./push.js";
+import { clearPushToken, getPushToken } from "./nudges.js";
 import { fetchAssetPrice, fetchTrackerSnapshot } from "./tracker.js";
 
 /* ============================================================================
@@ -13,13 +14,14 @@ import { fetchAssetPrice, fetchTrackerSnapshot } from "./tracker.js";
  *    "keep me posted on the Lakers" → fires on score change ("any") and/or at
  *    the final ("final"); "final" alerts are one-shot, "any" runs until final.
  *
- * Fires via push.broadcast() — this is a single-user personal app, so every
- * registered device token (effectively the user's phone) gets the alert; no
- * per-alert token plumbing needed.
+ * Every alert is owned by the physical device that created it and is delivered
+ * only to that device's APNs token. Account identifiers can change after Sign
+ * in with Apple; the physical id remains stable and prevents cross-user pushes.
  * ==========================================================================*/
 
 export type PriceAlert = {
   id: string;
+  deviceId: string;
   kind: "price";
   createdAt: number;
   query: string;          // what we re-fetch ("bitcoin", "AAPL")
@@ -31,6 +33,7 @@ export type PriceAlert = {
 
 export type ScoreAlert = {
   id: string;
+  deviceId: string;
   kind: "score";
   createdAt: number;
   query: string;          // team / matchup ("Lakers")
@@ -48,6 +51,13 @@ const ALERT_TTL_MS = 1000 * 60 * 60 * 24 * 7; // auto-expire stale alerts after 
 
 let alerts: Alert[] = [];
 let loaded = false;
+let alertChain: Promise<unknown> = Promise.resolve();
+
+function withAlertLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = alertChain.then(fn, fn);
+  alertChain = run.then(() => undefined, () => undefined);
+  return run;
+}
 
 export function clearAlertsForReset(): void {
   alerts = [];
@@ -56,7 +66,9 @@ export function clearAlertsForReset(): void {
 
 async function load(): Promise<void> {
   if (loaded) return;
-  alerts = await storeGet<Alert[]>(KEY, []);
+  const stored = await storeGet<Alert[]>(KEY, []);
+  // Legacy alerts predate ownership and cannot be delivered privately.
+  alerts = stored.filter((alert) => /^\d{8}$/.test(String(alert?.deviceId || "")));
   loaded = true;
 }
 
@@ -64,40 +76,49 @@ async function persist(): Promise<void> {
   await storeSet(KEY, alerts);
 }
 
-export async function listAlerts(): Promise<Alert[]> {
-  await load();
-  return alerts;
+export async function listAlerts(deviceId: string): Promise<Alert[]> {
+  return withAlertLock(async () => {
+    await load();
+    return alerts.filter((alert) => alert.deviceId === deviceId);
+  });
 }
 
 export async function addAlert(a: Alert): Promise<{ ok: boolean; reason?: string }> {
-  await load();
-  if (alerts.length >= MAX_ALERTS) return { ok: false, reason: "Too many active alerts." };
-  // De-dupe an identical pending alert.
-  const dup = alerts.find(
-    (x) => x.kind === a.kind && x.query.toLowerCase() === a.query.toLowerCase() &&
-      (x.kind === "price" && a.kind === "price"
-        ? x.target === a.target && x.direction === a.direction
-        : x.kind === "score" && a.kind === "score" ? x.trigger === a.trigger : false)
-  );
-  if (dup) return { ok: true };
-  alerts.push(a);
-  await persist();
-  return { ok: true };
+  return withAlertLock(async () => {
+    await load();
+    if (alerts.filter((alert) => alert.deviceId === a.deviceId).length >= MAX_ALERTS) {
+      return { ok: false, reason: "Too many active alerts." };
+    }
+    // De-dupe an identical pending alert.
+    const dup = alerts.find(
+      (x) => x.deviceId === a.deviceId && x.kind === a.kind && x.query.toLowerCase() === a.query.toLowerCase() &&
+        (x.kind === "price" && a.kind === "price"
+          ? x.target === a.target && x.direction === a.direction
+          : x.kind === "score" && a.kind === "score" ? x.trigger === a.trigger : false)
+    );
+    if (dup) return { ok: true };
+    alerts.push(a);
+    await persist();
+    return { ok: true };
+  });
 }
 
-export async function cancelAlerts(filter?: { id?: string; kind?: string; query?: string }): Promise<number> {
-  await load();
-  const before = alerts.length;
-  alerts = alerts.filter((a) => {
-    if (!filter) return false; // no filter = cancel all
-    if (filter.id) return a.id !== filter.id; // exact id → remove just that one
-    if (filter.kind && a.kind !== filter.kind) return true;
-    if (filter.query && !a.query.toLowerCase().includes(filter.query.toLowerCase())) return true;
-    return false; // matches the filter → remove
+export async function cancelAlerts(deviceId: string, filter?: { id?: string; kind?: string; query?: string }): Promise<number> {
+  return withAlertLock(async () => {
+    await load();
+    const before = alerts.length;
+    alerts = alerts.filter((a) => {
+      if (a.deviceId !== deviceId) return true;
+      if (!filter) return false; // no filter = cancel all
+      if (filter.id) return a.id !== filter.id; // exact id → remove just that one
+      if (filter.kind && a.kind !== filter.kind) return true;
+      if (filter.query && !a.query.toLowerCase().includes(filter.query.toLowerCase())) return true;
+      return false; // matches the filter → remove
+    });
+    const removed = before - alerts.length;
+    if (removed) await persist();
+    return removed;
   });
-  const removed = before - alerts.length;
-  if (removed) await persist();
-  return removed;
 }
 
 // Evaluate one alert. Returns a push message if it should fire, and whether the
@@ -148,11 +169,22 @@ export async function pollAlerts(timeZone: string): Promise<void> {
   if (polling) return; // never overlap sweeps
   polling = true;
   try {
-    await load();
-    if (alerts.length === 0 || getTokens().length === 0) return;
-    let changed = false;
-    const survivors: Alert[] = [];
-    for (const a of alerts) {
+    await withAlertLock(async () => {
+      await load();
+      if (alerts.length === 0) return;
+      let changed = false;
+      const survivors: Alert[] = [];
+      for (const a of alerts) {
+      if (Date.now() - a.createdAt > ALERT_TTL_MS) {
+        changed = true;
+        continue;
+      }
+      const token = await getPushToken(a.deviceId);
+      if (!token) {
+        survivors.push(a);
+        continue;
+      }
+      const before = { ...a } as Alert;
       let res;
       try {
         res = await evaluate(a, timeZone);
@@ -162,16 +194,30 @@ export async function pollAlerts(timeZone: string): Promise<void> {
         continue;
       }
       if (res.fire) {
+        const pushed = await sendPush(token, {
+          title: res.fire.title,
+          body: res.fire.body,
+          threadId: `alert-${a.kind}`,
+          data: { alertId: a.id, alertKind: a.kind }
+        });
+        if (!pushed.ok) {
+          if (pushed.status === 410 || pushed.reason === "BadDeviceToken" || pushed.reason === "Unregistered") {
+            await clearPushToken(a.deviceId);
+            forgetToken(token);
+          }
+          survivors.push(before);
+          continue;
+        }
         changed = true;
-        await broadcast({ title: res.fire.title, body: res.fire.body, threadId: `alert-${a.kind}`, data: { alertId: a.id, alertKind: a.kind } });
       }
       if (res.done) changed = true;
       else survivors.push(a);
-    }
-    if (changed) {
-      alerts = survivors;
-      await persist();
-    }
+      }
+      if (changed) {
+        alerts = survivors;
+        await persist();
+      }
+    });
   } finally {
     polling = false;
   }

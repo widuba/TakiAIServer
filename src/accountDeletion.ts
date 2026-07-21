@@ -1,4 +1,6 @@
 import { storeDelete, storeGet, storeSet } from "./store.js";
+import { cancelAlerts } from "./alerts.js";
+import { forgetToken } from "./push.js";
 
 const safeColon = (value: string) => value.replace(/[^a-zA-Z0-9_:.-]/g, "_");
 const safePlain = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -19,6 +21,10 @@ export async function purgeAppleAccount(sub: string): Promise<{ identities: stri
   const linked = await storeGet<{ devices: string[] }>(appleKey, { devices: [] });
   const devices = [...new Set((linked.devices || []).filter(Boolean))];
   const identities = new Set<string>([appleIdentity, ...devices]);
+  const pushTokens = new Map<string, string>();
+  for (const device of devices) {
+    pushTokens.set(device, await storeGet<string>(`push:token:${safePlain(device)}`, ""));
+  }
 
   const userRecords = await Promise.all([...identities].map(async (identity) => ({
     identity,
@@ -70,6 +76,9 @@ export async function purgeAppleAccount(sub: string): Promise<{ identities: stri
   }
 
   for (const device of devices) {
+    const token = pushTokens.get(device) || "";
+    if (token) forgetToken(token);
+    await cancelAlerts(device);
     const safeDevice = safetySafe(device);
     const deviceIndex = await storeGet<{ ids: string[] }>(`safety:dev:${safeDevice}`, { ids: [] });
     const ids = deviceIndex.ids.filter((identity) => !identities.has(identity));

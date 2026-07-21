@@ -10,8 +10,9 @@ import { fileURLToPath } from "node:url";
  *    within a single Render deploy's lifetime but RESETS on every redeploy —
  *    acceptable for short-lived alerts (a price/score alert usually resolves in
  *    hours), NOT for long-lived subscriptions.
- *  - DURABLE (DATABASE_URL set, e.g. a free Render Postgres): persists across
- *    redeploys. Required for standing subscriptions (favorite-team auto-track).
+ *  - DURABLE (DATABASE_URL set, e.g. Render Postgres): persists across
+ *    redeploys. Database errors fail closed so stale local data can never grant
+ *    credits or acknowledge a payment that was not durably recorded.
  *
  * The interface is a tiny async get/set of a JSON blob per key, so callers keep
  * an in-memory copy and persist the whole thing on change (same shape push.ts
@@ -140,16 +141,16 @@ export async function storeResetAll(preserve: Record<string, unknown>): Promise<
 }
 
 export async function storeGet<T>(key: string, fallback: T): Promise<T> {
-  try {
-    const pool = await ensurePg();
-    if (pool) {
+  if (DATABASE_URL) {
+    try {
+      const pool = await ensurePg();
       const res = await pool.query("SELECT v FROM kv WHERE k = $1", [key]);
       if (res.rows.length && res.rows[0].v != null) return res.rows[0].v as T;
       return fallback;
+    } catch (e) {
+      console.error("storeGet pg error:", e);
+      throw e;
     }
-  } catch (e) {
-    console.error("storeGet pg error:", e);
-    // fall through to the file backend on any DB hiccup
   }
   try {
     const raw = fs.readFileSync(filePath(key), "utf8");
@@ -162,23 +163,28 @@ export async function storeGet<T>(key: string, fallback: T): Promise<T> {
 export async function storeSet(key: string, value: unknown): Promise<void> {
   if (writesBlockedForReset) throw new Error("Store writes are blocked during a full reset");
   let wrotePg = false;
-  try {
-    const pool = await ensurePg();
-    if (pool) {
+  if (DATABASE_URL) {
+    try {
+      const pool = await ensurePg();
       await pool.query(
         "INSERT INTO kv (k, v, updated_at) VALUES ($1, $2, now()) ON CONFLICT (k) DO UPDATE SET v = $2, updated_at = now()",
         [key, JSON.stringify(value)]
       );
       wrotePg = true;
+    } catch (e) {
+      console.error("storeSet pg error:", e);
+      throw e;
     }
-  } catch (e) {
-    console.error("storeSet pg error:", e);
   }
-  // Always keep a local file copy too (cheap; also a fallback if the DB blips).
+  // Keep a local diagnostic copy after a successful durable write. It is not
+  // read while Postgres is configured, because it may lag the authoritative DB.
   try {
     fs.writeFileSync(filePath(key), JSON.stringify(value));
-  } catch {
-    if (!wrotePg) console.error("storeSet: failed to persist", key);
+  } catch (error) {
+    if (!wrotePg) {
+      console.error("storeSet: failed to persist", key, error);
+      throw error;
+    }
   }
 }
 

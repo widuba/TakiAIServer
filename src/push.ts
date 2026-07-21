@@ -92,14 +92,22 @@ export function sendPush(deviceToken: string, msg: PushMessage): Promise<PushRes
       return;
     }
     const client = http2.connect(APNS_HOST);
-    client.on("error", (err) =>
-      resolve({ token: deviceToken, ok: false, status: 0, reason: String(err) })
-    );
+    let settled = false;
+    let timeout: NodeJS.Timeout | undefined;
+    const finish = (result: PushResult) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      try { client.close(); } catch { client.destroy(); }
+      resolve(result);
+    };
+    client.on("error", (err) => finish({ token: deviceToken, ok: false, status: 0, reason: String(err) }));
 
     const aps: Record<string, unknown> = {
       alert: { title: msg.title, body: msg.body }
     };
     if (msg.sound !== "") aps.sound = msg.sound || "default";
+    if (msg.threadId) aps["thread-id"] = msg.threadId;
     const payload = JSON.stringify({ aps, ...(msg.data || {}) });
 
     const req = client.request({
@@ -120,7 +128,6 @@ export function sendPush(deviceToken: string, msg: PushMessage): Promise<PushRes
     req.setEncoding("utf8");
     req.on("data", (chunk) => (bodyText += chunk));
     req.on("end", () => {
-      client.close();
       const ok = status === 200;
       let reason: string | undefined;
       if (!ok && bodyText) {
@@ -130,12 +137,15 @@ export function sendPush(deviceToken: string, msg: PushMessage): Promise<PushRes
           reason = bodyText;
         }
       }
-      resolve({ token: deviceToken, ok, status, reason });
+      finish({ token: deviceToken, ok, status, reason });
     });
     req.on("error", (err) => {
-      client.close();
-      resolve({ token: deviceToken, ok: false, status, reason: String(err) });
+      finish({ token: deviceToken, ok: false, status, reason: String(err) });
     });
+    timeout = setTimeout(() => {
+      client.destroy();
+      finish({ token: deviceToken, ok: false, status, reason: "APNs request timed out" });
+    }, 15_000);
     req.end(payload);
   });
 }
@@ -221,6 +231,12 @@ function readLA(): Map<string, LARegistration> {
 }
 
 let laRegs = readLA();
+let laMutationChain: Promise<unknown> = Promise.resolve();
+function mutateLiveActivities<T>(fn: () => Promise<T>): Promise<T> {
+  const run = laMutationChain.then(fn, fn);
+  laMutationChain = run.then(() => undefined, () => undefined);
+  return run;
+}
 const laReady = (async () => {
   const durable = await storeGet<LARegistration[]>(LA_STORE_KEY, []);
   if (durable.length) laRegs = new Map(durable.map((registration) => [registration.id, registration]));
@@ -239,14 +255,18 @@ async function persistLA() {
 export async function registerLiveActivity(reg: { id: string; kind: string; meta: Record<string, any>; token: string; environment?: "sandbox" | "production" }): Promise<void> {
   await laReady;
   if (!reg.id || !reg.token) return;
-  const existing = laRegs.get(reg.id);
-  laRegs.set(reg.id, { ...reg, startedAt: existing?.startedAt ?? Date.now() });
-  await persistLA();
+  await mutateLiveActivities(async () => {
+    const existing = laRegs.get(reg.id);
+    laRegs.set(reg.id, { ...reg, startedAt: existing?.startedAt ?? Date.now() });
+    await persistLA();
+  });
 }
 
 export async function unregisterLiveActivity(id: string): Promise<void> {
   await laReady;
-  if (laRegs.delete(id)) await persistLA();
+  await mutateLiveActivities(async () => {
+    if (laRegs.delete(id)) await persistLA();
+  });
 }
 
 export async function getLiveActivities(): Promise<LARegistration[]> {
@@ -257,7 +277,11 @@ export async function getLiveActivities(): Promise<LARegistration[]> {
 export async function clearPushStateForReset(): Promise<void> {
   await laReady;
   tokens.clear();
-  laRegs.clear();
+  persist();
+  await mutateLiveActivities(async () => {
+    laRegs.clear();
+    await persistLA();
+  });
 }
 
 // Push a content-state update (or an end) to one Live Activity push token.
@@ -279,7 +303,16 @@ export function sendLiveActivityUpdate(
       ? "https://api.sandbox.push.apple.com"
       : APNS_HOST;
     const client = http2.connect(host);
-    client.on("error", (err) => resolve({ token, ok: false, status: 0, reason: String(err) }));
+    let settled = false;
+    let timeout: NodeJS.Timeout | undefined;
+    const finish = (result: PushResult) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      try { client.close(); } catch { client.destroy(); }
+      resolve(result);
+    };
+    client.on("error", (err) => finish({ token, ok: false, status: 0, reason: String(err) }));
 
     const now = Math.floor(Date.now() / 1000);
     const aps: Record<string, unknown> = { timestamp: now, event };
@@ -307,15 +340,18 @@ export function sendLiveActivityUpdate(
     req.setEncoding("utf8");
     req.on("data", (chunk) => (bodyText += chunk));
     req.on("end", () => {
-      client.close();
       const ok = status === 200;
       let reason: string | undefined;
       if (!ok && bodyText) {
         try { reason = JSON.parse(bodyText).reason; } catch { reason = bodyText; }
       }
-      resolve({ token, ok, status, reason });
+      finish({ token, ok, status, reason });
     });
-    req.on("error", (err) => { client.close(); resolve({ token, ok: false, status, reason: String(err) }); });
+    req.on("error", (err) => finish({ token, ok: false, status, reason: String(err) }));
+    timeout = setTimeout(() => {
+      client.destroy();
+      finish({ token, ok: false, status, reason: "APNs request timed out" });
+    }, 15_000);
     req.end(payload);
   });
 }

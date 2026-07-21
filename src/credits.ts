@@ -106,6 +106,9 @@ export interface CreditAccount {
   processedTx?: string[];
   // Consumable StoreKit transactions are permanent and must only grant once.
   processedConsumableTx?: string[];
+  // Stripe checkout sessions are permanent and must only grant once. Keeping
+  // this marker in the same ledger write as the grant makes webhook retries safe.
+  processedWebTopups?: string[];
   // Remains true after purchased credits are spent or expire, so Membership can
   // keep the expiry-history control hidden for people who have never bought any.
   hasPurchasedCredits?: boolean;
@@ -167,6 +170,14 @@ function withLock<T>(deviceId: string, fn: () => Promise<T>): Promise<T> {
   const run = prev.then(fn, fn);
   chains.set(deviceId, run.then(() => {}, () => {}));
   return run;
+}
+
+function withLocks<T>(deviceIds: string[], fn: () => Promise<T>): Promise<T> {
+  const ids = [...new Set(deviceIds)].sort();
+  const acquire = (index: number): Promise<T> => index >= ids.length
+    ? fn()
+    : withLock(ids[index], () => acquire(index + 1));
+  return acquire(0);
 }
 
 async function load(deviceId: string): Promise<CreditAccount> {
@@ -360,6 +371,30 @@ export async function grantCredits(identity: string, amount: number, source: str
     acct.starterGiven = true;
     await save(acct);
     return summarize(acct);
+  });
+}
+
+export async function grantWebTopup(
+  identity: string,
+  amount: number,
+  checkoutSessionId: string
+): Promise<{ granted: boolean; summary: CreditSummary }> {
+  return withLock(identity, async () => {
+    const acct = await load(identity);
+    acct.processedWebTopups = acct.processedWebTopups || [];
+    if (!checkoutSessionId || acct.processedWebTopups.includes(checkoutSessionId)) {
+      return { granted: false, summary: summarize(acct) };
+    }
+    const grant = addGrant(acct, "web_topup", Math.max(0, Math.floor(amount)));
+    if (!grant) return { granted: false, summary: summarize(acct) };
+    acct.topupAllowances = acct.topupAllowances || [];
+    acct.topupAllowances.push({ id: grant.id, amount: grant.amount, expiresAt: grant.expiresAt });
+    acct.hasPurchasedCredits = true;
+    acct.starterGiven = true;
+    acct.processedWebTopups.push(checkoutSessionId);
+    if (acct.processedWebTopups.length > 500) acct.processedWebTopups = acct.processedWebTopups.slice(-500);
+    await save(acct);
+    return { granted: true, summary: summarize(acct) };
   });
 }
 
@@ -577,7 +612,7 @@ export async function mergeCredits(
   options: { subscriptionMode?: "keep" | "convert" | "discard"; secondaryTransactionId?: string } = {}
 ): Promise<CreditSummary> {
   if (!fromId || !toId || fromId === toId) return summary(toId);
-  return withLock(toId, async () => {
+  return withLocks([fromId, toId], async () => {
     const from = await load(fromId);
     const to = await load(toId);
     const now = Date.now();
@@ -615,13 +650,16 @@ export async function mergeCredits(
     to.processedConsumableTx = [...(to.processedConsumableTx || []), ...(from.processedConsumableTx || [])]
       .filter((id, index, all) => all.indexOf(id) === index)
       .slice(-500);
+    to.processedWebTopups = [...(to.processedWebTopups || []), ...(from.processedWebTopups || [])]
+      .filter((id, index, all) => all.indexOf(id) === index)
+      .slice(-500);
     to.voiceCount = Math.max(0, to.voiceCount || 0) + Math.max(0, from.voiceCount || 0);
     to.voiceCycleCount = Math.max(to.voiceCycleCount || 0, from.voiceCycleCount || 0);
     to.hasPurchasedCredits = to.hasPurchasedCredits === true || from.hasPurchasedCredits === true
       || to.grants.some(isPurchasedGrant);
     await save(to);
     // Empty the source so its credits can't be claimed again.
-    await save({ deviceId: fromId, tier: "free", grants: [], starterGiven: true, processedTx: [], processedConsumableTx: [], topupAllowances: [], voiceCount: 0, voiceCycleCount: 0, updatedAt: Date.now() });
+    await save({ deviceId: fromId, tier: "free", grants: [], starterGiven: true, processedTx: [], processedConsumableTx: [], processedWebTopups: [], topupAllowances: [], voiceCount: 0, voiceCycleCount: 0, updatedAt: Date.now() });
     return summarize(to);
   });
 }

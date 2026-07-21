@@ -1,7 +1,7 @@
 import { generateContent, MAIN_MODEL } from "./ai.js";
 import { withTimeout } from "./util.js";
 import { GUARDRAILS, personaPromptBlock } from "./persona.js";
-import { storeGet, storeSet } from "./store.js";
+import { storeDelete, storeGet, storeSet } from "./store.js";
 import type { ConversationState } from "./types.js";
 
 /* ============================================================================
@@ -138,12 +138,32 @@ async function postForm(url: string, body: Record<string, string>): Promise<Toke
 function connKey(deviceId: string): string {
   return `email:conn:${deviceId.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 }
+function legacyConnKey(deviceId: string): string {
+  return `email:conn:${deviceId}`;
+}
 export async function loadConnection(deviceId: string): Promise<EmailConnection | null> {
   if (!deviceId) return null;
-  return await storeGet<EmailConnection | null>(connKey(deviceId), null);
+  const key = connKey(deviceId);
+  const connection = await storeGet<EmailConnection | null>(key, null);
+  if (connection || key === legacyConnKey(deviceId)) return connection;
+  const legacy = await storeGet<EmailConnection | null>(legacyConnKey(deviceId), null);
+  if (legacy) {
+    await storeSet(key, legacy);
+    await storeDelete(legacyConnKey(deviceId));
+  }
+  return legacy;
 }
 export async function disconnectEmail(deviceId: string): Promise<void> {
   await storeSet(connKey(deviceId), null);
+  if (connKey(deviceId) !== legacyConnKey(deviceId)) await storeDelete(legacyConnKey(deviceId));
+}
+export async function moveEmailConnection(fromIdentity: string, toIdentity: string): Promise<void> {
+  if (!fromIdentity || !toIdentity || fromIdentity === toIdentity) return;
+  const from = await loadConnection(fromIdentity);
+  if (!from) return;
+  const existing = await loadConnection(toIdentity);
+  if (!existing) await storeSet(connKey(toIdentity), from);
+  await disconnectEmail(fromIdentity);
 }
 export async function emailConnected(deviceId: string): Promise<boolean> {
   const c = await loadConnection(deviceId);

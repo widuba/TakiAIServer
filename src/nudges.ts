@@ -19,6 +19,12 @@ export interface Nudge {
 }
 
 const INDEX = "nudges:index"; // list of deviceIds with a manifest (store has no key scan)
+let indexChain: Promise<unknown> = Promise.resolve();
+function withIndexLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = indexChain.then(fn, fn);
+  indexChain = run.then(() => undefined, () => undefined);
+  return run;
+}
 function keyify(s: string): string { return s.replace(/[^a-zA-Z0-9_-]/g, "_"); }
 function tokenKey(deviceId: string): string { return `push:token:${keyify(deviceId)}`; }
 function manifestKey(deviceId: string): string { return `nudges:manifest:${keyify(deviceId)}`; }
@@ -31,6 +37,10 @@ export async function setPushToken(deviceId: string, token: string): Promise<voi
 }
 export async function getPushToken(deviceId: string): Promise<string> {
   return await storeGet<string>(tokenKey(deviceId), "");
+}
+export async function clearPushToken(deviceId: string): Promise<void> {
+  if (!deviceId) return;
+  await storeSet(tokenKey(deviceId), "");
 }
 
 export async function syncNudges(deviceId: string, raw: unknown[]): Promise<number> {
@@ -45,43 +55,52 @@ export async function syncNudges(deviceId: string, raw: unknown[]): Promise<numb
     .filter((n) => n.id && n.title && n.fireAt > now - 3600_000 && n.fireAt < now + 30 * 86400_000)
     .slice(0, 50);
   await storeSet(manifestKey(deviceId), { nudges, at: now });
-  const idx = await storeGet<{ ids: string[] }>(INDEX, { ids: [] });
-  if (!idx.ids.includes(deviceId)) { idx.ids.push(deviceId); await storeSet(INDEX, idx); }
+  await withIndexLock(async () => {
+    const idx = await storeGet<{ ids: string[] }>(INDEX, { ids: [] });
+    if (!idx.ids.includes(deviceId)) { idx.ids.push(deviceId); await storeSet(INDEX, idx); }
+  });
   return nudges.length;
 }
 
 // Fire any due nudges across all devices. Called on an interval from index.ts.
+let ticking = false;
 export async function tickNudges(): Promise<void> {
-  if (!isPushConfigured()) return;
-  const idx = await storeGet<{ ids: string[] }>(INDEX, { ids: [] });
-  const now = Date.now();
-  for (const deviceId of idx.ids) {
-    try {
-      const man = await storeGet<{ nudges: Nudge[] } | null>(manifestKey(deviceId), null);
-      if (!man || !man.nudges?.length) continue;
-      const token = await getPushToken(deviceId);
-      if (!token) continue;
-      const sent = await storeGet<{ keys: string[] }>(sentKey(deviceId), { keys: [] });
-      let changed = false;
-      for (const n of man.nudges) {
-        // Fire once, and only within an hour of the target time (skip very stale).
-        if (n.fireAt > now || n.fireAt < now - 3600_000) continue;
-        const key = `${n.id}@${n.fireAt}`;
-        if (sent.keys.includes(key)) continue;
-        const r = await sendPush(token, { title: n.title, body: n.body, data: { nudge: n.id } });
-        sent.keys.push(key);
-        changed = true;
-        if (!r.ok && /410|BadDeviceToken|Unregistered/i.test(r.reason || "")) {
-          await storeSet(tokenKey(deviceId), "");
-          forgetToken(token);
+  if (!isPushConfigured() || ticking) return;
+  ticking = true;
+  try {
+    const idx = await storeGet<{ ids: string[] }>(INDEX, { ids: [] });
+    const now = Date.now();
+    for (const deviceId of idx.ids) {
+      try {
+        const man = await storeGet<{ nudges: Nudge[] } | null>(manifestKey(deviceId), null);
+        if (!man || !man.nudges?.length) continue;
+        const token = await getPushToken(deviceId);
+        if (!token) continue;
+        const sent = await storeGet<{ keys: string[] }>(sentKey(deviceId), { keys: [] });
+        let changed = false;
+        for (const n of man.nudges) {
+          // Fire once, and only within an hour of the target time (skip very stale).
+          if (n.fireAt > now || n.fireAt < now - 3600_000) continue;
+          const key = `${n.id}@${n.fireAt}`;
+          if (sent.keys.includes(key)) continue;
+          const r = await sendPush(token, { title: n.title, body: n.body, data: { nudge: n.id } });
+          if (r.ok) {
+            sent.keys.push(key);
+            changed = true;
+          } else if (r.status === 410 || /BadDeviceToken|Unregistered/i.test(r.reason || "")) {
+            await clearPushToken(deviceId);
+            forgetToken(token);
+          }
         }
+        if (changed) {
+          sent.keys = sent.keys.slice(-300);
+          await storeSet(sentKey(deviceId), sent);
+        }
+      } catch (e) {
+        console.error("tickNudges:", deviceId, e);
       }
-      if (changed) {
-        sent.keys = sent.keys.slice(-300);
-        await storeSet(sentKey(deviceId), sent);
-      }
-    } catch (e) {
-      console.error("tickNudges:", deviceId, e);
     }
+  } finally {
+    ticking = false;
   }
 }

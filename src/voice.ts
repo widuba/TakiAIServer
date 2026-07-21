@@ -18,6 +18,8 @@ export function isVoiceConfigured(): boolean {
   return !!ELEVEN_KEY;
 }
 
+let voiceListCache: { expiresAt: number; voices: { id: string; name: string }[] } | null = null;
+
 // New app builds report AVAudioRecorder duration directly. The byte estimate is
 // a server-side floor for older or modified clients recording 32 kbps AAC.
 export function billableAudioDurationMs(audioBase64: string, reportedMs?: number): number {
@@ -72,6 +74,7 @@ export async function transcribe(audioBase64: string, mime = "audio/m4a"): Promi
 // The available voices for the account, for the app's voice picker.
 export async function listVoices(): Promise<{ id: string; name: string }[]> {
   if (!ELEVEN_KEY) return [];
+  if (voiceListCache && voiceListCache.expiresAt > Date.now()) return voiceListCache.voices;
   try {
     const res: any = await withTimeout(
       fetch("https://api.elevenlabs.io/v1/voices", { headers: { "xi-api-key": ELEVEN_KEY } }),
@@ -79,9 +82,11 @@ export async function listVoices(): Promise<{ id: string; name: string }[]> {
     );
     if (!res.ok) return [];
     const data = await res.json();
-    return (Array.isArray(data?.voices) ? data.voices : [])
+    const voices = (Array.isArray(data?.voices) ? data.voices : [])
       .map((v: any) => ({ id: String(v.voice_id || ""), name: String(v.name || "Voice") }))
       .filter((v: { id: string }) => v.id);
+    voiceListCache = { expiresAt: Date.now() + 10 * 60_000, voices };
+    return voices;
   } catch (error) {
     console.error("List voices error:", error);
     return [];
