@@ -814,6 +814,12 @@ export function calendarDirectionsQuery(message: string): string | null {
     .replace(/\b(?:to|for|from|in|on)\s+(?:my\s+|the\s+)?(?:calendar|schedule)\b/gi, " ")
     .replace(/\b(?:my|the)\s+(?:calendar|schedule)\s+(?:entry|event)?\b/gi, " ")
     .replace(/\b(?:calendar|schedule)\s+(?:entry|event)\b/gi, " ")
+    .replace(/\b(?:calendar|schedule)\b/gi, " ")
+    .replace(/\b(?:today|tonight|tomorrow|tommorow)(?:'s)?\b/gi, " ")
+    .replace(/\b(?:on\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:'s)?\b/gi, " ")
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, " ")
+    .replace(/\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/g, " ")
+    .replace(/\b(?:my|the|next|upcoming|closest|nearest|to|for|from|of|entry|entries|event|events)\b/gi, " ")
     .replace(/\b(?:address|location|destination|there|it|please)\b/gi, " ")
     .replace(/[?.!,]/g, " ")
     .replace(/\s+/g, " ")
@@ -874,9 +880,14 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
   {
     const query = calendarDirectionsQuery(state.message);
     if (query !== null) {
+      const requestedYmd = resolveRelativeYmd(state.message, state.timeZone);
       const action = blankAction("calendar_directions");
       action.calendarQuery = query;
       action.daysAhead = 30;
+      if (requestedYmd) {
+        action.startDate = isoFromYmdTime(requestedYmd, 0, 0, state.timeZone);
+        action.endDate = isoFromYmdTime(addDaysToYmd(requestedYmd, 1), 0, 0, state.timeZone);
+      }
       return actionPlan("I'll check your calendar for the destination.", action, {
         lastIntent: "calendar_directions"
       });
@@ -2295,10 +2306,22 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
     }
 
     case "calendar_directions": {
-      return actionPlan("I'll check your calendar for the destination.", {
+      const deterministicQuery = calendarDirectionsQuery(state.message);
+      const requestedYmd = resolveRelativeYmd(state.message, state.timeZone);
+      const action = {
         ...blankAction("calendar_directions"),
-        calendarQuery: String(plan.action?.calendarQuery || "").trim(),
+        calendarQuery: deterministicQuery ?? String(plan.action?.calendarQuery || "").trim(),
         daysAhead: plan.action?.daysAhead ?? 30
+      };
+      if (requestedYmd) {
+        action.startDate = isoFromYmdTime(requestedYmd, 0, 0, state.timeZone);
+        action.endDate = isoFromYmdTime(addDaysToYmd(requestedYmd, 1), 0, 0, state.timeZone);
+      } else {
+        action.startDate = plan.action?.startDate ? String(plan.action.startDate) : null;
+        action.endDate = plan.action?.endDate ? String(plan.action.endDate) : null;
+      }
+      return actionPlan("I'll check your calendar for the destination.", {
+        ...action
       }, { lastIntent: "calendar_directions" });
     }
 

@@ -174,6 +174,19 @@ test("specific calendar driving commands retain the event subject", async () => 
   assert.match(result.action?.calendarQuery || "", /dentist appointment/i);
 });
 
+test("calendar driving commands convert relative dates into search boundaries", async () => {
+  assert.equal(calendarDirectionsQuery("Get tomorrow's calendar event address and go there"), "");
+  assert.equal(calendarDirectionsQuery("Take me to my next calendar entry"), "");
+  assert.equal(calendarDirectionsQuery("Take me to my next calendar meeting"), "meeting");
+
+  const result = await planAssistantResponse(stateFor("Get the address from my calendar event tomorrow and drive there"));
+  assert.equal(result.action?.type, "calendar_directions");
+  assert.equal(result.action?.calendarQuery, "");
+  assert.ok(result.action?.startDate);
+  assert.ok(result.action?.endDate);
+  assert.ok(Date.parse(result.action!.endDate!) > Date.parse(result.action!.startDate!));
+});
+
 test("send-to-contact phrasing remains a message command, not a generic share", async () => {
   assert.equal(await planShareRequest(stateFor("Send Bill the score")), null);
 });
