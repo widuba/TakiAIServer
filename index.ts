@@ -1527,7 +1527,8 @@ app.post("/api/iap/verify", async (req, res) => {
 /* ---- Sign in with Apple (optional account) ------------------------------ */
 // Verify the identity token, derive the stable Apple account id, and merge the
 // device's existing credits into that account so they follow the user across
-// devices. Returns the account identity the app should use from now on.
+// devices. The Apple ledger identity is private sync state; the public Account
+// ID remains the permanent eight-digit device number.
 app.post("/api/account/apple", async (req, res) => {
   const b = req.body || {};
   const idToken = typeof b.identityToken === "string" ? b.identityToken : "";
@@ -1543,7 +1544,7 @@ app.post("/api/account/apple", async (req, res) => {
   const entitlementJWS: string[] = hasEntitlementSnapshot
     ? b.transactions.filter((value: unknown) => typeof value === "string")
     : [];
-  const accountId = `apple:${identdata.sub}`;
+  const ledgerIdentity = `apple:${identdata.sub}`;
   let duplicateSubscriptionNeedsCancellation = false;
   try {
     await linkApple(identdata.sub, deviceId);
@@ -1554,13 +1555,13 @@ app.post("/api/account/apple", async (req, res) => {
       name: fullName || priorDeviceUser.apple?.name || undefined
     };
     await noteApple(deviceId, appleProfile);
-    await noteApple(accountId, appleProfile);
-    const priorAccountUser = await userForIdentity(accountId);
+    await noteApple(ledgerIdentity, appleProfile);
+    const priorAccountUser = await userForIdentity(ledgerIdentity);
     if (priorDeviceUser.engagement.updatedAt > priorAccountUser.engagement.updatedAt) {
-      await noteEngagementPreferences(accountId, priorDeviceUser.engagement);
+      await noteEngagementPreferences(ledgerIdentity, priorDeviceUser.engagement);
     }
     await noteUser(deviceId, clientIp(req), String(req.headers?.["user-agent"] || ""));
-    await noteUser(accountId, clientIp(req), String(req.headers?.["user-agent"] || ""));
+    await noteUser(ledgerIdentity, clientIp(req), String(req.headers?.["user-agent"] || ""));
     const activeTransactionIds: string[] = [];
     for (const jws of entitlementJWS) {
       const info = await verifyTransaction(jws);
@@ -1568,7 +1569,7 @@ app.post("/api/account/apple", async (req, res) => {
       const claim = await linkTransactionIdentity(info.originalTransactionId, deviceId);
       if (claim === "conflict") {
         const binding = await getTransactionBinding(info.originalTransactionId);
-        if (binding.identity === accountId) activeTransactionIds.push(info.originalTransactionId);
+        if (binding.identity === ledgerIdentity) activeTransactionIds.push(info.originalTransactionId);
         continue;
       }
       activeTransactionIds.push(info.originalTransactionId);
@@ -1580,16 +1581,16 @@ app.post("/api/account/apple", async (req, res) => {
     if (hasEntitlementSnapshot) {
       const historicalTransactions = await transactionIdsForIdentity(deviceId);
       for (const transactionId of historicalTransactions) {
-        if (!deviceTransactions.includes(transactionId)) await clearRetiredSubscription(accountId, transactionId);
+        if (!deviceTransactions.includes(transactionId)) await clearRetiredSubscription(ledgerIdentity, transactionId);
       }
     }
-    let primary = await primarySubscriptionForIdentity(accountId);
+    let primary = await primarySubscriptionForIdentity(ledgerIdentity);
     let subscriptionMode: "keep" | "convert" | "discard" = "keep";
     let secondaryTransactionId = "";
 
     if (!primary && deviceTransactions.length) {
       primary = deviceTransactions[0];
-      await claimPrimarySubscription(accountId, primary);
+      await claimPrimarySubscription(ledgerIdentity, primary);
     } else {
       const decision = subscriptionMergeDecision(primary, deviceTransactions);
       subscriptionMode = decision.mode;
@@ -1597,12 +1598,12 @@ app.post("/api/account/apple", async (req, res) => {
       duplicateSubscriptionNeedsCancellation = decision.mode === "convert";
     }
 
-    await mergeCredits(deviceId, accountId, { subscriptionMode, secondaryTransactionId });
-    await moveEmailConnection(deviceId, accountId);
-    await rebindCreditTransactions(deviceId, accountId);
+    await mergeCredits(deviceId, ledgerIdentity, { subscriptionMode, secondaryTransactionId });
+    await moveEmailConnection(deviceId, ledgerIdentity);
+    await rebindCreditTransactions(deviceId, ledgerIdentity);
     for (const transactionId of deviceTransactions) {
       const role = transactionId === primary ? "primary" : "secondary";
-      await setTransactionRole(transactionId, accountId, role);
+      await setTransactionRole(transactionId, ledgerIdentity, role);
     }
   } catch (e) {
     console.error("apple link:", e);
@@ -1610,21 +1611,23 @@ app.post("/api/account/apple", async (req, res) => {
     return;
   }
   const linkedDevices = (await devicesForApple(identdata.sub)).filter((d) => d !== deviceId);
-  const accountUser = await userForIdentity(accountId);
-  res.json({ accountId, deviceId, email: identdata.email || accountUser.apple?.email, linkedDevices, duplicateSubscriptionNeedsCancellation, engagement: accountUser.engagement, ...(await creditSummary(accountId)), tiers: tierCatalog() });
+  const accountUser = await userForIdentity(ledgerIdentity);
+  res.json({ ledgerIdentity, deviceId, email: identdata.email || accountUser.apple?.email, linkedDevices, duplicateSubscriptionNeedsCancellation, engagement: accountUser.engagement, ...(await creditSummary(ledgerIdentity)), tiers: tierCatalog() });
 });
 
 app.post("/api/account/delete", async (req, res) => {
   const identityToken = typeof req.body?.identityToken === "string" ? req.body.identityToken : "";
   const authorizationCode = typeof req.body?.authorizationCode === "string" ? req.body.authorizationCode : "";
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
-  const expectedAccountId = typeof req.body?.expectedAccountId === "string" ? req.body.expectedAccountId.trim() : "";
+  const expectedLedgerIdentity = typeof req.body?.expectedLedgerIdentity === "string"
+    ? req.body.expectedLedgerIdentity.trim()
+    : typeof req.body?.expectedAccountId === "string" ? req.body.expectedAccountId.trim() : "";
   const apple = await verifyAppleIdentityToken(identityToken);
   if (!apple || !authorizationCode) { res.status(401).json({ error: "Apple reauthentication required" }); return; }
   if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
 
   const accountId = `apple:${apple.sub}`;
-  if (!expectedAccountId || expectedAccountId !== accountId) {
+  if (!expectedLedgerIdentity || expectedLedgerIdentity !== accountId) {
     res.status(403).json({ error: "The confirmed Apple account does not match this Taki account" });
     return;
   }
