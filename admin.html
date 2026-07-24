@@ -9,13 +9,13 @@
     :root{color-scheme:dark;--bg:#151516;--panel:#1d1d1f;--panel-2:#242426;--line:#343437;--text:#f5f5f2;--muted:#a7a7a1;--green:#63d09a;--amber:#f0bd62;--red:#ff726f;--ink:#111112}
     *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0}button,input{font:inherit;letter-spacing:0}button{cursor:pointer}.hidden{display:none!important}
     .login{min-height:100vh;display:grid;place-items:center;padding:24px}.login-panel{width:min(420px,100%);border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:28px}.login h1{margin:0 0 4px;font-size:25px}.login p{margin:0 0 22px;color:var(--muted)}
-    input{width:100%;border:1px solid var(--line);border-radius:6px;background:#101011;color:var(--text);padding:11px 12px;outline:none}input:focus{border-color:var(--green)}.primary{border:0;border-radius:6px;background:var(--green);color:var(--ink);font-weight:750;padding:11px 15px}.login .primary{width:100%;margin-top:12px}.error{color:var(--red);min-height:20px;margin-top:10px}
+    input,textarea{width:100%;border:1px solid var(--line);border-radius:6px;background:#101011;color:var(--text);padding:11px 12px;outline:none}textarea{min-height:145px;resize:vertical;line-height:1.5}input:focus,textarea:focus{border-color:var(--green)}.primary{border:0;border-radius:6px;background:var(--green);color:var(--ink);font-weight:750;padding:11px 15px}.login .primary{width:100%;margin-top:12px}.error{color:var(--red);min-height:20px;margin-top:10px}
     .app{min-height:100vh}.topbar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:18px;min-height:62px;padding:10px 20px;border-bottom:1px solid var(--line);background:#181819}.brand{font-size:18px;font-weight:800;white-space:nowrap}.topbar .spacer{flex:1}.status{color:var(--muted);font-size:12px}.quiet{border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--text);padding:8px 11px}.quiet:hover{background:var(--panel-2)}.quiet.reset{border-color:#733b3a;color:var(--red)}.quiet.reset:hover{background:#351f1f;border-color:var(--red)}
     .metrics{display:grid;grid-template-columns:repeat(7,minmax(110px,1fr));border-bottom:1px solid var(--line);background:var(--panel)}.metric{padding:15px 18px;border-right:1px solid var(--line)}.metric:last-child{border-right:0}.metric b{display:block;font-size:20px;font-variant-numeric:tabular-nums}.metric span{color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:700}
     .workspace{display:grid;grid-template-columns:minmax(300px,35%) minmax(0,65%);height:calc(100vh - 137px)}.accounts{border-right:1px solid var(--line);overflow:auto;background:#181819}.account-tools{position:sticky;top:0;z-index:2;padding:12px;border-bottom:1px solid var(--line);background:#181819}.account-list{display:block}.account-row{width:100%;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;text-align:left;color:var(--text);background:transparent;border:0;border-bottom:1px solid #29292b;padding:13px 14px}.account-row:hover,.account-row.active{background:var(--panel-2)}.account-row strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.account-row small{display:block;color:var(--muted);margin-top:3px}.row-numbers{text-align:right;font-variant-numeric:tabular-nums}.row-numbers b{color:var(--green)}
     .badge{display:inline-flex;align-items:center;min-height:22px;padding:2px 7px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:11px;font-weight:750;text-transform:capitalize}.badge.high_value{border-color:#346e53;color:var(--green)}.badge.at_risk,.badge.suspended{border-color:#7b5d28;color:var(--amber)}.badge.terminated{border-color:#7f3937;color:var(--red)}
     .detail{overflow:auto;padding:22px 24px 50px}.empty{min-height:100%;display:grid;place-items:center;text-align:center;color:var(--muted)}.detail-header{display:flex;align-items:flex-start;gap:16px;padding-bottom:18px;border-bottom:1px solid var(--line)}.detail-header h1{margin:0;font-size:25px}.detail-header p{margin:3px 0 0;color:var(--muted)}.detail-header .spacer{flex:1}.section{padding:20px 0;border-bottom:1px solid var(--line)}.section h2{font-size:16px;margin:0 0 13px}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.data{min-width:0;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:12px}.data span{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:700}.data b{display:block;margin-top:5px;font-size:18px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.two{display:grid;grid-template-columns:1fr 1fr;gap:18px}.plain-table{width:100%;border-collapse:collapse}.plain-table th,.plain-table td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}.plain-table th{color:var(--muted);font-size:11px;text-transform:uppercase}.plain-table td:last-child,.plain-table th:last-child{text-align:right}.bar{height:8px;background:#303033;border-radius:999px;overflow:hidden;margin-top:7px}.bar span{display:block;height:100%;background:var(--green)}.subtle{color:var(--muted)}.feature{display:flex;align-items:center;gap:10px;margin:9px 0}.feature span:first-child{width:145px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.feature .bar{flex:1;margin:0}.feature b{width:38px;text-align:right}
-    .recommendation{border-left:3px solid var(--green);padding:3px 0 3px 13px;margin:12px 0}.recommendation b{display:block}.recommendation p{margin:3px 0;color:var(--muted)}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.actions button{border:1px solid var(--line);border-radius:6px;background:var(--panel-2);color:var(--text);padding:9px 12px;font-weight:700}.actions button:hover{border-color:var(--green)}.actions button:disabled{opacity:.4;cursor:not-allowed}.danger{color:var(--red)!important}.consent{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}.consent .on{color:var(--green)}.consent .off{color:var(--muted)}
+    .recommendation{border-left:3px solid var(--green);padding:3px 0 3px 13px;margin:12px 0}.recommendation b{display:block}.recommendation p{margin:3px 0;color:var(--muted)}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.actions button{border:1px solid var(--line);border-radius:6px;background:var(--panel-2);color:var(--text);padding:9px 12px;font-weight:700}.actions button:hover{border-color:var(--green)}.actions button:disabled{opacity:.4;cursor:not-allowed}.danger{color:var(--red)!important}.consent{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}.consent .on{color:var(--green)}.consent .off{color:var(--muted)}.field{display:block;margin:15px 0 0;color:var(--muted);font-size:12px;font-weight:750;text-transform:uppercase}.field input,.field textarea{display:block;margin-top:6px;text-transform:none;font-weight:400}.campaign-note{margin:0 0 18px;color:var(--muted);max-width:720px}.campaign-status{margin:14px 0 0;min-height:20px;color:var(--muted)}.campaign-table td:nth-child(2){max-width:340px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     @media(max-width:1100px){.metrics{grid-template-columns:repeat(4,1fr)}.metric:nth-child(4){border-right:0}.workspace{height:auto;grid-template-columns:1fr}.accounts{max-height:420px;border-right:0;border-bottom:1px solid var(--line)}.detail{min-height:600px}.grid{grid-template-columns:repeat(2,1fr)}}
     @media(max-width:640px){.topbar{padding:10px 12px}.status{display:none}.metrics{grid-template-columns:repeat(2,1fr)}.metric:nth-child(even){border-right:0}.workspace{display:block}.accounts{max-height:330px}.detail{padding:18px 14px 40px}.grid,.two{grid-template-columns:1fr}.detail-header{flex-wrap:wrap}.detail-header .spacer{display:none}}
   </style>
@@ -32,7 +32,7 @@
   </main>
 
   <main id="app" class="app hidden">
-    <header class="topbar"><div class="brand">Taki AI Admin</div><div id="config" class="status"></div><div class="spacer"></div><button id="fullReset" class="quiet reset">Full reset</button><button id="refresh" class="quiet">Refresh</button><button id="logout" class="quiet">Lock</button></header>
+    <header class="topbar"><div class="brand">Taki AI Admin</div><div id="config" class="status"></div><div class="spacer"></div><button id="promotional" class="quiet">Promotional email</button><button id="fullReset" class="quiet reset">Full reset</button><button id="refresh" class="quiet">Refresh</button><button id="logout" class="quiet">Lock</button></header>
     <section id="metrics" class="metrics"></section>
     <section class="workspace">
       <aside class="accounts"><div class="account-tools"><input id="search" type="search" placeholder="Search name, email, ID, plan"></div><div id="accountList" class="account-list"></div></aside>
@@ -46,6 +46,7 @@
     let secret = sessionStorage.getItem("taki-admin-secret") || "";
     let users = [];
     let selected = "";
+    let promotionalSummary = null;
     const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
     const usd = (value, digits = 2) => new Intl.NumberFormat("en-US", {style:"currency",currency:"USD",minimumFractionDigits:digits,maximumFractionDigits:digits}).format(Number(value)||0);
     const num = (value) => Number(value||0).toLocaleString();
@@ -63,6 +64,12 @@
       $("config").textContent = `Push ${data.pushConfigured ? "ready" : "not configured"} · Email ${data.emailConfigured ? "ready" : "not configured"}`;
       renderMetrics(data.totals || {}); renderList();
       if (selected && users.some((u) => u.identity === selected)) await openAccount(selected);
+    }
+    async function openPromotional() {
+      selected = ""; renderList(); location.hash = "promotional";
+      $("detail").innerHTML = `<div class="empty">Loading promotional email...</div>`;
+      try { promotionalSummary = await post("/api/admin/promotional/summary"); renderPromotional(promotionalSummary); }
+      catch (error) { $("detail").innerHTML = `<div class="empty">${esc(error.message)}</div>`; }
     }
     function renderMetrics(t) {
       const entries = [["Accounts",num(t.users)],["High value",num(t.highValue)],["Questions",num(t.questions)],["Gross",usd(t.gross)],["Net",usd(t.net)],["Owner cost",usd(t.cost)],["Profit",usd(t.profit)]];
@@ -89,6 +96,27 @@
     function performanceRows(performance) {
       const rows=[]; for (const [category,channels] of Object.entries(performance||{})) for (const [channel,value] of Object.entries(channels||{})) rows.push(`<tr><td>${esc(category)}</td><td>${esc(channel)}</td><td>${num(value.sent)}</td><td>${num(value.opened)}</td><td>${pct(value.opened,value.sent)}</td><td>${value.opened?`${num(Math.round((value.sessionSeconds||0)/value.opened))}s`:"--"}</td></tr>`);
       return rows.length ? rows.join("") : `<tr><td colspan="6" class="subtle">No campaigns sent yet.</td></tr>`;
+    }
+    function renderPromotional(data) {
+      const config=data.configuration||{}; const campaigns=data.campaigns||[];
+      const history=campaigns.map((c)=>`<tr><td>${date(c.sentAt)}</td><td title="${esc(c.subject)}">${esc(c.subject)}</td><td>${num(c.delivered)} / ${num(c.requested)}</td><td>${num(c.failed)}</td></tr>`).join("")||`<tr><td colspan="4" class="subtle">No promotional campaigns sent yet.</td></tr>`;
+      const readiness=config.readyToSend ? `<span class="badge on">Ready to send</span>` : `<span class="badge suspended">Setup needed</span>`;
+      const requirements=[]; if(!config.emailConfigured)requirements.push("RESEND_API_KEY is missing on Render."); if(!config.postalAddressConfigured)requirements.push("Set PROMOTIONAL_POSTAL_ADDRESS on Render before sending.");
+      $("detail").innerHTML = `
+        <div class="detail-header"><div><h1>Promotional email</h1><p>Product news and offers for people who signed up with Apple.</p></div><div class="spacer"></div>${readiness}</div>
+        <section class="section"><div class="grid">${dataBox("Subscribed Apple emails",num(data.subscribed))}${dataBox("Unsubscribed",num(data.unsubscribed))}${dataBox("From",config.from||"Taki AI <updates@takiai.app>")}</div>${requirements.length?`<p class="campaign-status danger">${esc(requirements.join(" "))}</p>`:`<p class="campaign-note">Each campaign adds an unsubscribe link, List-Unsubscribe headers, and the configured postal address. Unsubscribed addresses are permanently excluded.</p>`}</section>
+        <section class="section"><h2>Compose campaign</h2><p class="campaign-note">This sends the same message to every subscribed Apple-email account. Keep the subject accurate and use the optional button only for an HTTPS destination.</p><label class="field">Subject<input id="promoSubject" maxlength="160" placeholder="What is new in Taki AI"></label><label class="field">Message<textarea id="promoBody" maxlength="10000" placeholder="Write the update here. Paragraphs are preserved in the email."></textarea></label><div class="two"><label class="field">Button label (optional)<input id="promoCtaLabel" maxlength="60" placeholder="Open Taki AI"></label><label class="field">Button URL (optional)<input id="promoCtaUrl" type="url" maxlength="1500" placeholder="https://takiai.app/app/"></label></div><div class="actions"><button id="sendPromotional" ${config.readyToSend && data.subscribed?"":"disabled"}>Send to ${num(data.subscribed)} subscribers</button></div><div id="promoStatus" class="campaign-status" aria-live="polite"></div></section>
+        <section class="section"><h2>Recent campaigns</h2><table class="plain-table campaign-table"><thead><tr><th>Sent</th><th>Subject</th><th>Delivered</th><th>Failed</th></tr></thead><tbody>${history}</tbody></table></section>`;
+      $("sendPromotional")?.addEventListener("click", sendPromotional);
+    }
+    async function sendPromotional() {
+      const subject=$("promoSubject").value.trim(), body=$("promoBody").value.trim();
+      if(!subject||!body){$("promoStatus").textContent="Add both a subject and a message.";return}
+      const phrase=prompt(`This will send this campaign to ${num(promotionalSummary?.subscribed)} subscribed Apple-email accounts.\n\nType SEND PROMOTIONAL EMAIL to continue.`)||"";
+      if(phrase!=="SEND PROMOTIONAL EMAIL")return;
+      const button=$("sendPromotional"); button.disabled=true; $("promoStatus").textContent="Sending campaign...";
+      try { const result=await post("/api/admin/promotional/send",{subject,body,ctaLabel:$("promoCtaLabel").value.trim(),ctaUrl:$("promoCtaUrl").value.trim(),confirmation:phrase}); promotionalSummary=result.summary; renderPromotional(promotionalSummary); alert(`Campaign complete: ${num(result.campaign.delivered)} delivered, ${num(result.campaign.failed)} failed.`); }
+      catch(error){$("promoStatus").textContent=error.message;button.disabled=false}
     }
     function renderDetail(a) {
       const e=a.engagement||{}; const push=e.recommendedPush||{}; const email=e.recommendedEmail||{}; const daily=a.credits?.daily||{}; const monthly=a.credits?.monthly||{};
@@ -122,8 +150,8 @@
       }catch(error){alert(error.message)}finally{button.disabled=false}
     }
     $("loginForm").addEventListener("submit",async(event)=>{event.preventDefault();secret=$("secret").value.trim();$("loginError").textContent="";try{await load();sessionStorage.setItem("taki-admin-secret",secret);$("login").classList.add("hidden");$("app").classList.remove("hidden")}catch(error){$("loginError").textContent=error.message;secret=""}});
-    $("search").addEventListener("input",renderList); $("fullReset").addEventListener("click",runFullReset); $("refresh").addEventListener("click",load); $("logout").addEventListener("click",()=>{sessionStorage.removeItem("taki-admin-secret");location.reload()});
-    if(secret){load().then(()=>{$("login").classList.add("hidden");$("app").classList.remove("hidden");const hash=new URLSearchParams(location.hash.slice(1)).get("account");if(hash)openAccount(hash)}).catch(()=>sessionStorage.removeItem("taki-admin-secret"))}
+    $("search").addEventListener("input",renderList); $("promotional").addEventListener("click",openPromotional); $("fullReset").addEventListener("click",runFullReset); $("refresh").addEventListener("click",load); $("logout").addEventListener("click",()=>{sessionStorage.removeItem("taki-admin-secret");location.reload()});
+    if(secret){load().then(()=>{$("login").classList.add("hidden");$("app").classList.remove("hidden");const hash=location.hash.slice(1);if(hash==="promotional")openPromotional();else{const account=new URLSearchParams(hash).get("account");if(account)openAccount(account)}}).catch(()=>sessionStorage.removeItem("taki-admin-secret"))}
   </script>
 </body>
 </html>

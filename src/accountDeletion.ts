@@ -1,6 +1,7 @@
 import { storeDelete, storeGet, storeSet } from "./store.js";
 import { cancelAlerts } from "./alerts.js";
 import { forgetToken } from "./push.js";
+import { removeApplePromotionalSubscriber } from "./promotional.js";
 
 const safeColon = (value: string) => value.replace(/[^a-zA-Z0-9_:.-]/g, "_");
 const safePlain = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -97,5 +98,6 @@ export async function purgeAppleAccount(sub: string): Promise<{ identities: stri
   }
 
   await storeDelete(appleKey);
+  await removeApplePromotionalSubscriber(sub);
   return { identities: [...identities], devices };
 }

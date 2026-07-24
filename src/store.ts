@@ -67,7 +67,7 @@ export function storeCategory(key: string): string {
   if (/^(?:safety:|safety_)/.test(key)) return "safety";
   if (/^(?:email:|email_)/.test(key)) return "connected_email";
   if (/^(?:routines:|routines_)/.test(key)) return "routines";
-  if (key.startsWith("engagement")) return "engagement";
+  if (key.startsWith("engagement") || key.startsWith("marketing")) return "engagement";
   if (/^(?:push:|nudges:|live-activity-|push_|nudges_|live-activity_)/.test(key)) return "notifications";
   if (key === "feedback") return "feedback";
   if (/^(?:alerts$|ship24:|ship24_)/.test(key)) return "trackers";

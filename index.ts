@@ -37,6 +37,7 @@ import { emailProviderConfigured, createOAuthState, buildAuthUrl, completeOAuth,
 import { extractDurableMemories } from "./src/userMemory.js";
 import { createChatTitle } from "./src/chatTitle.js";
 import { engagementSummary, isEngagementEmailConfigured, recordEngagementOpen, recordEngagementSession, recommendedEngagement, sendPersonalizedEngagement, shouldSendAutomatic, type EngagementChannel } from "./src/engagement.js";
+import { backfillApplePromotionalSubscribers, enrollApplePromotionalSubscriber, promotionalSummary, sendPromotionalCampaign, unsubscribePromotionalEmail } from "./src/promotional.js";
 import { performFullReset, previewFullReset, type FullResetPreview } from "./src/fullReset.js";
 import { bypassResetGeneration, hasCurrentResetGeneration, RESET_EPOCH_HEADER } from "./src/resetGeneration.js";
 import { isKnownIdentity, markWebAuthenticated } from "./src/identity.js";
@@ -136,6 +137,7 @@ app.use(cors());
 // Keep the raw body around so the Stripe webhook can verify its signature (Stripe
 // signs the exact bytes, not the parsed JSON).
 app.use(express.json({ limit: "16mb", verify: (req, _res, buf) => { (req as any).rawBody = buf; } }));
+app.use(express.urlencoded({ extended: false, limit: "16kb" }));
 app.use((_req, res, next) => {
   if (fullResetInProgress) {
     res.status(503).json({ error: "Taki AI is completing an administrative reset. Try again shortly." });
@@ -201,6 +203,30 @@ app.get("/health", async (_req, res) => {
 
 app.get(["/admin", "/admin/"], (_req, res) => {
   res.sendFile(fileURLToPath(new URL("./admin.html", import.meta.url)));
+});
+
+function unsubscribePage(message: string, form = ""): string {
+  return `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Taki AI email preferences</title><style>body{box-sizing:border-box;margin:0;background:#181819;color:#f5f5f2;font:16px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:grid;min-height:100vh;place-items:center;padding:24px}.box{max-width:430px;text-align:center}.mark{font-size:22px;font-weight:800;margin-bottom:18px}h1{font-size:24px;line-height:1.25;margin:0 0 10px}p{color:#bbb9b2;margin:0 0 22px}button{border:0;border-radius:8px;padding:12px 16px;background:#e6e3dc;color:#171719;font:700 15px inherit;cursor:pointer}</style></head><body><main class="box"><div class="mark">Taki AI</div>${message}${form}</main></body></html>`;
+}
+
+app.get("/unsubscribe", (req, res) => {
+  const token = typeof req.query?.token === "string" ? req.query.token : "";
+  if (!token) { res.status(400).send(unsubscribePage("<h1>This link is invalid.</h1><p>Use the unsubscribe link from a Taki AI promotional email.</p>")); return; }
+  const action = `/unsubscribe?token=${encodeURIComponent(token)}&show=1`;
+  res.send(unsubscribePage("<h1>Stop promotional emails?</h1><p>You will no longer receive Taki AI product news and offers. Account, billing, and security messages are unaffected.</p>", `<form method="post" action="${action}"><button type="submit">Unsubscribe</button></form>`));
+});
+
+app.post("/unsubscribe", async (req, res) => {
+  const token = typeof req.query?.token === "string" ? req.query.token : typeof req.body?.token === "string" ? req.body.token : "";
+  const unsubscribed = await unsubscribePromotionalEmail(token);
+  // RFC 8058 one-click requests expect a blank successful response. The normal
+  // browser flow adds show=1 so people still receive a useful confirmation.
+  if (req.query?.show !== "1") { res.status(unsubscribed ? 200 : 400).type("text/plain").send(""); return; }
+  res.status(unsubscribed ? 200 : 400).send(unsubscribePage(
+    unsubscribed
+      ? "<h1>You are unsubscribed.</h1><p>Taki AI will stop sending promotional emails to this address.</p>"
+      : "<h1>This link is invalid or expired.</h1><p>Use the newest unsubscribe link from a Taki AI email.</p>"
+  ));
 });
 
 let resetEpochCache = { value: 0, readAt: 0 };
@@ -811,6 +837,11 @@ app.get("/api/web/auth/config", (_req, res) => {
 async function finishWebSignIn(req: any, res: any, identity: string, email?: string, name?: string) {
   await markWebAuthenticated(identity);
   await noteUser(identity, clientIp(req), String(req.headers?.["user-agent"] || ""));
+  if (identity.startsWith("apple:")) {
+    const appleSub = identity.slice("apple:".length);
+    await noteApple(identity, { sub: appleSub, email, name });
+    await enrollApplePromotionalSubscriber({ email, appleSub, identity });
+  }
   const ip = clientIp(req);
   if ((await isBanned(identity, undefined, ip)) || (await isTestRestricted(identity))) {
     res.status(403).json({ error: "This account is restricted." });
@@ -1616,6 +1647,11 @@ app.post("/api/account/apple", async (req, res) => {
     };
     await noteApple(deviceId, appleProfile);
     await noteApple(ledgerIdentity, appleProfile);
+    await enrollApplePromotionalSubscriber({
+      email: appleProfile.email,
+      appleSub: identdata.sub,
+      identity: ledgerIdentity
+    });
     const priorAccountUser = await userForIdentity(ledgerIdentity);
     if (priorDeviceUser.engagement.updatedAt > priorAccountUser.engagement.updatedAt) {
       await noteEngagementPreferences(ledgerIdentity, priorDeviceUser.engagement);
@@ -2175,6 +2211,36 @@ app.post("/api/admin/users", async (req, res) => {
     profit: total.profit + row.profitUsd
   }), { users: 0, highValue: 0, questions: 0, gross: 0, net: 0, cost: 0, profit: 0 });
   res.json({ users: rows, totals: Object.fromEntries(Object.entries(totals).map(([key, value]) => [key, typeof value === "number" ? money(value) : value])), emailConfigured: isEngagementEmailConfigured(), pushConfigured: isPushConfigured() });
+});
+
+// Promotional email is intentionally separate from the optional personalized
+// engagement setting. Every account that supplied an Apple Sign-in email is
+// enrolled once, while an unsubscribe is permanent unless the person opts back
+// in through a future account setting.
+app.post("/api/admin/promotional/summary", async (req, res) => {
+  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
+  await backfillApplePromotionalSubscribers(await allUsers());
+  res.json(await promotionalSummary());
+});
+
+app.post("/api/admin/promotional/send", async (req, res) => {
+  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
+  if (req.body?.confirmation !== "SEND PROMOTIONAL EMAIL") {
+    res.status(400).json({ error: "Enter the confirmation phrase before sending a promotional email." });
+    return;
+  }
+  try {
+    await backfillApplePromotionalSubscribers(await allUsers());
+    const campaign = await sendPromotionalCampaign({
+      subject: req.body?.subject,
+      body: req.body?.body,
+      ctaLabel: req.body?.ctaLabel,
+      ctaUrl: req.body?.ctaUrl
+    });
+    res.json({ ok: campaign.failed === 0, campaign, summary: await promotionalSummary() });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Promotional email could not be sent." });
+  }
 });
 
 app.post("/api/admin/account", async (req, res) => {
