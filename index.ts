@@ -5,7 +5,7 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { PORT, MAIN_MODEL, PLANNER_MODEL, RESEARCH_MODEL, ServiceError, VOICE_UNAVAILABLE_SPOKEN } from "./src/ai.js";
-import type { DeviceLocation } from "./src/types.js";
+import type { DeviceLocation, DeviceWeather } from "./src/types.js";
 import { buildConversationState } from "./src/context.js";
 import { planAssistantResponse } from "./src/planner.js";
 import { finalizeResponse } from "./src/validators.js";
@@ -190,7 +190,7 @@ app.get("/health", async (_req, res) => {
     ok: true,
     app: "Taki AI server",
     mode: "planner-first-modular-v3",
-    version: "2026-07-23-smart-routing-v1",
+    version: "2026-07-23-shazam-weatherkit-v1",
     durableStorage: isDurable(),
     models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL },
     // Live Activity background updates require APNs config (APNS_KEY_P8 or
@@ -2457,6 +2457,7 @@ app.post("/api/assistant", async (req, res) => {
   const userMessage = String(req.body?.message || "").slice(0, 12_000);
   const rawContext = typeof req.body?.context === "string" ? req.body.context.slice(-120_000) : "";
   const deviceLocation: DeviceLocation | undefined = req.body?.deviceLocation;
+  const deviceWeather: DeviceWeather | undefined = req.body?.deviceWeather;
   const timeZone: string | undefined = typeof req.body?.timeZone === "string" ? req.body.timeZone : undefined;
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   if (!(await requireCreditIdentity(deviceId, res))) return;
@@ -2469,7 +2470,7 @@ app.post("/api/assistant", async (req, res) => {
   const userProfile = parseUserPersona(req.body?.profile, req.body?.addressUser);
   await captureRequestDeviceInfo(req, userProfile.name);
 
-  const state = buildConversationState(userMessage, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, voiceMode, deviceId);
+  const state = buildConversationState(userMessage, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, voiceMode, deviceId, deviceWeather);
 
   const gate = await safetyGate(deviceId, userMessage, req, voiceMode);
   if (gate) {
@@ -2516,6 +2517,7 @@ app.post("/api/voice", async (req, res) => {
   const rawContext = typeof req.body?.context === "string" ? req.body.context.slice(-120_000) : "";
   const timeZone: string | undefined = typeof req.body?.timeZone === "string" ? req.body.timeZone : undefined;
   const deviceLocation: DeviceLocation | undefined = req.body?.deviceLocation;
+  const deviceWeather: DeviceWeather | undefined = req.body?.deviceWeather;
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   if (!(await requireCreditIdentity(deviceId, res))) return;
   const voiceId = typeof req.body?.voiceId === "string" ? req.body.voiceId : undefined;
@@ -2556,7 +2558,7 @@ app.post("/api/voice", async (req, res) => {
       res.json({ transcript, spokenText: gate.message, action: null, actions: null, audioBase64: audio, mime: "audio/mpeg", blocked: true, ...(gate.block ? { access: gate.block, accessMessage: gate.message } : {}) });
       return;
     }
-    const state = buildConversationState(transcript, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, true, deviceId);
+    const state = buildConversationState(transcript, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, true, deviceId, deviceWeather);
     let audio = "";
     const result = await runAssistant(
       state,

@@ -32,6 +32,7 @@ import {
   getLotteryAnswer,
   isDirectLocationQuestion,
   isWeatherQuestion,
+  isIdentifySongRequest,
   looksLikeAddLookupEventToCalendar,
   looksLikeCryptoQuestion,
   looksLikeStockQuestion,
@@ -856,8 +857,13 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
     return answerPlan(res.spokenText, { lastIntent: "location_answer" }, res.sources);
   }
   if (isWeatherQuestion(state.message)) {
-    const res = await getWeatherAnswer(state.message, state.deviceLocation, state.timeZone);
+    const res = await getWeatherAnswer(state.message, state.deviceLocation, state.timeZone, state.deviceWeather);
     return answerPlan(res.spokenText, { lastIntent: "weather_answer" }, res.sources);
+  }
+  // "What song is this" → listen + identify on-device (ShazamKit). The real
+  // result ("That's X by Y") comes back from the device and replaces this line.
+  if (isIdentifySongRequest(state.message)) {
+    return actionPlan("One sec — listening…", blankAction("identify_song"), { lastIntent: "music_control" });
   }
 
   // Unit & currency conversion: exact in code (units) or live ECB rate (currency).
@@ -1726,7 +1732,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
 
   switch (plan.intent) {
     case "weather_answer": {
-      const res = await getWeatherAnswer(state.message, state.deviceLocation, state.timeZone);
+      const res = await getWeatherAnswer(state.message, state.deviceLocation, state.timeZone, state.deviceWeather);
       return answerPlan(res.spokenText, { lastIntent: "weather_answer" }, res.sources);
     }
 

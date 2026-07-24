@@ -16,7 +16,7 @@ import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
 import { appleMacPriceSnapshotFromHtml, espnSportsSnapshotFromResponse, flightStatsSnapshotFromHtml, parseTrackCommand, ship24StatusFromResponse } from "../src/tracker.js";
-import { looksLikeEasyQuestion, looksLikeSubstantiveQuestion, looksLikeFlightQuestion, looksLikeStockQuestion } from "../src/tools.js";
+import { looksLikeEasyQuestion, looksLikeSubstantiveQuestion, looksLikeFlightQuestion, looksLikeStockQuestion, isIdentifySongRequest } from "../src/tools.js";
 import { parseUserPersona, personaPromptBlock } from "../src/persona.js";
 import { normalizeChatTitle } from "../src/chatTitle.js";
 import { currencyConversionSource } from "../src/conversions.js";
@@ -585,6 +585,18 @@ test("conversational choices stay on the fast tier; consequential ones escalate"
   assert.equal(looksLikeSubstantiveQuestion("Should I buy the iPhone 15 or wait?"), true);
   assert.equal(looksLikeSubstantiveQuestion("iPhone or Galaxy?"), true);
   assert.equal(looksLikeSubstantiveQuestion("Which laptop has better battery life?"), true);
+});
+
+test("song-identification requests are detected without hijacking playback", () => {
+  assert.equal(isIdentifySongRequest("What song is this?"), true);
+  assert.equal(isIdentifySongRequest("what's playing"), true);
+  assert.equal(isIdentifySongRequest("Shazam this"), true);
+  assert.equal(isIdentifySongRequest("identify this song"), true);
+  assert.equal(isIdentifySongRequest("who is this playing right now"), true);
+  // Not song ID: playback command, or a trivia lookup about a named song.
+  assert.equal(isIdentifySongRequest("play this song"), false);
+  assert.equal(isIdentifySongRequest("who sang Bohemian Rhapsody"), false);
+  assert.equal(isIdentifySongRequest("what are the lyrics to Yesterday"), false);
 });
 
 test("personal rules are bounded and clearly labeled in the persona prompt", () => {

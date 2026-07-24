@@ -34,9 +34,9 @@ export const CAPABILITIES: Capability[] = [
   },
   {
     id: "device",
-    summary: "open supported apps and control alarms, timers, stopwatches, Apple Music, and HomeKit devices",
-    examples: "open Spotify, alarm at 7, timer for 10 minutes, play jazz, turn off the kitchen lights",
-    questionPatterns: [/\b(open apps?|alarms?|timers?|stopwatches?|music|songs?|homekit|lights?|locks?|thermostat)\b/i]
+    summary: "open supported apps, control alarms, timers, stopwatches, Apple Music, and HomeKit devices, and identify a song that's playing by listening",
+    examples: "open Spotify, alarm at 7, timer for 10 minutes, play jazz, turn off the kitchen lights, what song is this",
+    questionPatterns: [/\b(open apps?|alarms?|timers?|stopwatches?|music|songs?|shazam|homekit|lights?|locks?|thermostat)\b/i]
   },
   {
     id: "health",

@@ -66,7 +66,7 @@ function isoFromLocalParts(
   if (!Number.isFinite(Date.parse(startDate))) return null;
   return { startDate, endDate: addMinutesToIsoLocal(startDate, 120) };
 }
-import type { AssistantResponse, ConversationState, DeviceLocation } from "./types.js";
+import type { AssistantResponse, ConversationState, DeviceLocation, DeviceWeather } from "./types.js";
 import { safeParseJsonObject, withTimeout } from "./util.js";
 
 /* ============================================================================
@@ -1658,6 +1658,40 @@ async function getOpenMeteoWeather(lat: number, lon: number, fallbackTz: string)
   }
 }
 
+// Map an Apple WeatherKit snapshot (from the device) into the same WeatherData
+// shape the formatter expects, so "weather here" answers use Apple's data.
+// Returns null if the snapshot lacks the essential current fields.
+function weatherDataFromSnapshot(snap: DeviceWeather, tz: string): WeatherData | null {
+  if (snap.ok === false) return null;
+  if (typeof snap.tempNow !== "number" || typeof snap.condNow !== "string") return null;
+  const num = (v: unknown, fallback: number) => (typeof v === "number" && Number.isFinite(v) ? v : fallback);
+  let rainStart: string | null = null;
+  if (typeof snap.rainStartEpoch === "number" && !snap.rainingNow) {
+    const dt = new Date(snap.rainStartEpoch * 1000);
+    const hourStr = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hour12: true }).format(dt);
+    const sameDay =
+      new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(dt) ===
+      new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+    const weekday = new Intl.DateTimeFormat("en-US", { weekday: "short", timeZone: tz }).format(dt);
+    rainStart = sameDay ? hourStr : `${weekday} ${hourStr}`;
+  }
+  return {
+    tempNow: Math.round(num(snap.tempNow, 0)),
+    feelsNow: Math.round(num(snap.feelsNow, snap.tempNow)),
+    condNow: snap.condNow,
+    todayHigh: Math.round(num(snap.todayHigh, snap.tempNow)),
+    todayLow: Math.round(num(snap.todayLow, snap.tempNow)),
+    todayRainChance: Math.round(num(snap.todayRainChance, 0)),
+    tomorrowHigh: typeof snap.tomorrowHigh === "number" ? Math.round(snap.tomorrowHigh) : null,
+    tomorrowLow: typeof snap.tomorrowLow === "number" ? Math.round(snap.tomorrowLow) : null,
+    tomorrowCond: snap.tomorrowCond ?? null,
+    tomorrowRainChance: typeof snap.tomorrowRainChance === "number" ? Math.round(snap.tomorrowRainChance) : null,
+    rainingNow: Boolean(snap.rainingNow),
+    rainStart,
+    source: { title: snap.source || "Apple Weather", url: "https://weatherkit.apple.com/legal-attribution.html" }
+  };
+}
+
 function formatWeather(message: string, name: string, d: WeatherData): string {
   const m = message.toLowerCase();
   const isTomorrow = /\b(tomorrow|tommorow)\b/.test(m);
@@ -1723,7 +1757,7 @@ export async function getWeatherSnapshot(
   };
 }
 
-export async function getWeatherAnswer(message: string, deviceLocation?: DeviceLocation, userTz?: string): Promise<AssistantResponse> {
+export async function getWeatherAnswer(message: string, deviceLocation?: DeviceLocation, userTz?: string, deviceWeather?: DeviceWeather): Promise<AssistantResponse> {
   try {
     const locationName = extractWeatherLocation(message);
     const fallbackTz = userTz && isValidTimeZone(userTz) ? userTz : "America/New_York";
@@ -1738,6 +1772,12 @@ export async function getWeatherAnswer(message: string, deviceLocation?: DeviceL
             "I couldn't get your location. Make sure location access is allowed for Taki AI, then ask again — or tell me which city.",
           action: null
         };
+      }
+      // Prefer the device's Apple WeatherKit snapshot when it's present and fresh
+      // (~30 min); fall back to the server weather APIs otherwise.
+      if (deviceWeather && (typeof deviceWeather.fetchedAt !== "number" || Date.now() - deviceWeather.fetchedAt * 1000 < 30 * 60 * 1000)) {
+        const snap = weatherDataFromSnapshot(deviceWeather, fallbackTz);
+        if (snap) return { spokenText: formatWeather(message, "your location", snap), action: null, sources: [snap.source] };
       }
       latitude = deviceLocation.latitude;
       longitude = deviceLocation.longitude;
@@ -2115,6 +2155,23 @@ export function looksLikeLiveInfoQuestion(message: string) {
 // fastest model with thinking off. Anything live/fresh is excluded by the
 // caller before this runs, so a miss here only costs quality headroom, never
 // freshness.
+// "What song is this / what's playing / name this song / Shazam this" → listen
+// and identify via ShazamKit on the device. Kept tight so it doesn't hijack
+// general music-playback commands ("play this song") or lyric questions.
+export function isIdentifySongRequest(message: string): boolean {
+  const m = message.trim().toLowerCase();
+  if (!m || m.length > 120) return false;
+  if (/\bshazam\b/.test(m)) return true;
+  // "what/which song/tune/artist is (this|that|playing) ..." and close variants.
+  if (/\b(what('?s| is| song is|s the| tune is)|which|name|identify|who('?s| is)) .{0,24}\b(song|tune|track|artist|band|playing|this)\b/.test(m)) {
+    // Must reference the currently-heard audio, not a trivia lookup.
+    if (/\b(this|that|playing|right now|currently|on( the)? (radio|speaker|tv)?)\b/.test(m)) return true;
+  }
+  if (/\b(identify|recognize|name|tag) (this|that|the) (song|tune|track|music)\b/.test(m)) return true;
+  if (/^what('?s| is) playing\b/.test(m)) return true;
+  return false;
+}
+
 export function looksLikeEasyQuestion(message: string): boolean {
   const m = message.trim();
   if (m.length === 0 || m.length > 160) return false;

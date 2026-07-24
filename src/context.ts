@@ -1,5 +1,5 @@
 import { TIME_ZONE } from "./ai.js";
-import type { ConversationState, DeviceLocation, TranscriptTurn } from "./types.js";
+import type { ConversationState, DeviceLocation, DeviceWeather, TranscriptTurn } from "./types.js";
 import { decodeSavedMemory, isCalendarConfirmationLine } from "./memory.js";
 import { parseIncomingStyleProfiles } from "./messageStyle.js";
 import type { IncomingStyleProfile } from "./messageStyle.js";
@@ -30,7 +30,8 @@ export function buildConversationState(
   styleProfiles?: IncomingStyleProfile[],
   userProfile?: UserPersona,
   voiceMode?: boolean,
-  deviceId?: string
+  deviceId?: string,
+  deviceWeather?: DeviceWeather
 ): ConversationState {
   let structured: any = null;
   try {
@@ -123,6 +124,7 @@ export function buildConversationState(
     pendingClarification: decoded.pendingClarification,
     priorMemory: decoded.memory,
     deviceLocation,
+    deviceWeather,
     styleProfiles: parseIncomingStyleProfiles(styleProfiles),
     userProfile: userProfile || {},
     voiceMode: !!voiceMode,

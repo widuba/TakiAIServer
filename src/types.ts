@@ -43,6 +43,7 @@ export type AssistantActionType =
   | "health_trend"
   | "home_control"
   | "music_control"
+  | "identify_song"
   | "photos_show"
   | "photos_search"
   | "day_plan"
@@ -215,6 +216,26 @@ export type DeviceLocation = {
   accuracy?: number;
 };
 
+// Apple WeatherKit snapshot the device attaches for its own location, so
+// "weather here" answers come from Apple's data. All temps in Fahrenheit.
+export type DeviceWeather = {
+  ok?: boolean;
+  tempNow?: number;
+  feelsNow?: number;
+  condNow?: string;
+  rainingNow?: boolean;
+  todayHigh?: number;
+  todayLow?: number;
+  todayRainChance?: number;
+  tomorrowHigh?: number;
+  tomorrowLow?: number;
+  tomorrowCond?: string;
+  tomorrowRainChance?: number;
+  rainStartEpoch?: number;
+  fetchedAt?: number;
+  source?: string;
+};
+
 // Re-export the message-style types so the rest of the backend imports them
 // from one place alongside the other shared types.
 export type {
@@ -353,6 +374,7 @@ export type ConversationState = {
   priorMemory: AssistantMemory;
 
   deviceLocation?: DeviceLocation;
+  deviceWeather?: DeviceWeather;
 
   // Style vectors for recipients named in THIS message only (device-stored
   // profiles, sent per-request). Empty when nothing has been learned yet.
@@ -397,6 +419,7 @@ export type PlannerIntent =
   | "contact_create"
   | "health_query"
   | "music_control"
+  | "identify_song"
   | "home_control"
   | "photos_show"
   | "share_content"
