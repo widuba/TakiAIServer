@@ -1,4 +1,4 @@
-import { generateContent, MAIN_MODEL, PLANNER_MODEL, PLANNER_TIMEOUT_MS, safetyConfig } from "./ai.js";
+import { generateContent, MAIN_MODEL, PLANNER_MODEL, PLANNER_TIMEOUT_MS, safetyConfig, ServiceError } from "./ai.js";
 import type {
   AssistantAction,
   AssistantPlan,
@@ -181,8 +181,11 @@ export function fastVoiceReply(state: ConversationState): string | null {
   return null;
 }
 
+// A static knowledge question with no capability/action shape. These skip the
+// planner LLM entirely (text AND voice) and go straight to the answer model —
+// one round-trip instead of two, which is most of the perceived latency on
+// simple questions.
 export function looksLikePlainVoiceKnowledgeQuestion(state: ConversationState): boolean {
-  if (!state.voiceMode) return false;
   const m = state.message.trim().toLowerCase();
   if (!/^(why\b|explain\b|define\b|what (?:is|are|does)\b|how (?:does|do|is|are|can)\b)/.test(m)) return false;
   // These terms can describe phone-side actions or personal data. They keep the
@@ -1706,6 +1709,9 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
   try {
     plan = await runPlannerModel(state);
   } catch (error) {
+    // A vendor outage would only repeat in getGeneralAnswer — answer with the
+    // spoken message immediately instead of paying for another failing call.
+    if (error instanceof ServiceError) return answerPlan(error.spoken, { lastIntent: "answer_only" });
     console.error("Planner failed, using general answer:", error);
     const ga = await getGeneralAnswer(state);
     return answerPlan(ga.text);

@@ -16,7 +16,7 @@ import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
 import { appleMacPriceSnapshotFromHtml, espnSportsSnapshotFromResponse, flightStatsSnapshotFromHtml, parseTrackCommand, ship24StatusFromResponse } from "../src/tracker.js";
-import { looksLikeComparisonRequest, looksLikeFlightQuestion, looksLikeStockQuestion } from "../src/tools.js";
+import { looksLikeComparisonRequest, looksLikeEasyQuestion, looksLikeFlightQuestion, looksLikeStockQuestion } from "../src/tools.js";
 import { parseUserPersona, personaPromptBlock } from "../src/persona.js";
 import { normalizeChatTitle } from "../src/chatTitle.js";
 import { currencyConversionSource } from "../src/conversions.js";
@@ -321,11 +321,38 @@ test("calculator formats large results as exact human-readable quantities", () =
   assert.equal(formatMathNumber(-40_000), "-40 thousand");
 });
 
-test("obvious voice knowledge questions bypass action planning safely", () => {
+test("obvious knowledge questions bypass action planning safely in voice AND text", () => {
   const knowledge = buildConversationState("Why is the sky blue?", "", undefined, "America/New_York", undefined, undefined, true);
   const calendar = buildConversationState("What is on my calendar?", "", undefined, "America/New_York", undefined, undefined, true);
   assert.equal(looksLikePlainVoiceKnowledgeQuestion(knowledge), true);
   assert.equal(looksLikePlainVoiceKnowledgeQuestion(calendar), false);
+  // Text mode now bypasses too — the planner round-trip was most of the
+  // perceived latency on simple typed questions.
+  const typedKnowledge = buildConversationState("What is the capital of France?", "", undefined, "America/New_York");
+  const typedAction = buildConversationState("What is the weather today?", "", undefined, "America/New_York");
+  assert.equal(looksLikePlainVoiceKnowledgeQuestion(typedKnowledge), true);
+  assert.equal(looksLikePlainVoiceKnowledgeQuestion(typedAction), false);
+});
+
+test("easy questions route to the fast model; drafting, analysis, and long asks do not", () => {
+  assert.equal(looksLikeEasyQuestion("What is the capital of France?"), true);
+  assert.equal(looksLikeEasyQuestion("Why is the sky blue?"), true);
+  assert.equal(looksLikeEasyQuestion("Draft a friendly out-of-office message"), false);
+  assert.equal(looksLikeEasyQuestion("Compare the iPhone and Pixel cameras in depth"), false);
+  assert.equal(looksLikeEasyQuestion("Write a python function to parse dates"), false);
+  assert.equal(looksLikeEasyQuestion("Plan a 3-day trip to Rome with a daily itinerary"), false);
+  assert.equal(looksLikeEasyQuestion("What's the tallest mountain? And the deepest ocean? And the longest river?"), false);
+  assert.equal(looksLikeEasyQuestion("x".repeat(200)), false);
+});
+
+test("lock-screen phrasings start trackers instead of leaking to the model", () => {
+  assert.equal(parseTrackCommand("Put Apple stock on my lock screen")?.kind, "finance");
+  assert.equal(parseTrackCommand("add AAPL to my lock screen")?.kind, "finance");
+  assert.equal(parseTrackCommand("show the Lakers game in my Dynamic Island")?.kind, "sports");
+  assert.equal(parseTrackCommand("track bitcoin")?.kind, "finance");
+  // No destination and no track verb — stays a normal question.
+  assert.equal(parseTrackCommand("What do you think of Apple stock?"), null);
+  assert.equal(parseTrackCommand("show me apple stock"), null);
 });
 
 test("flight-number shapes outrank bare ticker detection", () => {

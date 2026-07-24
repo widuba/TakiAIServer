@@ -4,7 +4,7 @@ import Stripe from "stripe";
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-import { PORT, MAIN_MODEL, PLANNER_MODEL, RESEARCH_MODEL } from "./src/ai.js";
+import { PORT, MAIN_MODEL, PLANNER_MODEL, RESEARCH_MODEL, ServiceError, VOICE_UNAVAILABLE_SPOKEN } from "./src/ai.js";
 import type { DeviceLocation } from "./src/types.js";
 import { buildConversationState } from "./src/context.js";
 import { planAssistantResponse } from "./src/planner.js";
@@ -23,10 +23,10 @@ import { extractFlightCode, normalizeTrackerKind } from "./src/entityClassifier.
 import { clearPushToken, getPushToken, setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, clearAlertsForReset, type Alert } from "./src/alerts.js";
 import { isDurable, storeDelete, storeGet, storeSet } from "./src/store.js";
-import { summary as creditSummary, spendUsageUsd, reset as resetCredits, isFreeVoice, noteFreeVoice, tierCatalog, grantForTransaction, grantForConsumableTransaction, grantWebTopup, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, noteVoiceQuestion, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, CREDIT_USD, type Tier } from "./src/credits.js";
+import { summary as creditSummary, spendUsageUsd, reset as resetCredits, isFreeVoice, noteFreeVoice, tierCatalog, grantForTransaction, activateSubscriptionTier, grantForConsumableTransaction, grantWebTopup, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, noteVoiceQuestion, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, CREDIT_USD, type Tier } from "./src/credits.js";
 import { measureUsage, sttCostUsd, totalUsageUsd, ttsCostUsd } from "./src/metering.js";
 import { decideAssistantCharge, planCorrectionSynthesis, usageBlockFor, usageBlockedPayload, voiceTurnEstimateCredits } from "./src/usage.js";
-import { verifyTransaction, verifyCreditTransaction, claimCreditTransaction, rebindCreditTransactions, linkTransactionIdentity, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
+import { verifyTransaction, verifyCreditTransaction, claimCreditTransaction, transferCreditTransaction, rebindCreditTransactions, linkTransactionIdentity, transferSubscriptionIdentity, claimSubscriptionPeriod, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
 import { revokeAppleAuthorizationCode, verifyAppleIdentityToken } from "./src/appleauth.js";
 import { purgeAppleAccount } from "./src/accountDeletion.js";
 import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, linkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG, promptExtractionMessageForMode } from "./src/safety.js";
@@ -39,7 +39,8 @@ import { createChatTitle } from "./src/chatTitle.js";
 import { engagementSummary, isEngagementEmailConfigured, recordEngagementOpen, recordEngagementSession, recommendedEngagement, sendPersonalizedEngagement, shouldSendAutomatic, type EngagementChannel } from "./src/engagement.js";
 import { performFullReset, previewFullReset, type FullResetPreview } from "./src/fullReset.js";
 import { bypassResetGeneration, hasCurrentResetGeneration, RESET_EPOCH_HEADER } from "./src/resetGeneration.js";
-import { isKnownIdentity } from "./src/identity.js";
+import { isKnownIdentity, markWebAuthenticated } from "./src/identity.js";
+import { googleWebClientId, isGoogleWebAuthConfigured, verifyGoogleIdToken } from "./src/webauth.js";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
 // Render. (The purchase-simulating grant endpoint was removed when real
@@ -187,9 +188,13 @@ app.get("/health", async (_req, res) => {
     ok: true,
     app: "Taki AI server",
     mode: "planner-first-modular-v3",
-    version: "2026-07-21-audit-v2",
+    version: "2026-07-23-iap-transfer-v1",
     durableStorage: isDurable(),
     models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL },
+    // Live Activity background updates require APNs config (APNS_KEY_P8 or
+    // APNS_KEY_PATH + KEY_ID + TEAM_ID). Surfaced here so a missing key on the
+    // host is a one-curl diagnosis instead of "trackers silently never update".
+    pushConfigured: isPushConfigured(),
     resetEpoch: Number(reset.epoch || 0)
   });
 });
@@ -489,10 +494,11 @@ app.post("/api/alerts/cancel", async (req, res) => {
   res.json({ ok: true, removed });
 });
 
-// Background engine: sweep all alerts every 90s and push any that fire. Skips
-// entirely when push isn't configured (no APNs key) — alerts just sit until it is.
+// Background engine: sweep all alerts every 90s and deliver any that fire, via
+// APNs push if configured, otherwise by email (Resend). Skips entirely only when
+// NEITHER channel is configured — then alerts just sit until one is.
 setInterval(() => {
-  if (!isPushConfigured()) return;
+  if (!isPushConfigured() && !isEngagementEmailConfigured()) return;
   void pollAlerts(process.env.ALERT_TZ || "America/New_York");
 }, 90 * 1000);
 
@@ -787,6 +793,46 @@ app.post("/api/register-device", async (req, res) => {
   }
 });
 
+/* ---- Web sign-in (takiai.app/app) -------------------------------------- */
+// Chat on the web requires a verified Apple or Google account: the monthly free
+// credits attach to the provider's stable `sub`, not to clearable browser
+// storage, so wiping the cache or reinstalling never mints a fresh allowance.
+
+// Which providers the static page should offer (client ids are public by design).
+app.get("/api/web/auth/config", (_req, res) => {
+  const appleServicesId = (process.env.APPLE_WEB_SERVICES_ID || "").trim();
+  res.json({
+    google: isGoogleWebAuthConfigured() ? { clientId: googleWebClientId() } : null,
+    apple: appleServicesId ? { servicesId: appleServicesId } : null
+  });
+});
+
+// Shared tail: record the verified account, ensure its ledger, return identity+credits.
+async function finishWebSignIn(req: any, res: any, identity: string, email?: string, name?: string) {
+  await markWebAuthenticated(identity);
+  await noteUser(identity, clientIp(req), String(req.headers?.["user-agent"] || ""));
+  const ip = clientIp(req);
+  if ((await isBanned(identity, undefined, ip)) || (await isTestRestricted(identity))) {
+    res.status(403).json({ error: "This account is restricted." });
+    return;
+  }
+  const credits = await creditSummary(identity);
+  res.json({ identity, email: email || "", name: name || "", credits });
+}
+
+app.post("/api/web/auth/google", async (req, res) => {
+  if (!isGoogleWebAuthConfigured()) { res.status(503).json({ error: "Google sign-in is not configured." }); return; }
+  const verified = await verifyGoogleIdToken(String(req.body?.idToken || ""));
+  if (!verified) { res.status(401).json({ error: "Google sign-in could not be verified." }); return; }
+  await finishWebSignIn(req, res, `google:${verified.sub}`, verified.email, verified.name);
+});
+
+app.post("/api/web/auth/apple", async (req, res) => {
+  const verified = await verifyAppleIdentityToken(String(req.body?.idToken || ""));
+  if (!verified) { res.status(401).json({ error: "Apple sign-in could not be verified." }); return; }
+  await finishWebSignIn(req, res, `apple:${verified.sub}`, verified.email);
+});
+
 app.post("/api/device/info", async (req, res) => {
   const b = req.body || {};
   const deviceId = typeof b.deviceId === "string" ? normalizeTopupIdentity(b.deviceId) : "";
@@ -891,7 +937,7 @@ async function captureRequestDeviceInfo(req: any, takiName: string): Promise<voi
 app.get("/api/credits", async (req, res) => {
   const deviceId = typeof req.query.deviceId === "string" ? req.query.deviceId.trim() : "";
   if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
-  if (!deviceId.startsWith("apple:") && !/^\d{8}$/.test(deviceId)) {
+  if (!deviceId.startsWith("apple:") && !deviceId.startsWith("google:") && !/^\d{8}$/.test(deviceId)) {
     res.status(400).json({ error: "registered deviceId required" }); return;
   }
   if (!(await isKnownIdentity(deviceId))) {
@@ -903,7 +949,9 @@ app.get("/api/credits", async (req, res) => {
   let accessMessage = "";
   try {
     const ip = clientIp(req);
-    const dev = deviceId.startsWith("apple:") ? undefined : deviceId;
+    // Only 8-digit physical-device ids participate in device association;
+    // apple:/google: account identities have no hardware id.
+    const dev = /^\d{8}$/.test(deviceId) ? deviceId : undefined;
     await recordAssoc(deviceId, dev, ip);
     const acct = await getSafetyAccount(deviceId);
     if (acct.status === "terminated" || (await isBanned(deviceId, dev, ip)) || (await isTestRestricted(deviceId))) { access = "banned"; accessMessage = BANNED_MSG; }
@@ -1473,8 +1521,14 @@ app.post("/api/iap/verify", async (req, res) => {
     if (creditInfo) {
       const claim = await claimCreditTransaction(creditInfo.transactionId, identity);
       if (claim === "conflict") {
-        console.warn("IAP credit transaction already belongs to another account", creditInfo.transactionId);
-        ownershipConflict = true;
+        // The verified JWS proves this device owns the Apple purchase, so a
+        // binding to a prior identity (same person, new device / signed in with
+        // Apple) transfers instead of walling with "already linked". The credits
+        // were already issued once to the original owner, so don't re-grant —
+        // just move ownership and report the current entitlement.
+        console.warn("IAP credit transaction transferring to reclaiming account", creditInfo.transactionId);
+        await transferCreditTransaction(creditInfo.transactionId, identity);
+        tier = (await creditSummary(identity)).tier;
         continue;
       }
       const purchase = await grantForConsumableTransaction(identity, creditInfo.transactionId, creditInfo.productId);
@@ -1494,9 +1548,10 @@ app.post("/api/iap/verify", async (req, res) => {
     // refunds) can find the right ledger later.
     const subscriptionClaim = await linkTransactionIdentity(info.originalTransactionId, identity);
     if (subscriptionClaim === "conflict") {
-      ownershipConflict = true;
-      console.warn("IAP subscription already belongs to another account", info.originalTransactionId);
-      continue;
+      // Same Apple ID reclaiming its subscription on a new device: the verified
+      // JWS proves ownership, so transfer the binding instead of refusing.
+      console.warn("IAP subscription transferring to reclaiming account", info.originalTransactionId);
+      await transferSubscriptionIdentity(info.originalTransactionId, identity);
     }
     // Skip clearly-expired auto-renewables (a stale entitlement).
     if (info.expiresDate && info.expiresDate < Date.now()) continue;
@@ -1507,7 +1562,12 @@ app.post("/api/iap/verify", async (req, res) => {
       tier = (await creditSummary(identity)).tier;
       continue;
     }
-    const r = await grantForTransaction(identity, info.tier, info.periodKey);
+    // Grant this cycle's credits only if no identity has claimed it yet; either
+    // way the entitlement (tier) applies to the presenting device.
+    const periodIsNew = await claimSubscriptionPeriod(info.periodKey);
+    const r = periodIsNew
+      ? await grantForTransaction(identity, info.tier, info.periodKey)
+      : { granted: false, summary: await activateSubscriptionTier(identity, info.tier) };
     if (r.granted) {
       // Analytics: record the plan + gross revenue for this billing period.
       await noteTier(identity, info.tier, "subscription");
@@ -2359,6 +2419,16 @@ app.post("/api/assistant", async (req, res) => {
     if (result?.usageBlocked) { res.status(402).json(result); return; }
     res.json(result);
   } catch (error) {
+    // Vendor outage (Gemini quota/auth/down): reply immediately with a spoken
+    // message instead of a bare 502 the app can't voice.
+    if (error instanceof ServiceError) {
+      res.status(503).json({
+        ...finalizeResponse({ spokenText: error.spoken, action: null, memoryPatch: { pendingClarification: null }, needsExecution: false }, state),
+        serviceUnavailable: true,
+        serviceError: error.kind
+      });
+      return;
+    }
     console.error("Assistant route error:", error);
     // Do not make a second model call here: the first request may have completed
     // before persistence failed, and retrying would double provider cost.
@@ -2431,7 +2501,9 @@ app.post("/api/voice", async (req, res) => {
       async ({ response, deferVoiceSynthesis }) => {
         if (deferVoiceSynthesis) return;
         audio = await synthesize(response.spokenText || "", voiceId, voiceVariability);
-        if (!audio) throw new Error("Voice synthesis returned no audio");
+        if (!audio && (response.spokenText || "").trim()) {
+          throw new ServiceError("voice_unavailable", VOICE_UNAVAILABLE_SPOKEN);
+        }
       }
     );
     if (result?.usageBlocked) { res.status(402).json(result); return; }
@@ -2445,6 +2517,27 @@ app.post("/api/voice", async (req, res) => {
     }
     res.json({ ...result, transcript, transcriptionSource: deviceTranscript ? "device" : "cloud", audioBase64: audio, mime: "audio/mpeg", voiceUsed });
   } catch (error) {
+    // Vendor outage: speak the message right away. For an AI (Gemini) outage
+    // ElevenLabs is usually fine, so voice it in the user's selected voice; for
+    // a voice outage there's nothing to synthesize with, so return text and let
+    // the phone read it aloud.
+    if (error instanceof ServiceError) {
+      let audio = "";
+      if (error.kind !== "voice_unavailable") {
+        try { audio = await synthesize(error.spoken, voiceId, voiceVariability); } catch { /* text-only fallback */ }
+      }
+      res.status(503).json({
+        transcript: deviceTranscript || "",
+        spokenText: error.spoken,
+        action: null,
+        actions: null,
+        audioBase64: audio,
+        mime: "audio/mpeg",
+        serviceUnavailable: true,
+        serviceError: error.kind
+      });
+      return;
+    }
     console.error("Voice route error:", error);
     res.status(502).json({ error: "voice unavailable" });
   }

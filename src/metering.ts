@@ -48,6 +48,12 @@ export function geminiListPriceUsd(model: string, metadata: any): number {
   if (/3\.1-pro/.test(id)) {
     regularInputRate = audioInputRate = longPrompt ? 4.00 : 2.00;
     outputRate = longPrompt ? 18.00 : 12.00;
+  } else if (/3\.5-flash-lite/.test(id)) {
+    // Flash-lite pricing tier (same bracket as 3.1-flash-lite). Must be checked
+    // BEFORE /3\.5-flash/ or lite requests would be billed at full-flash rates.
+    regularInputRate = 0.25;
+    audioInputRate = 0.50;
+    outputRate = 1.50;
   } else if (/3\.5-flash/.test(id)) {
     regularInputRate = audioInputRate = 1.50;
     outputRate = 9.00;

@@ -33,7 +33,7 @@ export function usageBlockFor(
 ): UsageBlock | null {
   const required = Math.max(MIN_REQUEST_CREDITS, Math.ceil(requiredCredits));
   let reason: UsageBlockReason | null = null;
-  if (voiceMode && !hasVoiceAccess(summary.tier, summary.voiceUsed)) reason = "voice";
+  if (voiceMode && !hasVoiceAccess(summary.tier, summary.voiceUsed, (summary.additionalCredits || 0) > 0)) reason = "voice";
   else if (summary.limitReached && (summary.limitReason === "daily" || summary.limitReason === "monthly")) reason = summary.limitReason;
   else {
     const windowReason = usageLimitForCost(summary, required);

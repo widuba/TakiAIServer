@@ -13,6 +13,10 @@ import fs from "node:fs";
 const APPLE_ISSUER = "https://appleid.apple.com";
 const APPLE_JWKS = createRemoteJWKSet(new URL("https://appleid.apple.com/auth/keys"));
 const BUNDLE_ID = process.env.APNS_BUNDLE_ID || "com.davidwiduba.takiai";
+// Sign in with Apple on the WEB (takiai.app/app) issues tokens whose audience is
+// a Services ID, not the app's bundle id. Accept it too when configured.
+const WEB_SERVICES_ID = (process.env.APPLE_WEB_SERVICES_ID || "").trim();
+const APPLE_AUDIENCES = [BUNDLE_ID, ...(WEB_SERVICES_ID ? [WEB_SERVICES_ID] : [])];
 
 export interface AppleIdentity {
   sub: string;            // stable Apple user id (same on every device)
@@ -25,7 +29,7 @@ export async function verifyAppleIdentityToken(idToken: string): Promise<AppleId
   try {
     const { payload } = await jwtVerify(idToken, APPLE_JWKS, {
       issuer: APPLE_ISSUER,
-      audience: BUNDLE_ID
+      audience: APPLE_AUDIENCES
     });
     if (!payload.sub) return null;
     return {

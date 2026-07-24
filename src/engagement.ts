@@ -174,6 +174,55 @@ export function isEngagementEmailConfigured(): boolean {
   return Boolean(EMAIL_API_KEY && EMAIL_FROM);
 }
 
+// A branded, Taki-styled HTML email: deep near-black canvas, the gradient orb +
+// wordmark, a dark card, and a violet→blue CTA — built table-first with inline
+// styles + bgcolor fallbacks so it holds up in Apple Mail (the iOS audience),
+// Gmail, and Outlook. Callers pass plain text; this escapes everything.
+const EMAIL_FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+export function renderBrandedEmail(opts: {
+  heading: string;
+  bodyText: string;
+  cta?: { label: string; url: string };
+  footnote?: string;
+  preheader?: string;
+}): string {
+  const paragraphs = opts.bodyText
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .map((block) => `<p style="margin:0 0 14px;font-family:${EMAIL_FONT};font-size:16px;line-height:1.6;color:#c6c6d0">${escapeHtml(block).replace(/\n/g, "<br>")}</p>`)
+    .join("");
+  const preheader = opts.preheader
+    ? `<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent">${escapeHtml(opts.preheader)}</div>`
+    : "";
+  const cta = opts.cta
+    ? `<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:24px 0 2px"><tr><td bgcolor="#6d4bff" style="border-radius:12px;background:linear-gradient(135deg,#7c5cff,#5b8cff)"><a href="${escapeHtml(opts.cta.url)}" style="display:inline-block;padding:13px 24px;font-family:${EMAIL_FONT};font-size:15px;font-weight:700;color:#ffffff;text-decoration:none">${escapeHtml(opts.cta.label)}</a></td></tr></table>`
+    : "";
+  const footnote = opts.footnote
+    ? `<tr><td style="padding:18px 14px 0;font-family:${EMAIL_FONT};font-size:12px;line-height:1.55;color:#7d7d88">${escapeHtml(opts.footnote)}</td></tr>`
+    : "";
+  return `${preheader}<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#0b0b0f" style="background:#0b0b0f;margin:0;padding:0"><tr><td align="center" style="padding:32px 16px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:544px;width:100%"><tr><td style="padding:2px 6px 22px"><table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td style="vertical-align:middle"><div style="width:32px;height:32px;border-radius:50%;background:linear-gradient(135deg,#7c5cff,#5b8cff)">&nbsp;</div></td><td style="vertical-align:middle;padding-left:12px;font-family:${EMAIL_FONT};font-size:20px;font-weight:800;letter-spacing:-0.02em;color:#f6f5ff">Taki</td></tr></table></td></tr><tr><td bgcolor="#17171c" style="background:#17171c;border:1px solid rgba(124,92,255,0.18);border-radius:20px;padding:30px 30px 32px"><h1 style="margin:0 0 14px;font-family:${EMAIL_FONT};font-size:23px;line-height:1.25;font-weight:800;letter-spacing:-0.02em;color:#f6f5ff">${escapeHtml(opts.heading)}</h1>${paragraphs}${cta}</td></tr>${footnote}<tr><td style="padding:16px 14px 0;font-family:${EMAIL_FONT};font-size:11px;color:#55555f">Taki AI</td></tr></table></td></tr></table>`;
+}
+
+// Low-level Resend send, shared by transactional notifications (proactive
+// alerts) and the personalized-engagement campaigns below.
+export async function sendEmail(opts: { to: string; subject: string; text: string; html?: string }): Promise<{ ok: boolean; status?: number; error?: string }> {
+  const to = opts.to.trim();
+  if (!EMAIL_API_KEY || !EMAIL_FROM) return { ok: false, error: "Email provider is not configured" };
+  if (!to) return { ok: false, error: "No recipient email" };
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${EMAIL_API_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ from: EMAIL_FROM, to: [to], subject: opts.subject, text: opts.text, ...(opts.html ? { html: opts.html } : {}) })
+    });
+    if (!response.ok) return { ok: false, status: response.status, error: `Email provider returned ${response.status}` };
+    return { ok: true, status: response.status };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "Email failed" };
+  }
+}
+
 export async function sendPersonalizedEngagement(
   user: UserRecord,
   channel: EngagementChannel,
@@ -220,23 +269,20 @@ export async function sendPersonalizedEngagement(
     return { ok: false, campaign, reason: campaign.error };
   }
   const clickUrl = `${SERVER_BASE_URL}/api/engagement/click?campaign=${encodeURIComponent(campaign.id)}`;
-  try {
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${EMAIL_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        from: EMAIL_FROM,
-        to: [email],
-        subject: campaign.title,
-        text: `${campaign.body}\n\nOpen Taki: ${clickUrl}`,
-        html: `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1d1d1f;line-height:1.55;max-width:560px"><h1 style="font-size:24px;letter-spacing:0">${escapeHtml(campaign.title)}</h1><p>${escapeHtml(campaign.body)}</p><p><a href="${escapeHtml(clickUrl)}" style="display:inline-block;background:#171719;color:#fff;padding:12px 18px;border-radius:8px;text-decoration:none;font-weight:700">Open Taki</a></p><p style="color:#6e6e73;font-size:12px">You enabled personalized email in Taki Settings. You can turn it off there at any time.</p></div>`
-      })
-    });
-    campaign.status = response.ok ? "sent" : "failed";
-    if (!response.ok) campaign.error = `Email provider returned ${response.status}`;
-  } catch (error) {
-    campaign.error = error instanceof Error ? error.message : "Email failed";
-  }
+  const result = await sendEmail({
+    to: email,
+    subject: campaign.title,
+    text: `${campaign.body}\n\nOpen Taki: ${clickUrl}`,
+    html: renderBrandedEmail({
+      heading: campaign.title,
+      bodyText: campaign.body,
+      cta: { label: "Open Taki", url: clickUrl },
+      preheader: campaign.body,
+      footnote: "You enabled personalized email in Taki Settings. You can turn it off there at any time."
+    })
+  });
+  campaign.status = result.ok ? "sent" : "failed";
+  if (!result.ok) campaign.error = result.error;
   await saveCampaign(campaign, campaign.status === "sent");
   return { ok: campaign.status === "sent", campaign, reason: campaign.error };
 }

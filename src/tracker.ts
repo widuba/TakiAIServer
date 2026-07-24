@@ -83,6 +83,15 @@ function money(n: number, currency = "USD") {
 
 const TRACK_VERB =
   /\b(track|follow|watch|monitor|keep (?:an )?eye on|keep tabs on|live activity(?: for)?|pin)\b/i;
+// "Put AAPL on my lock screen" / "show the Lakers game in my Dynamic Island":
+// destination phrasing is as clear a tracking request as a track verb, and
+// missing it sent these to the LLM, which refused ("use the Stocks app").
+const TRACK_DESTINATION = /\b(lock ?screen|dynamic island|live activity)\b/i;
+const TRACK_PUT_VERB = /\b(put|add|show|display|start|keep|throw|get)\b/i;
+
+export function isTrackRequest(message: string): boolean {
+  return TRACK_VERB.test(message) || (TRACK_DESTINATION.test(message) && TRACK_PUT_VERB.test(message));
+}
 const SPORTS_CUE =
   /\b(vs\.?|versus|@|game|match|score|playing|kickoff|tip ?off|nba|nfl|mlb|nhl|mls|premier league|la ?liga|champions league|world cup|super ?bowl)\b/i;
 const FINANCE_CUE =
@@ -135,11 +144,14 @@ function canonicalSportsQuery(value: string): string {
 // Detect a "track X" command and classify it. Returns null for everything else
 // (including "track my steps", which has no finance/sports cue).
 export function parseTrackCommand(message: string): { kind: "finance" | "product" | "sports" | "flight"; query: string } | null {
-  if (!TRACK_VERB.test(message)) return null;
+  if (!isTrackRequest(message)) return null;
   const m = message.toLowerCase();
 
   const query = message
     .replace(TRACK_VERB, " ")
+    .replace(/\b(?:put|add|show|display|start|keep|throw|get)\b/gi, " ")
+    .replace(/\b(?:on|in|to)\s+(?:my\s+)?(?:lock ?screen|dynamic island)\b/gi, " ")
+    .replace(/\b(?:lock ?screen|dynamic island)\b/gi, " ")
     .replace(/\b(the|a|an|please|for me|my|on|stock|price|of|live)\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();

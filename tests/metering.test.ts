@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { geminiListPriceUsd, googleSearchListPriceUsd, sttCostUsd, ttsCostUsd } from "../src/metering.js";
-import { ATTACHMENT_BASE_CREDITS, FREE_STARTER_CREDITS, FREE_VOICE_LIMIT, FREE_VOICE_PER_CYCLE, GRANT_EXPIRY_DAYS, IN_APP_CREDIT_PRODUCTS, TIERS, attachmentBaseCostCredits, compareGrantSpendOrder, hasVoiceAccess, inAppCreditsForProduct, isFreeVoice, topupCentsPerCredit, topupPriceCents, worstCaseContributionUsd, type CreditGrant } from "../src/credits.js";
+import { ATTACHMENT_BASE_CREDITS, FREE_STARTER_CREDITS, FREE_VOICE_LIMIT, FREE_VOICE_PER_CYCLE, GRANT_EXPIRY_DAYS, IN_APP_CREDIT_PRODUCTS, TIERS, attachmentBaseCostCredits, compareGrantSpendOrder, hasVoiceAccess, inAppCreditsForProduct, isFreeVoice, summary as creditSummary, topupCentsPerCredit, topupPriceCents, worstCaseContributionUsd, type CreditGrant } from "../src/credits.js";
 import { detectPersonalSearch } from "../src/planner.js";
 
 test("one credit always represents exactly $0.001 of vendor usage", () => {
@@ -46,14 +46,28 @@ test("every paid tier remains contribution-positive at worst-case included usage
   assert.equal(TIERS.pro.creditsPerCycle, 15_000);
 });
 
-test("free accounts receive 250 credits and stop Voice after five lifetime questions", () => {
+test("free accounts get 250 recurring credits and five surcharge-free voice turns per month", () => {
   assert.equal(FREE_STARTER_CREDITS, 250);
   assert.equal(FREE_VOICE_LIMIT, 5);
+  // The 4th arg is this month's free-voice count (reset each cycle); under the
+  // cap the turn is surcharge-free, at/over it the surcharge applies.
   assert.equal(isFreeVoice("free", 250, 0, 4), true);
   assert.equal(isFreeVoice("free", 250, 0, 5), false);
   assert.equal(hasVoiceAccess("free", 4), true);
   assert.equal(hasVoiceAccess("free", 5), false);
+  // A free user who bought credits keeps voice access (pays the surcharge).
+  assert.equal(hasVoiceAccess("free", 5, true), true);
   assert.equal(hasVoiceAccess("plus", 500), true);
+});
+
+test("a free account starts at 250 credits, five voice turns, and doesn't restack within the month", async () => {
+  const id = `free-cycle-${Date.now()}`;
+  const first = await creditSummary(id);
+  assert.equal(first.tier, "free");
+  assert.equal(first.balance, FREE_STARTER_CREDITS);
+  assert.equal(first.voiceAllowanceLimit, FREE_VOICE_LIMIT);
+  const again = await creditSummary(id);
+  assert.equal(again.balance, FREE_STARTER_CREDITS);
 });
 
 test("paid voice continues against credits after included turns and binary attachments have a forty-credit floor", () => {
@@ -97,6 +111,21 @@ test("additional-credit discounts and in-app double-rate packs stay server autho
   assert.equal(inAppCreditsForProduct(productId, "free"), 500);
   assert.equal(inAppCreditsForProduct(productId, "plus_voice"), 625);
   assert.equal(inAppCreditsForProduct(productId, "pro"), 833);
+});
+
+test("web account identities are recognized only after a verified sign-in marker", async () => {
+  const { isKnownIdentity, isWebAccountIdentity, markWebAuthenticated } = await import("../src/identity.js");
+  assert.equal(isWebAccountIdentity("google:abc123"), true);
+  assert.equal(isWebAccountIdentity("apple:xyz"), true);
+  assert.equal(isWebAccountIdentity("12345678"), false);
+  const identity = `google:test-${Date.now()}`;
+  assert.equal(await isKnownIdentity(identity), false);
+  await markWebAuthenticated(identity);
+  assert.equal(await isKnownIdentity(identity), true);
+  // Unverified identities never pass, and junk never marks.
+  assert.equal(await isKnownIdentity("google:"), false);
+  await markWebAuthenticated("not-an-account");
+  assert.equal(await isKnownIdentity("not-an-account"), false);
 });
 
 test("unified personal search only captures explicit broad searches", () => {

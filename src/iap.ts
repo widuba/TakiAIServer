@@ -192,6 +192,37 @@ export function claimCreditTransaction(transactionId: string, identity: string):
   return current;
 }
 
+// A verified consumable JWS proves the presenting device owns the Apple
+// purchase, so a stale binding to a prior identity (e.g. the same person on a
+// new device, or after signing in with Apple) should transfer rather than wall
+// the user with "already linked to another account". Moves ownership only; the
+// per-identity grant idempotency still prevents double-crediting.
+export async function transferCreditTransaction(transactionId: string, identity: string): Promise<void> {
+  if (!transactionId || !identity) return;
+  const prior = creditClaimChains.get(transactionId) || Promise.resolve();
+  const current = prior.then(async () => {
+    const key = `iapcredit:${transactionId}`;
+    const existing = await storeGet<{ identity: string }>(key, { identity: "" });
+    if (existing.identity === identity) return;
+    // Drop the transaction from the previous owner's reverse index.
+    if (existing.identity) {
+      const oldKey = `iapcreditidentity:${safeIdentity(existing.identity)}`;
+      const old = await storeGet<{ transactionIds: string[] }>(oldKey, { transactionIds: [] });
+      const filtered = old.transactionIds.filter((t) => t !== transactionId);
+      if (filtered.length !== old.transactionIds.length) await storeSet(oldKey, { transactionIds: filtered });
+    }
+    await storeSet(key, { identity });
+    const reverseKey = `iapcreditidentity:${safeIdentity(identity)}`;
+    const reverse = await storeGet<{ transactionIds: string[] }>(reverseKey, { transactionIds: [] });
+    if (!reverse.transactionIds.includes(transactionId)) {
+      reverse.transactionIds.push(transactionId);
+      await storeSet(reverseKey, { transactionIds: reverse.transactionIds.slice(-1000) });
+    }
+  });
+  creditClaimChains.set(transactionId, current.then(() => undefined, () => undefined));
+  return current;
+}
+
 // When a device signs in with Apple, its credit ledger moves to the Apple
 // account. Move the global receipt ownership too, so an unfinished transaction
 // can be safely acknowledged after the identity changes.
@@ -235,6 +266,52 @@ export function linkTransactionIdentity(originalTransactionId: string, identity:
     return "claimed";
   });
   subscriptionClaimChains.set(originalTransactionId, current.then(() => undefined, () => undefined));
+  return current;
+}
+
+// A verified, Apple-signed subscription JWS proves the PRESENTER's Apple ID owns
+// the entitlement right now. So the same Apple ID on a new device (a new
+// anonymous 8-digit identity) reclaiming its subscription must be allowed to
+// transfer it — blocking that as a "conflict" is the "already linked to another
+// account" bug on a fresh phone. Per-period dedup (claimSubscriptionPeriod)
+// still stops the same billing cycle from granting credits to two identities.
+export async function transferSubscriptionIdentity(originalTransactionId: string, identity: string): Promise<void> {
+  if (!originalTransactionId || !identity) return;
+  const prior = subscriptionClaimChains.get(originalTransactionId) || Promise.resolve();
+  const current = prior.then(async () => {
+    const existing = await storeGet<{ identity: string; role?: "primary" | "secondary" }>(`iapmap:${originalTransactionId}`, { identity: "" });
+    if (existing.identity && existing.identity !== identity) {
+      const oldKey = `iapidentity:${existing.identity.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+      const old = await storeGet<{ transactionIds: string[] }>(oldKey, { transactionIds: [] });
+      await storeSet(oldKey, { transactionIds: old.transactionIds.filter((id) => id !== originalTransactionId) });
+    }
+    await storeSet(`iapmap:${originalTransactionId}`, { identity, role: existing.role || "primary" });
+    const reverseKey = `iapidentity:${identity.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+    const reverse = await storeGet<{ transactionIds: string[] }>(reverseKey, { transactionIds: [] });
+    if (!reverse.transactionIds.includes(originalTransactionId)) {
+      reverse.transactionIds.push(originalTransactionId);
+      await storeSet(reverseKey, reverse);
+    }
+  });
+  subscriptionClaimChains.set(originalTransactionId, current.then(() => undefined, () => undefined));
+  return current;
+}
+
+// Global "this subscription billing period was already granted" guard, keyed by
+// the period key (which embeds the originalTransactionId). Returns true the FIRST
+// time a period is seen and false afterward, so credits for one cycle land on
+// exactly one identity even across device transfers.
+const periodClaimChains = new Map<string, Promise<void>>();
+export function claimSubscriptionPeriod(periodKey: string): Promise<boolean> {
+  if (!periodKey) return Promise.resolve(true);
+  const prior = periodClaimChains.get(periodKey) || Promise.resolve();
+  const current = prior.then(async () => {
+    const key = `iapperiod:${periodKey}`;
+    if (await storeGet<boolean>(key, false)) return false;
+    await storeSet(key, true);
+    return true;
+  });
+  periodClaimChains.set(periodKey, current.then(() => undefined, () => undefined));
   return current;
 }
 

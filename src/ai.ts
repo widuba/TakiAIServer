@@ -16,6 +16,49 @@ if (!apiKey) throw new Error("Missing GEMINI_API_KEY in .env");
 export const ai = new GoogleGenAI({ apiKey });
 const rawGenerateContent = ai.models.generateContent.bind(ai.models);
 
+// What Taki says out loud when a vendor is the problem, not the question. Kept
+// vague on purpose — end users shouldn't hear "billing" or "quota".
+export const AI_UNAVAILABLE_SPOKEN = "Sorry — my service is temporarily unavailable right now. Please try again in a little while.";
+export const VOICE_UNAVAILABLE_SPOKEN = "Sorry — my voice service is temporarily unavailable right now. Please try again in a little while.";
+
+export type ServiceErrorKind = "ai_quota" | "ai_auth" | "ai_unavailable" | "voice_unavailable" | "server";
+
+// A vendor/infra failure (Gemini or ElevenLabs) rather than a bad answer. Thrown
+// so callers can bail out IMMEDIATELY with a spoken message instead of retrying
+// into the same wall (a depleted key answers a 429 in ~1s; the old fallback
+// chain turned that into a ~minute wait).
+export class ServiceError extends Error {
+  readonly kind: ServiceErrorKind;
+  readonly spoken: string;
+  readonly status?: number;
+  constructor(kind: ServiceErrorKind, spoken: string, status?: number) {
+    super(spoken);
+    this.name = "ServiceError";
+    this.kind = kind;
+    this.spoken = spoken;
+    this.status = status;
+  }
+}
+
+// Map a raw Gemini/SDK error to a ServiceError, or null if it's an ordinary
+// failure (empty output, a timeout we chose, a parse error) we can still retry.
+export function classifyGeminiError(error: unknown): ServiceError | null {
+  if (error instanceof ServiceError) return error;
+  const any = error as any;
+  const status = Number(any?.status ?? any?.code ?? any?.response?.status ?? NaN);
+  const message = String(any?.message ?? any ?? "").toLowerCase();
+  if (status === 429 || /resource_exhausted|\bquota\b|prepay|rate.?limit|too many requests|\b429\b/.test(message)) {
+    return new ServiceError("ai_quota", AI_UNAVAILABLE_SPOKEN, 429);
+  }
+  if (status === 401 || status === 403 || /api[_ ]?key|permission denied|unauthenticated|unauthorized|\b401\b|\b403\b/.test(message)) {
+    return new ServiceError("ai_auth", AI_UNAVAILABLE_SPOKEN, Number.isFinite(status) ? status : undefined);
+  }
+  if ((status >= 500 && status < 600) || /unavailable|overloaded|internal error|deadline exceeded|\b503\b|\b500\b/.test(message)) {
+    return new ServiceError("ai_unavailable", AI_UNAVAILABLE_SPOKEN, Number.isFinite(status) ? status : undefined);
+  }
+  return null;
+}
+
 export async function generateContent(args: any): Promise<any> {
   // Gemini 3 uses thinking levels rather than allowing thinking to be disabled.
   // Translate the older zero-budget call sites so they remain fast and valid.
@@ -31,7 +74,14 @@ export async function generateContent(args: any): Promise<any> {
       }
     };
   }
-  const response = await rawGenerateContent(request);
+  let response;
+  try {
+    response = await rawGenerateContent(request);
+  } catch (error) {
+    // Surface quota/auth/outage as a typed error so the caller fails fast and
+    // speaks a clear message instead of retrying into the same failure.
+    throw classifyGeminiError(error) ?? error;
+  }
   recordGeminiCall(request, response);
   return response;
 }
@@ -60,6 +110,9 @@ function currentModel(configured: string | undefined, fallback: string): string 
 export const PLANNER_MODEL = currentModel(process.env.GEMINI_PLANNER_MODEL, "gemini-3.5-flash");
 export const MAIN_MODEL = currentModel(process.env.GEMINI_MODEL, "gemini-3.5-flash");
 export const RESEARCH_MODEL = currentModel(process.env.GEMINI_RESEARCH_MODEL, "gemini-3.1-pro-preview");
+// FAST_MODEL answers easy, static knowledge questions (no routing/extraction —
+// that's where flash-lite failed as a planner; as a plain answerer it's fine).
+export const FAST_MODEL = currentModel(process.env.GEMINI_FAST_MODEL, "gemini-3.5-flash-lite");
 
 // Timeouts (ms), env-overridable. The planner uses minimal thinking for quick
 // routing. Grounded research on the Pro model gets a longer budget.

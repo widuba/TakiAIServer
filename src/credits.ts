@@ -21,7 +21,7 @@ export { CREDIT_USD } from "./metering.js";
 /* ---- CONFIG (tune these) ------------------------------------------------- */
 
 export const GRANT_EXPIRY_DAYS = 90;      // credits expire 90 days after purchase
-export const FREE_STARTER_CREDITS = 250;  // a fresh device gets this once, so the app works pre-subscription
+export const FREE_STARTER_CREDITS = 250;  // free accounts get this recurring allotment, refreshed each month (device-ID capped)
 const NON_EXPIRING_GRANT_DATE = Date.UTC(9999, 11, 31);
 
 export type Tier = "free" | "plus" | "plus_voice" | "pro";
@@ -43,9 +43,12 @@ export const TIERS: Record<Tier, TierConfig> = {
   pro:        { label: "Pro",        creditsPerCycle: 15000, priceUsd: 29.99, voiceIncluded: true,  extraCreditDiscount: 0.4 }
 };
 
-// Voice pricing. Plus Voice / Pro get a per-cycle allowance of included speech;
-// after that, voice continues at list-price STT/TTS cost against normal credits.
-// Free gets five lifetime turns. A subscription is required after that cap.
+// Voice pricing. "Included"/"free" voice never means a free request — it only
+// waives the extra speech-to-text + text-to-speech surcharge, so a voice turn
+// costs the same credits as the identical question typed as text. Plus Voice /
+// Pro get a per-cycle allowance of surcharge-free speech; after that, voice
+// continues and the STT/TTS surcharge is charged against normal credits.
+// Free gets FREE_VOICE_LIMIT surcharge-free turns per month (reset each cycle).
 export const FREE_VOICE_PER_CYCLE: Record<Tier, number> = { free: 0, plus: 0, plus_voice: 150, pro: 300 };
 export const FREE_VOICE_LIMIT = 5;
 export const APP_STORE_COMMISSION_RATE = 0.15;
@@ -68,8 +71,12 @@ export function isFreeVoice(tier: Tier, baseCredits: number, voiceCycleUsed: num
   return cap > 0 && baseCredits > 0 && voiceCycleUsed < cap;
 }
 
-export function hasVoiceAccess(tier: Tier, voiceLifetimeUsed = 0): boolean {
-  return tier !== "free" || voiceLifetimeUsed < FREE_VOICE_LIMIT;
+// Voice mode is available on any paid tier, while the free tier still has
+// surcharge-free turns left, OR whenever the account has purchased credits to
+// pay the per-turn voice surcharge — a paying user should never be locked out of
+// voice just because the free monthly voice turns are used up.
+export function hasVoiceAccess(tier: Tier, voiceLifetimeUsed = 0, hasPurchasedCredits = false): boolean {
+  return tier !== "free" || voiceLifetimeUsed < FREE_VOICE_LIMIT || hasPurchasedCredits;
 }
 // Credits charged for a paid voice turn (beyond the free allowance).
 export function worstCaseContributionUsd(tier: Tier): number {
@@ -102,6 +109,9 @@ export interface CreditAccount {
   tier: Tier;
   grants: CreditGrant[];
   starterGiven?: boolean;
+  // UTC month ("YYYY-MM") of the free tier's last recurring allotment, so the
+  // 500 free credits + free-voice count refresh once per month, not every load.
+  freeCycleKey?: string;
   // Billing-period keys already granted (StoreKit), so a renewal grants once.
   processedTx?: string[];
   // Consumable StoreKit transactions are permanent and must only grant once.
@@ -112,7 +122,8 @@ export interface CreditAccount {
   // Remains true after purchased credits are spent or expire, so Membership can
   // keep the expiry-history control hidden for people who have never bought any.
   hasPurchasedCredits?: boolean;
-  // Lifetime count of voice questions asked (enforces the free-tier voice cap).
+  // Free voice turns used this month (reset with the free cycle). Enforces the
+  // free tier's per-month surcharge-free voice allowance (FREE_VOICE_LIMIT).
   voiceCount?: number;
   // FREE voice turns used THIS billing cycle (reset on renewal). Enforces the
   // per-cycle free-voice allowance for Plus Voice / Pro.
@@ -252,6 +263,23 @@ export function compareGrantSpendOrder(a: CreditGrant, b: CreditGrant): number {
 function ensureStarter(acct: CreditAccount): boolean {
   if (acct.starterGiven) return false;
   if (FREE_STARTER_CREDITS > 0) addGrant(acct, "free_starter", FREE_STARTER_CREDITS);
+  acct.starterGiven = true;
+  return true;
+}
+
+// Free accounts get a recurring monthly allotment: FREE_STARTER_CREDITS fresh
+// credits and a reset free-voice count at the start of each UTC month. The prior
+// month's free credits are replaced (not stacked); purchased top-ups and any
+// other grants are left untouched. Non-free accounts fall back to the one-time
+// starter. Returns true if the account changed (so the caller persists it).
+function ensureFreeCycle(acct: CreditAccount, now = Date.now()): boolean {
+  if (acct.tier !== "free") return ensureStarter(acct);
+  const month = utcMonthKey(now);
+  if (acct.starterGiven && acct.freeCycleKey === month) return false;
+  acct.grants = acct.grants.filter((g) => g.source !== "free_starter" && g.source !== "free_monthly");
+  if (FREE_STARTER_CREDITS > 0) addGrant(acct, "free_monthly", FREE_STARTER_CREDITS);
+  acct.voiceCount = 0;
+  acct.freeCycleKey = month;
   acct.starterGiven = true;
   return true;
 }
@@ -486,7 +514,7 @@ export async function noteVoiceQuestion(identity: string): Promise<number> {
 export async function summary(deviceId: string): Promise<CreditSummary> {
   return withLock(deviceId, async () => {
     const acct = await load(deviceId);
-    if (ensureStarter(acct)) await save(acct);
+    if (ensureFreeCycle(acct)) await save(acct);
     return summarize(acct);
   });
 }
@@ -498,7 +526,7 @@ export async function grantTier(deviceId: string, tier: Tier): Promise<CreditSum
     const acct = await load(deviceId);
     const conf = TIERS[tier];
     if (conf) {
-      acct.grants = acct.grants.filter((grant) => grant.source !== "free_starter");
+      acct.grants = acct.grants.filter((grant) => grant.source !== "free_starter" && grant.source !== "free_monthly");
       addGrant(acct, `subscription:${tier}`, conf.creditsPerCycle);
     }
     acct.tier = tier;
@@ -513,7 +541,7 @@ export async function grantTier(deviceId: string, tier: Tier): Promise<CreditSum
 export async function spend(deviceId: string, cost: number): Promise<CreditSummary & { spent: number }> {
   return withLock(deviceId, async () => {
     const acct = await load(deviceId);
-    ensureStarter(acct);
+    ensureFreeCycle(acct);
     const now = Date.now();
     let need = Math.max(0, Math.round(cost));
     const ordered = acct.grants
@@ -540,7 +568,7 @@ export async function spend(deviceId: string, cost: number): Promise<CreditSumma
 export async function spendUsageUsd(deviceId: string, costUsd: number): Promise<CreditSummary & { spent: number; usageUsd: number }> {
   return withLock(deviceId, async () => {
     const acct = await load(deviceId);
-    ensureStarter(acct);
+    ensureFreeCycle(acct);
     const now = Date.now();
     const costMicros = Math.max(0, Math.round(costUsd * 1_000_000));
     const accumulated = Math.max(0, Math.floor(acct.usageRemainderMicros || 0)) + costMicros;
@@ -575,6 +603,19 @@ function higherTier(a: Tier, b: Tier): Tier {
 // Grant a subscription's credits for a REAL verified StoreKit transaction. Keyed
 // by billing period so re-sending the same period (app relaunch, restore) grants
 // once. Returns whether it actually granted + the fresh summary.
+// Put an identity on `tier` (never lowering it) WITHOUT granting a new cycle's
+// credits — used when a transferred subscription's current period was already
+// granted to a prior identity, so the entitlement (tier) still applies.
+export async function activateSubscriptionTier(identity: string, tier: Tier): Promise<CreditSummary> {
+  return withLock(identity, async () => {
+    const acct = await load(identity);
+    acct.tier = higherTier(acct.tier, tier);
+    acct.starterGiven = true;
+    await save(acct);
+    return summarize(acct);
+  });
+}
+
 export async function grantForTransaction(
   identity: string, tier: Tier, periodKey: string
 ): Promise<{ granted: boolean; summary: CreditSummary }> {
@@ -588,7 +629,7 @@ export async function grantForTransaction(
     }
     const conf = TIERS[tier];
     if (conf) {
-      acct.grants = acct.grants.filter((grant) => grant.source !== "free_starter");
+      acct.grants = acct.grants.filter((grant) => grant.source !== "free_starter" && grant.source !== "free_monthly");
       addGrant(acct, `subscription:${tier}`, conf.creditsPerCycle);
     }
     acct.tier = tier;

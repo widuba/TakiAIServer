@@ -2,6 +2,34 @@ import { storeGet, storeSet } from "./store.js";
 import { forgetToken, sendPush } from "./push.js";
 import { clearPushToken, getPushToken } from "./nudges.js";
 import { fetchAssetPrice, fetchTrackerSnapshot } from "./tracker.js";
+import { isEngagementEmailConfigured, renderBrandedEmail, sendEmail } from "./engagement.js";
+import { userForIdentity } from "./users.js";
+import { appleForDevice, devicesForApple } from "./safety.js";
+
+// The email tied to the device that created the alert (its Apple Sign-in
+// address). Alerts are user-requested, so delivering them by email needs no
+// separate marketing opt-in — only a connected Apple account for the address.
+async function recipientEmail(deviceId: string): Promise<string | null> {
+  const direct = (await userForIdentity(deviceId)).apple?.email?.trim();
+  if (direct) return direct;
+  const sub = await appleForDevice(deviceId).catch(() => "");
+  if (!sub) return null;
+  for (const dev of await devicesForApple(sub)) {
+    const rec = await userForIdentity(dev);
+    if (rec.apple?.sub === sub && rec.apple?.email?.trim()) return rec.apple.email.trim();
+  }
+  return null;
+}
+
+async function sendAlertEmail(to: string, fire: { title: string; body: string }): Promise<boolean> {
+  const html = renderBrandedEmail({
+    heading: fire.title,
+    bodyText: fire.body,
+    preheader: fire.body,
+    footnote: "You asked Taki to watch this. Open Taki to see or cancel your alerts."
+  });
+  return (await sendEmail({ to, subject: fire.title, text: fire.body, html })).ok;
+}
 
 /* ============================================================================
  * Batch B — proactive alerts. Standing subscriptions the SERVER watches and
@@ -179,8 +207,11 @@ export async function pollAlerts(timeZone: string): Promise<void> {
         changed = true;
         continue;
       }
+      // Deliver via push when a token exists; otherwise fall back to email so
+      // alerts still reach the user when APNs isn't configured (email set up).
       const token = await getPushToken(a.deviceId);
-      if (!token) {
+      const email = !token && isEngagementEmailConfigured() ? await recipientEmail(a.deviceId) : null;
+      if (!token && !email) {
         survivors.push(a);
         continue;
       }
@@ -194,17 +225,25 @@ export async function pollAlerts(timeZone: string): Promise<void> {
         continue;
       }
       if (res.fire) {
-        const pushed = await sendPush(token, {
-          title: res.fire.title,
-          body: res.fire.body,
-          threadId: `alert-${a.kind}`,
-          data: { alertId: a.id, alertKind: a.kind }
-        });
-        if (!pushed.ok) {
-          if (pushed.status === 410 || pushed.reason === "BadDeviceToken" || pushed.reason === "Unregistered") {
+        let delivered = false;
+        if (token) {
+          const pushed = await sendPush(token, {
+            title: res.fire.title,
+            body: res.fire.body,
+            threadId: `alert-${a.kind}`,
+            data: { alertId: a.id, alertKind: a.kind }
+          });
+          if (pushed.ok) delivered = true;
+          else if (pushed.status === 410 || pushed.reason === "BadDeviceToken" || pushed.reason === "Unregistered") {
             await clearPushToken(a.deviceId);
             forgetToken(token);
           }
+        }
+        if (!delivered && isEngagementEmailConfigured()) {
+          const to = email ?? await recipientEmail(a.deviceId);
+          if (to) delivered = await sendAlertEmail(to, res.fire);
+        }
+        if (!delivered) {
           survivors.push(before);
           continue;
         }

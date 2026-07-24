@@ -1,4 +1,4 @@
-import { generateContent, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, LIST_RESEARCH_TIMEOUT_MS, TIME_ZONE, safetyConfig } from "./ai.js";
+import { generateContent, FAST_MODEL, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, LIST_RESEARCH_TIMEOUT_MS, TIME_ZONE, safetyConfig, ServiceError } from "./ai.js";
 import { personaPromptBlock, characterDirective, GUARDRAILS } from "./persona.js";
 import { capabilityPromptBlock } from "./capabilities.js";
 import type { UserPersona } from "./persona.js";
@@ -2158,6 +2158,19 @@ export function looksLikeLiveInfoQuestion(message: string) {
   return false;
 }
 
+// A short, single, static question with no drafting/analysis ask — safe for the
+// fastest model with thinking off. Anything live/fresh is excluded by the
+// caller before this runs, so a miss here only costs quality headroom, never
+// freshness.
+export function looksLikeEasyQuestion(message: string): boolean {
+  const m = message.trim();
+  if (m.length === 0 || m.length > 160) return false;
+  if ((m.match(/\?/g) || []).length > 1) return false;
+  // Drafting, coding, math, and multi-step asks deserve the stronger model.
+  if (/\b(write|draft|compose|essay|poem|story|code|script|function|regex|sql|debug|analy[sz]e|analysis|compare|comparison|versus|vs\.?|detailed?|in depth|step[- ]by[- ]step|plan|itinerary|strategy|summari[sz]e|translate|calculate|solve|prove|derive|optimi[sz]e|review|rewrite|brainstorm|list of|pros and cons)\b/i.test(m)) return false;
+  return true;
+}
+
 export async function getStrictWebAnswer(
   message: string,
   opts: { allowPrediction?: boolean; persona?: UserPersona; timeZone?: string; voiceMode?: boolean } = {}
@@ -2665,14 +2678,18 @@ ${memoryText}
     return state.voiceMode && t ? briefForVoice(t) : t;
   };
 
-  // Current questions use the strongest research model in text chat. Search is
-  // available to every general answer so the model can ground uncertain facts;
+  // Three speed tiers. Live/current questions get the strongest research model
+  // with grounding (text chat). Easy static questions get the FASTEST model with
+  // minimal thinking and no search tool — declaring search invites the model to
+  // run it, which is the main latency on questions that never needed it. Search
+  // stays available on the middle tier so uncertain facts can still ground;
   // metering charges it only when grounding metadata confirms it actually ran.
   const isLive = looksLikeLiveInfoQuestion(state.message) || looksLikeFreshFactQuestion(state.message);
-  const primaryModel = isLive && !state.voiceMode ? RESEARCH_MODEL : MAIN_MODEL;
+  const isEasy = !isLive && looksLikeEasyQuestion(state.message);
+  const primaryModel = isLive && !state.voiceMode ? RESEARCH_MODEL : isEasy ? FAST_MODEL : MAIN_MODEL;
   const primaryConfig: any = {
-    tools: [{ googleSearch: {} }],
-    thinkingConfig: state.voiceMode ? { thinkingLevel: "MINIMAL" } : { thinkingLevel: "LOW" },
+    ...(isEasy ? {} : { tools: [{ googleSearch: {} }] }),
+    thinkingConfig: isEasy || state.voiceMode ? { thinkingLevel: "MINIMAL" } : { thinkingLevel: "LOW" },
     ...safetyConfig(state.userProfile?.teen)
   };
 
@@ -2692,6 +2709,9 @@ ${memoryText}
     }
     throw new Error("empty");
   } catch (error) {
+    // Vendor outage (quota/auth/down): the fallback model would hit the same
+    // wall, so skip it and speak the clear message right away.
+    if (error instanceof ServiceError) return { text: cap(error.spoken) };
     console.error("General answer (primary) failed, falling back to flash:", error);
     // Graceful degrade so we always reply, even if the strong model times out.
     try {
