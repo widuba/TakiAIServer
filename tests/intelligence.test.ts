@@ -16,7 +16,7 @@ import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
 import { appleMacPriceSnapshotFromHtml, espnSportsSnapshotFromResponse, flightStatsSnapshotFromHtml, parseTrackCommand, ship24StatusFromResponse } from "../src/tracker.js";
-import { looksLikeComparisonRequest, looksLikeEasyQuestion, looksLikeFlightQuestion, looksLikeStockQuestion } from "../src/tools.js";
+import { looksLikeEasyQuestion, looksLikeFlightQuestion, looksLikeStockQuestion } from "../src/tools.js";
 import { parseUserPersona, personaPromptBlock } from "../src/persona.js";
 import { normalizeChatTitle } from "../src/chatTitle.js";
 import { currencyConversionSource } from "../src/conversions.js";
@@ -571,12 +571,6 @@ test("live currency conversions expose the exact rate endpoint", () => {
 test("chat titles are short and stripped of model formatting", () => {
   assert.equal(normalizeChatTitle('**"Vacation Planning: Italy!"**'), "Vacation Planning Italy");
   assert.equal(normalizeChatTitle("one two three four five six seven"), "one two three four five six");
-});
-
-test("comparison phrasing routes to structured compare mode", () => {
-  assert.equal(looksLikeComparisonRequest("Compare the iPhone and Pixel"), true);
-  assert.equal(looksLikeComparisonRequest("iPhone vs. Pixel"), true);
-  assert.equal(looksLikeComparisonRequest("Tell me about the iPhone"), false);
 });
 
 test("personal rules are bounded and clearly labeled in the persona prompt", () => {

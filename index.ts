@@ -190,7 +190,7 @@ app.get("/health", async (_req, res) => {
     ok: true,
     app: "Taki AI server",
     mode: "planner-first-modular-v3",
-    version: "2026-07-23-iap-transfer-v1",
+    version: "2026-07-23-no-comparison-v1",
     durableStorage: isDurable(),
     models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL },
     // Live Activity background updates require APNs config (APNS_KEY_P8 or

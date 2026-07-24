@@ -2046,53 +2046,6 @@ function getGroundingSources(response: any) {
   return sources;
 }
 
-export function looksLikeComparisonRequest(message: string) {
-  return /\b(compare|comparison|versus|vs\.?|difference between|which (?:one )?is better|pros and cons of)\b/i.test(message);
-}
-
-export async function getComparisonAnswer(
-  message: string,
-  opts: { persona?: UserPersona; timeZone?: string } = {}
-): Promise<AssistantResponse> {
-  const prompt = `${GUARDRAILS}
-You are Taki AI. Build a compact, factual comparison using current Google Search when facts may have changed.
-${personaPromptBlock(opts.persona)}
-Return JSON only with this exact shape:
-{"title":"...","criteria":["Criterion"],"items":[{"name":"Option","values":["Value matching each criterion"]}],"summary":"one concise recommendation or bottom line"}
-Rules:
-- Compare only the options the user requested. Use 2-4 options and 2-6 useful criteria.
-- Every item's values array must exactly match the criteria length and order.
-- Use short plain-text values suitable for a phone table.
-- Do not invent specifications, prices, availability, or ratings.
-- If the request lacks two identifiable options, return {"title":"Comparison","criteria":[],"items":[],"summary":"What would you like me to compare?"}.
-User request: ${JSON.stringify(String(message).slice(0, 2000))}`;
-  try {
-    const response: any = await withTimeout(generateContent({
-      model: RESEARCH_MODEL,
-      contents: prompt,
-      config: { temperature: 0, tools: [{ googleSearch: {} }], ...safetyConfig(opts.persona?.teen) }
-    } as any), RESEARCH_TIMEOUT_MS, "Comparison");
-    const parsed: any = extractJsonObject(String(response.text || "{}"));
-    const criteria = (Array.isArray(parsed.criteria) ? parsed.criteria : []).map((value: unknown) => String(value).trim().slice(0, 50)).filter(Boolean).slice(0, 6);
-    const items = (Array.isArray(parsed.items) ? parsed.items : []).map((item: any) => ({
-      name: String(item?.name || "").trim().slice(0, 60),
-      values: (Array.isArray(item?.values) ? item.values : []).map((value: unknown) => String(value).trim().slice(0, 180)).slice(0, criteria.length)
-    })).filter((item: any) => item.name && item.values.length === criteria.length).slice(0, 4);
-    const summary = String(parsed.summary || "").trim().slice(0, 500);
-    const sources = getGroundingSources(response);
-    if (!criteria.length || items.length < 2) return { spokenText: summary || "What would you like me to compare?", action: null };
-    if (!sources.length) return { spokenText: "I couldn't verify that comparison from linkable sources right now.", action: null };
-    return {
-      spokenText: summary || `Here's a comparison of ${items.map((item: any) => item.name).join(" and ")}.`,
-      action: null,
-      comparison: { title: String(parsed.title || "Comparison").trim().slice(0, 80), criteria, items, summary },
-      sources
-    };
-  } catch {
-    return { spokenText: "I couldn't build that comparison right now.", action: null };
-  }
-}
-
 // Predictive / opinion questions ("who's expected to win", "who's favored",
 // "what are the odds") are not hard facts — they are best answered with live
 // odds, recent form, and analyst consensus, framed as a prediction. We must

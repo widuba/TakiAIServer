@@ -26,7 +26,6 @@ import {
   getGeneralAnswer,
   getLocationAnswer,
   getStrictWebAnswer,
-  getComparisonAnswer,
   getWeatherAnswer,
   getStockPrice,
   getCryptoPrice,
@@ -40,7 +39,6 @@ import {
   looksLikeFreshFactQuestion,
   looksLikeLiveInfoQuestion,
   looksLikePredictionQuestion,
-  looksLikeComparisonRequest,
   looksLikeLeaveTimeQuestion,
   looksLikeCountdownRequest,
   eventQueryFromLiveActivityMessage,
@@ -1586,18 +1584,6 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
   if (looksLikePredictionQuestion(state.message)) {
     const res = await getStrictWebAnswer(state.message, { allowPrediction: true, persona: state.userProfile, timeZone: state.timeZone, voiceMode: state.voiceMode });
     return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
-  }
-
-  if (looksLikeComparisonRequest(state.message)) {
-    const res = await getComparisonAnswer(state.message, { persona: state.userProfile, timeZone: state.timeZone });
-    return {
-      spokenText: res.spokenText,
-      action: null,
-      comparison: res.comparison,
-      sources: res.sources,
-      memoryPatch: { pendingClarification: null, lastIntent: "web_search" },
-      needsExecution: false
-    };
   }
 
   // "Best/latest/newest" product or current-fact questions must use live search
