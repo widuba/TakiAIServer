@@ -2124,6 +2124,28 @@ export function looksLikeEasyQuestion(message: string): boolean {
   return true;
 }
 
+// Some questions look "easy" (short, one option-or-another) but are really
+// consequential, OBJECTIVE decisions where the user wants a researched, in-depth
+// answer — not a quick subjective quip. "Which is better, apples or oranges?" is
+// casual/conversational (fastest model is right); "Which is more worth it, a
+// MacBook Air or a MacBook Pro?" is a real purchase decision that needs product
+// knowledge (escalate to the informational model). Signals: value/purchase
+// framing, money/spec vocabulary, or a comparison between named products/brands.
+export function looksLikeSubstantiveQuestion(message: string): boolean {
+  const m = message.trim();
+  if (!m) return false;
+  // Value / purchase / recommendation framing on a real decision.
+  if (/\b(worth it|worth buying|worth the (money|price|cost|upgrade)|more worth|better (value|deal|investment|choice)|should i (buy|get|upgrade|switch|invest|choose|pick|go with)|which (one )?(should i|to) (buy|get|pick|choose|use|go with))\b/i.test(m)) return true;
+  // Money / spec / consequential-decision vocabulary.
+  if (/\b(price|cost|budget|cheaper|expensive|afford|invest(ment)?|specs?|performance|processor|chip|ram|storage|battery life|megapixel|warranty|resale|mortgage|loan|refinance|insurance|premium|deductible|subscription|tuition|salary|interest rate|reliab(le|ility)|durab(le|ility))\b/i.test(m)) return true;
+  // A comparison between named/proper-noun products or brands: a capitalized
+  // token anywhere but the first word (which is capitalized by grammar) alongside
+  // comparison phrasing signals a specific-entity decision, not a casual pick.
+  const branded = m.split(/\s+/).slice(1).some((w) => /^[A-Z][A-Za-z0-9]/.test(w) && w.replace(/[^A-Za-z]/g, "") !== "I");
+  if (branded && /\b(or|vs\.?|versus|better|worth|between|which)\b/i.test(m)) return true;
+  return false;
+}
+
 export async function getStrictWebAnswer(
   message: string,
   opts: { allowPrediction?: boolean; persona?: UserPersona; timeZone?: string; voiceMode?: boolean } = {}
@@ -2638,7 +2660,10 @@ ${memoryText}
   // stays available on the middle tier so uncertain facts can still ground;
   // metering charges it only when grounding metadata confirms it actually ran.
   const isLive = looksLikeLiveInfoQuestion(state.message) || looksLikeFreshFactQuestion(state.message);
-  const isEasy = !isLive && looksLikeEasyQuestion(state.message);
+  // A short question is "easy" only if it's genuinely conversational/subjective.
+  // Consequential, objective decisions (purchases, products, money) escalate to
+  // the informational model even when phrased briefly.
+  const isEasy = !isLive && looksLikeEasyQuestion(state.message) && !looksLikeSubstantiveQuestion(state.message);
   const primaryModel = isLive && !state.voiceMode ? RESEARCH_MODEL : isEasy ? FAST_MODEL : MAIN_MODEL;
   const primaryConfig: any = {
     ...(isEasy ? {} : { tools: [{ googleSearch: {} }] }),

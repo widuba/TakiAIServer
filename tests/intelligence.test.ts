@@ -16,7 +16,7 @@ import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
 import { appleMacPriceSnapshotFromHtml, espnSportsSnapshotFromResponse, flightStatsSnapshotFromHtml, parseTrackCommand, ship24StatusFromResponse } from "../src/tracker.js";
-import { looksLikeEasyQuestion, looksLikeFlightQuestion, looksLikeStockQuestion } from "../src/tools.js";
+import { looksLikeEasyQuestion, looksLikeSubstantiveQuestion, looksLikeFlightQuestion, looksLikeStockQuestion } from "../src/tools.js";
 import { parseUserPersona, personaPromptBlock } from "../src/persona.js";
 import { normalizeChatTitle } from "../src/chatTitle.js";
 import { currencyConversionSource } from "../src/conversions.js";
@@ -571,6 +571,20 @@ test("live currency conversions expose the exact rate endpoint", () => {
 test("chat titles are short and stripped of model formatting", () => {
   assert.equal(normalizeChatTitle('**"Vacation Planning: Italy!"**'), "Vacation Planning Italy");
   assert.equal(normalizeChatTitle("one two three four five six seven"), "one two three four five six");
+});
+
+test("conversational choices stay on the fast tier; consequential ones escalate", () => {
+  // Casual/subjective preference — genuinely conversational, keep it fast.
+  assert.equal(looksLikeEasyQuestion("Which is better, apples or oranges?"), true);
+  assert.equal(looksLikeSubstantiveQuestion("Which is better, apples or oranges?"), false);
+  assert.equal(looksLikeSubstantiveQuestion("What's your favorite color?"), false);
+  assert.equal(looksLikeSubstantiveQuestion("Is cereal a soup?"), false);
+
+  // Objective, consequential decision — needs the informational model.
+  assert.equal(looksLikeSubstantiveQuestion("Which is more worth it, a MacBook Air or a MacBook Pro?"), true);
+  assert.equal(looksLikeSubstantiveQuestion("Should I buy the iPhone 15 or wait?"), true);
+  assert.equal(looksLikeSubstantiveQuestion("iPhone or Galaxy?"), true);
+  assert.equal(looksLikeSubstantiveQuestion("Which laptop has better battery life?"), true);
 });
 
 test("personal rules are bounded and clearly labeled in the persona prompt", () => {
