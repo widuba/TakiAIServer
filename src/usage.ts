@@ -2,8 +2,8 @@
 // cost, and is its speech on the included allowance". Kept out of index.ts so
 // the ordering rules (never consume an included voice turn for a request that
 // is about to be refused) are unit-testable.
-import { CREDIT_USD, MAX_VOICE_INPUT_MS, MAX_VOICE_RESPONSE_CHARS, MIN_REQUEST_CREDITS, hasVoiceAccess, type Tier } from "./credits.js";
-import { sttCostUsd, ttsCostUsd } from "./metering.js";
+import { CREDIT_USD, MIN_REQUEST_CREDITS, VOICE_SURCHARGE_CREDITS, type Tier } from "./credits.js";
+import { ttsCostUsd } from "./metering.js";
 
 export const OUT_OF_CREDITS_MSG = "You're out of credits — top up or upgrade in Membership to keep asking.";
 export const DAILY_LIMIT_MSG = "You've reached today's usage limit. You can ask again after the daily reset shown in Membership.";
@@ -33,8 +33,7 @@ export function usageBlockFor(
 ): UsageBlock | null {
   const required = Math.max(MIN_REQUEST_CREDITS, Math.ceil(requiredCredits));
   let reason: UsageBlockReason | null = null;
-  if (voiceMode && !hasVoiceAccess(summary.tier, summary.voiceUsed, (summary.additionalCredits || 0) > 0)) reason = "voice";
-  else if (summary.limitReached && (summary.limitReason === "daily" || summary.limitReason === "monthly")) reason = summary.limitReason;
+  if (summary.limitReached && (summary.limitReason === "daily" || summary.limitReason === "monthly")) reason = summary.limitReason;
   else {
     const windowReason = usageLimitForCost(summary, required);
     if (windowReason) reason = windowReason;
@@ -71,11 +70,9 @@ export function usageBlockedPayload(block: UsageBlock) {
 // turn that cannot be paid for is refused before ElevenLabs or Gemini are hit.
 export const VOICE_PLANNING_ESTIMATE_USD = 0.005;
 
-export function voiceTurnEstimateCredits(includedVoice: boolean): number {
-  const speechUsd = includedVoice
-    ? 0
-    : sttCostUsd(MAX_VOICE_INPUT_MS) + ttsCostUsd(MAX_VOICE_RESPONSE_CHARS);
-  return Math.max(MIN_REQUEST_CREDITS, Math.ceil((VOICE_PLANNING_ESTIMATE_USD + speechUsd) / CREDIT_USD));
+export function voiceTurnEstimateCredits(hasVoiceCredit: boolean): number {
+  const normal = Math.max(MIN_REQUEST_CREDITS, Math.ceil(VOICE_PLANNING_ESTIMATE_USD / CREDIT_USD));
+  return normal + (hasVoiceCredit ? 0 : VOICE_SURCHARGE_CREDITS);
 }
 
 export interface AssistantChargeDecision {
@@ -100,16 +97,18 @@ export function decideAssistantCharge(args: {
   voiceInputUsd?: number; // cloud STT, when the phone could not transcribe
   voiceOutputUsd?: number; // TTS for the spoken reply
 }): AssistantChargeDecision {
-  const includedVoice = args.voiceMode && args.includedVoice;
-  const speechUsd = Math.max(0, args.voiceInputUsd || 0) + Math.max(0, args.voiceOutputUsd || 0);
-  const usageUsd = args.baseUsd + (args.voiceMode && !includedVoice ? speechUsd : 0);
-  const requiredCredits = Math.ceil(usageUsd / CREDIT_USD);
+  const includedVoice = args.voiceMode && (args.summary?.voiceCredits || 0) > 0;
+  // AI Credits continue to use the existing variable model/search calculation.
+  // A Voice Credit waives only the fixed 40-AI-Credit voice surcharge.
+  const usageUsd = args.baseUsd;
+  const normalAiCredits = Math.ceil(usageUsd / CREDIT_USD);
+  const requiredCredits = normalAiCredits + (args.voiceMode && !includedVoice ? VOICE_SURCHARGE_CREDITS : 0);
   const block = usageBlockFor(args.summary, requiredCredits, args.voiceMode);
   return {
     usageUsd,
     requiredCredits,
     includedVoice,
-    consumeIncludedVoice: !block && includedVoice && args.tier !== "free",
+    consumeIncludedVoice: false,
     block
   };
 }

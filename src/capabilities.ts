@@ -16,14 +16,14 @@ export type Capability = {
 export const CAPABILITIES: Capability[] = [
   {
     id: "communication",
-    summary: "draft texts and emails, forward calendar information to contacts or direct addresses, place calls, save contacts, and prepare scheduled messages",
-    examples: "text Mom my next event, email tomorrow's calendar, call Alex, save a phone number, remind me to text someone later",
+    summary: "draft texts and emails, forward calendar information, place calls, look up, save, update, or delete contacts, and prepare scheduled messages",
+    examples: "text Mom my next event, call Alex, look up Pat's email, update a phone number, remind me to text someone later",
     questionPatterns: [/\b(text|message|email|call|phone|contacts?|scheduled messages?)\b/i]
   },
   {
     id: "calendar-reminders",
-    summary: "create, find, update, remove, and forward calendar events and create or search reminders",
-    examples: "add dinner Friday at 7, text Bill my meeting details, move the meeting, remind me when I get home",
+    summary: "create, find, update, remove, and forward calendar events and create, search, complete, reschedule, edit, or delete reminders",
+    examples: "add dinner Friday at 7, move the meeting, remind me when I get home, mark my grocery reminder complete",
     questionPatterns: [/\b(calendar|events?|appointments?|reminders?)\b/i]
   },
   {
@@ -34,9 +34,9 @@ export const CAPABILITIES: Capability[] = [
   },
   {
     id: "device",
-    summary: "open supported apps, control alarms, timers, stopwatches, Apple Music, and HomeKit devices, and identify a song that's playing by listening",
-    examples: "open Spotify, alarm at 7, timer for 10 minutes, play jazz, turn off the kitchen lights, what song is this",
-    questionPatterns: [/\b(open apps?|alarms?|timers?|stopwatches?|music|songs?|shazam|homekit|lights?|locks?|thermostat)\b/i]
+    summary: "open supported apps, control alarms, timers, stopwatches, Apple Music, HomeKit devices, and the iPhone flashlight, report battery status, and identify a song by listening",
+    examples: "open Spotify, alarm at 7, play jazz, turn on the flashlight, check my battery, what song is this",
+    questionPatterns: [/\b(open apps?|alarms?|timers?|stopwatches?|music|songs?|shazam|homekit|lights?|locks?|thermostat|flashlight|torch|battery|charging)\b/i]
   },
   {
     id: "health",
@@ -52,9 +52,9 @@ export const CAPABILITIES: Capability[] = [
   },
   {
     id: "organization",
-    summary: "manage lists, expenses, habits, remembered personal facts, recurring reminders, and day plans",
-    examples: "add milk to groceries, log $20 for gas, mark my medication, remember I'm vegetarian, plan my day",
-    questionPatterns: [/\b(lists?|groceries|expenses?|spending|habits?|remember|memory|plan my day|day plans?)\b/i]
+    summary: "manage lists, expenses, habits, remembered personal facts, recurring reminders, day plans, clipboard text, and text-file exports",
+    examples: "add milk to groceries, log $20 for gas, remember I'm vegetarian, copy that to my clipboard, save that as a text file",
+    questionPatterns: [/\b(lists?|groceries|expenses?|spending|habits?|remember|memory|plan my day|day plans?|clipboard|text files?|exports?)\b/i]
   },
   {
     id: "automation",
@@ -78,7 +78,7 @@ export const CAPABILITIES: Capability[] = [
 
 export function capabilityPromptBlock(): string {
   const lines = CAPABILITIES.map((cap) => `- ${cap.summary}. Examples: ${cap.examples}.`);
-  return `TAKI'S SHIPPING CAPABILITIES (authoritative; these are implemented now):\n${lines.join("\n")}\n- Some capabilities still require device permission, a configured account, supported hardware/app, or user confirmation. State that specific requirement when relevant; never turn it into a blanket claim that Taki cannot do the task.\n- Taki can analyze supported attachments but cannot generate or return photos, videos, audio, downloadable files, or other media. Never claim that it created one.\n- Do not claim any ability outside this list or imply that an action completed unless an executable action is returned.`;
+  return `TAKI'S SHIPPING CAPABILITIES (authoritative; these are implemented now):\n${lines.join("\n")}\n- Some capabilities still require device permission, a configured account, supported hardware/app, or user confirmation. State that specific requirement when relevant; never turn it into a blanket claim that Taki cannot do the task.\n- Taki can analyze supported attachments and export plain-text .txt files. It cannot generate or return photos, videos, audio, or other media. Never claim that it created unsupported media.\n- Do not claim any ability outside this list or imply that an action completed unless an executable action is returned.`;
 }
 
 function isGenericCapabilityQuestion(message: string): boolean {

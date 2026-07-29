@@ -31,17 +31,27 @@ const APP_APPLE_ID = process.env.APP_APPLE_ID ? Number(process.env.APP_APPLE_ID)
 // NOTE: the original *.monthly ids were accidentally used for (deleted) In-App
 // Purchases; Apple permanently reserves product ids even after deletion, so the
 // subscriptions use these `.sub.` ids instead.
+export const APP_STORE_PRODUCT_IDS: Record<Exclude<Tier, "free">, string> = {
+  plus: process.env.IAP_PLUS_PRODUCT_ID || "com.davidwiduba.takiai.sub.plus.monthly",
+  plus_voice: process.env.IAP_PREMIUM_PRODUCT_ID || "com.davidwiduba.takiai.sub.plusvoice.monthly",
+  pro: process.env.IAP_PRO_PRODUCT_ID || "com.davidwiduba.takiai.sub.pro.monthly"
+};
+
 export const PRODUCT_TO_TIER: Record<string, Tier> = {
-  "com.davidwiduba.takiai.sub.plus.monthly": "plus",
-  "com.davidwiduba.takiai.sub.plusvoice.monthly": "plus_voice",
-  "com.davidwiduba.takiai.sub.pro.monthly": "pro"
+  [APP_STORE_PRODUCT_IDS.plus]: "plus",
+  [APP_STORE_PRODUCT_IDS.plus_voice]: "plus_voice",
+  [APP_STORE_PRODUCT_IDS.pro]: "pro",
+  // Preserve receipts from the original customer-facing Plus Voice product.
+  "com.davidwiduba.takiai.sub.plusvoice.monthly": "plus_voice"
 };
 
 export interface TxInfo {
   productId: string;
   transactionId: string;
   originalTransactionId: string;
+  purchaseDate?: number;
   expiresDate?: number;   // epoch ms (auto-renewables)
+  revocationDate?: number;
   environment?: string;   // "Xcode" | "Sandbox" | "Production"
   bundleId?: string;
   tier: Tier;
@@ -102,8 +112,10 @@ function toTxInfo(payload: any): TxInfo | null {
   const transactionId = String(payload.transactionId || "");
   const originalTransactionId = String(payload.originalTransactionId || transactionId);
   const expiresDate = typeof payload.expiresDate === "number" ? payload.expiresDate : undefined;
+  const purchaseDate = typeof payload.purchaseDate === "number" ? payload.purchaseDate : undefined;
+  const revocationDate = typeof payload.revocationDate === "number" ? payload.revocationDate : undefined;
   return {
-    productId, transactionId, originalTransactionId, expiresDate,
+    productId, transactionId, originalTransactionId, purchaseDate, expiresDate, revocationDate,
     environment: payload.environment, bundleId: payload.bundleId, tier,
     periodKey: `${originalTransactionId}:${expiresDate ?? transactionId}`
   };

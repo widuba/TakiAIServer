@@ -1,4 +1,4 @@
-import { generateContent, MAIN_MODEL, PLANNER_MODEL, PLANNER_TIMEOUT_MS, safetyConfig, ServiceError } from "./ai.js";
+import { generateContent, activeTakiModelInfo, MAIN_MODEL, PLANNER_MODEL, PLANNER_TIMEOUT_MS, safetyConfig, ServiceError } from "./ai.js";
 import type {
   AssistantAction,
   AssistantPlan,
@@ -76,6 +76,8 @@ import {
 import { buildCalendarCreateAction, resolveCalendarUpdateDates } from "./validators.js";
 import { personaPromptBlock, GUARDRAILS } from "./persona.js";
 import { capabilityAnswerFor, capabilityPromptBlock } from "./capabilities.js";
+import { productAnswerFor, productKnowledgePromptBlock } from "./productKnowledge.js";
+import { routeEverydayAction } from "./everyday.js";
 import { auditPlannerOutput } from "./plannerAudit.js";
 import { parseTrackCommand, fetchTrackerSnapshot, fetchAssetPrice, extractFlightCode } from "./tracker.js";
 import { looksLikePlanDay, generateDayPlan } from "./dayplan.js";
@@ -186,7 +188,7 @@ export function fastVoiceReply(state: ConversationState): string | null {
 // simple questions.
 export function looksLikePlainVoiceKnowledgeQuestion(state: ConversationState): boolean {
   const m = state.message.trim().toLowerCase();
-  if (!/^(why\b|explain\b|define\b|what (?:is|are|does)\b|how (?:does|do|is|are|can)\b)/.test(m)) return false;
+  if (!/^(?:why\b|explain\b|define\b|describe\b|tell me about\b|who\b|when\b|where\b|which\b|what (?:is|are|was|were|does|did|can|could|would)\b|how (?:does|do|did|is|are|was|were|can|could|would)\b|(?:is|are|was|were|does|did|can|could|would|should)\b)/.test(m)) return false;
   // These terms can describe phone-side actions or personal data. They keep the
   // full planner even when phrased as a question, preserving capability routing.
   return !/\b(calendar|events?|appointments?|reminders?|text|message|email|call|contacts?|maps?|directions?|navigate|get to|weather|location|near me|health|healthkit|steps?|sleep|heart rate|weight|blood pressure|photos?|pictures?|music|songs?|homekit|lights?|locks?|thermostat|alarms?|timers?|stopwatch|apps?|lists?|expenses?|habits?|routines?|automations?|track|alerts?|flight|score|price|stock|crypto|current|latest)\b/.test(m);
@@ -350,6 +352,7 @@ EXPLICIT CORRECTIONS IN THIS CHAT (never repeat these misunderstandings):
 ${state.correctionsText || "(none)"}
 
 ${capabilityPromptBlock()}
+${productKnowledgePromptBlock(state.accountSummary, state.timeZone)}
 
 GENERAL RULES
 - Prefer meaning over literal words.
@@ -469,8 +472,9 @@ PLACES / DIRECTIONS:
 
 LOCAL ACTIONS when enough info exists:
   compose_message, compose_email, calendar_forward, call_phone, calendar_create (explicit date/time),
-  reminder_create, reminder_search, calendar_search, open_app, contact_create,
-  health_query, music_control, home_control, photos_show.
+  reminder_create, reminder_search, reminder_update, reminder_delete, calendar_search, open_app,
+  contact_create, contact_search, contact_update, contact_delete, clipboard_copy, file_export,
+  flashlight_control, device_status, health_query, music_control, home_control, photos_show.
 
 DEVICE ACTIONS — understand ANY phrasing, not just keywords:
 - HEALTH ("how many steps", "am I hitting my move goal", "what's my heart rate",
@@ -484,8 +488,9 @@ DEVICE ACTIONS — understand ANY phrasing, not just keywords:
   temperature | glucose | bloodpressure | sleep. (Body temperature only — NOT the
   weather. "How far to X" is directions, not distance.)
 - MUSIC ("play X", "put on some jazz", "throw on my workout playlist", "pause",
-  "skip this", "next song", "go back", "resume"): intent = "music_control",
-  action.musicAction = play | pause | resume | next | previous, action.musicQuery =
+  "skip this", "next song", "go back", "resume", "restart", "shuffle on/off"):
+  intent = "music_control", action.musicAction = play | pause | resume | next |
+  previous | restart | shuffleon | shuffleoff, action.musicQuery =
   what to play (song/artist/playlist/album/genre/mood), "" for controls.
 - HOME ("turn on the lights", "dim the kitchen", "lock the door", "set it to 72"):
   intent = "home_control", action.homeAction = lightsOn | lightsOff | lock | unlock |
@@ -507,6 +512,20 @@ SAVE A CONTACT ("save/add NAME's number ###", "add a contact NAME email X", "rem
   intent = "contact_create", action.recipientName = the person's name,
   action.recipientPhone = digits if given, action.emailAddress = email if given.
 
+REMINDERS MAINTENANCE:
+- Complete/reopen/reschedule/rename/add notes -> reminder_update. Set reminderQuery to the
+  existing reminder, and only the changed fields: reminderCompleted, dueDate, title, notes.
+- Delete an existing reminder -> reminder_delete with reminderQuery.
+CONTACTS MAINTENANCE:
+- Look up a contact -> contact_search with contactQuery and contactField = phone | email | all.
+- Change a contact -> contact_update with contactQuery and only the new recipientName,
+  recipientPhone, or emailAddress. Delete one -> contact_delete with contactQuery.
+EVERYDAY UTILITIES:
+- Copy literal or previously discussed text -> clipboard_copy with body.
+- Save text as a .txt file -> file_export with body and an optional title filename.
+- Flashlight -> flashlight_control with deviceAction = on | off.
+- Battery/charging status -> device_status.
+
 If a local action is missing required info (recipient, body, title, date/time):
 - intent = "clarify", set needsClarification = true, a specific clarifyingQuestion,
   "missing" = the missing field names, and put what you DO know in "action" (draft).
@@ -523,13 +542,14 @@ Otherwise plain conversation / answerable from transcript -> "answer_only".
 
 ACTION FIELD SCHEMA (include only what applies):
   type, recipientPhone, recipientName, contactQuery, body, calendarQuery, daysAhead, shareKind,
-  title, startDate, endDate, location, notes, reminderQuery, dueDate, emailAddress,
+  title, startDate, endDate, location, notes, reminderQuery, reminderCompleted, dueDate, emailAddress,
   emailSubject, appName, mapsQuery, mapsDestination, recurrence, triggerLocation, triggerOnArrival,
-  metric, musicAction, musicQuery, homeAction, homeTarget, homeValue, photoDays
+  metric, musicAction, musicQuery, homeAction, homeTarget, homeValue, photoDays, contactField, deviceAction
 Allowed action "type": compose_message, compose_email, calendar_forward, call_phone, calendar_create,
-  calendar_update, calendar_delete, calendar_search, reminder_create, reminder_search, open_app,
-  maps_search, maps_directions, calendar_directions, contact_create, health_query, music_control, home_control,
-  photos_show, photos_search
+  calendar_update, calendar_delete, calendar_search, reminder_create, reminder_search, reminder_update,
+  reminder_delete, open_app, maps_search, maps_directions, calendar_directions, contact_create,
+  contact_search, contact_update, contact_delete, clipboard_copy, file_export, flashlight_control,
+  device_status, health_query, music_control, home_control, photos_show, photos_search
 
 Return exactly:
 {
@@ -549,6 +569,11 @@ Return exactly:
 }
 `;
 
+  const selectedModel = activeTakiModelInfo().key;
+  const plannerTimeout = Math.min(
+    PLANNER_TIMEOUT_MS,
+    selectedModel === "taki_2_0_swift" ? 6000 : selectedModel === "taki_2_1" ? 9000 : 12000
+  );
   const result: any = await withTimeout(
     generateContent({
       model: PLANNER_MODEL,
@@ -557,7 +582,7 @@ Return exactly:
       // context resolution and instruction following for ambiguous phrasing.
       config: { temperature: 0, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 }, ...safetyConfig(state.userProfile?.teen) }
     } as any),
-    PLANNER_TIMEOUT_MS,
+    plannerTimeout,
     "Planner"
   );
 
@@ -829,7 +854,10 @@ export function calendarDirectionsQuery(message: string): string | null {
   return query.slice(0, 100);
 }
 
-export async function planAssistantResponse(state: ConversationState): Promise<AssistantPlan> {
+export async function planAssistantResponse(
+  state: ConversationState,
+  onStableVoiceText?: (text: string) => void | Promise<void>
+): Promise<AssistantPlan> {
   if (!state.message.trim()) {
     return answerPlan("What would you like me to do?");
   }
@@ -839,8 +867,25 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
     return answerPlan(instantVoiceReply, { lastIntent: "answer_only" });
   }
 
+  const productAnswer = productAnswerFor(state.message, {
+    account: state.accountSummary,
+    timeZone: state.timeZone,
+    voiceMode: state.voiceMode
+  });
+  if (productAnswer) {
+    return answerPlan(productAnswer, { lastIntent: "answer_only" });
+  }
+
   const sharePlan = await planShareRequest(state);
   if (sharePlan) return sharePlan;
+
+  const everyday = routeEverydayAction(state.message, {
+    timeZone: state.timeZone,
+    previousAnswer: state.priorMemory.lastAnswer || state.transcript.filter((turn) => turn.role === "assistant").at(-1)?.text
+  });
+  if (everyday) {
+    return actionPlan(everyday.spokenText, everyday.action, { lastIntent: everyday.lastIntent });
+  }
 
   const capabilityAnswer = capabilityAnswerFor(state.message);
   if (capabilityAnswer) {
@@ -1693,7 +1738,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
   // of paying for a planner request first. This measured about twice as fast in
   // the live voice path while capability-shaped questions still keep planning.
   if (looksLikePlainVoiceKnowledgeQuestion(state)) {
-    const ga = await getGeneralAnswer(state);
+    const ga = await getGeneralAnswer(state, onStableVoiceText);
     return answerPlan(ga.text, { lastIntent: "answer_only" });
   }
 
@@ -1701,11 +1746,12 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
   try {
     plan = await runPlannerModel(state);
   } catch (error) {
-    // A vendor outage would only repeat in getGeneralAnswer — answer with the
-    // spoken message immediately instead of paying for another failing call.
-    if (error instanceof ServiceError) return answerPlan(error.spoken, { lastIntent: "answer_only" });
+    // Preserve typed vendor failures all the way to the HTTP route. Converting
+    // one into answerPlan makes outage copy look like Taki's answer to the
+    // user's question instead of transport state.
+    if (error instanceof ServiceError) throw error;
     console.error("Planner failed, using general answer:", error);
-    const ga = await getGeneralAnswer(state);
+    const ga = await getGeneralAnswer(state, onStableVoiceText);
     return answerPlan(ga.text);
   }
 
@@ -2234,6 +2280,16 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       }, { lastIntent: "reminder_search" });
     }
 
+    case "reminder_update":
+    case "reminder_delete": {
+      const type = plan.intent;
+      return actionPlan(plan.spokenText || (type === "reminder_delete" ? "I'll delete that reminder." : "I'll update that reminder."), {
+        ...blankAction(type),
+        ...plan.action,
+        type
+      }, { lastIntent: type });
+    }
+
     case "contact_create": {
       const a = plan.action || {};
       const name = String(a.recipientName || a.title || "").trim();
@@ -2256,6 +2312,29 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
         emailAddress: email || null
       };
       return actionPlan(`I'll save ${name} to your contacts.`, action, { lastIntent: "contact_create" });
+    }
+
+    case "contact_search":
+    case "contact_update":
+    case "contact_delete": {
+      const type = plan.intent;
+      return actionPlan(plan.spokenText || "I'll check Contacts.", {
+        ...blankAction(type),
+        ...plan.action,
+        type
+      }, { lastIntent: type });
+    }
+
+    case "clipboard_copy":
+    case "file_export":
+    case "flashlight_control":
+    case "device_status": {
+      const type = plan.intent;
+      return actionPlan(plan.spokenText || "On it.", {
+        ...blankAction(type),
+        ...plan.action,
+        type
+      }, { lastIntent: type });
     }
 
     case "calendar_search": {
@@ -2336,7 +2415,7 @@ export async function planAssistantResponse(state: ConversationState): Promise<A
       if (inline && (state.voiceMode || !wantsRealAnswer(state.message))) {
         return answerPlan(inline, { lastIntent: "answer_only" });
       }
-      const ga = await getGeneralAnswer(state);
+      const ga = await getGeneralAnswer(state, onStableVoiceText);
       return answerPlan(ga.text, { lastIntent: "answer_only" });
     }
   }

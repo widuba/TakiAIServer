@@ -1,29 +1,52 @@
 import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
-import { recordGeminiCall } from "./metering.js";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { recordGeminiCall, recordOpenAICall } from "./metering.js";
+import {
+  generateOpenAIContent,
+  generateOpenAIContentStream,
+  OpenAIHTTPError,
+  UnsupportedOpenAIInputError
+} from "./openaiProvider.js";
 
 dotenv.config();
 
-const apiKey = process.env.GEMINI_API_KEY;
-if (!apiKey) throw new Error("Missing GEMINI_API_KEY in .env");
+const geminiApiKey = String(process.env.GEMINI_API_KEY || "").trim();
+const openAIApiKey = String(process.env.OPENAI_API_KEY || "").trim();
+export type AIProvider = "openai" | "gemini";
+function configuredProvider(): AIProvider {
+  const requested = String(process.env.AI_PROVIDER || "").trim().toLowerCase();
+  if (requested === "openai" || requested === "gemini") return requested;
+  // Adding OPENAI_API_KEY is enough to make OpenAI primary. AI_PROVIDER can
+  // still explicitly pin Gemini during a rollback.
+  return openAIApiKey ? "openai" : "gemini";
+}
+export const ACTIVE_AI_PROVIDER = configuredProvider();
+if (ACTIVE_AI_PROVIDER === "openai" && !openAIApiKey) {
+  throw new Error("Missing OPENAI_API_KEY in the server environment.");
+}
+if (ACTIVE_AI_PROVIDER === "gemini" && !geminiApiKey) {
+  throw new Error("Missing GEMINI_API_KEY in the server environment.");
+}
 
 /**
- * Single shared Gemini client + model constants.
+ * Shared provider clients + model constants.
  *
  * MAIN_MODEL   -> answers / grounded web research (higher quality)
  * PLANNER_MODEL -> structured planning + extraction (fast, JSON mode)
  */
-export const ai = new GoogleGenAI({ apiKey });
-const rawGenerateContent = ai.models.generateContent.bind(ai.models);
+export const ai = geminiApiKey ? new GoogleGenAI({ apiKey: geminiApiKey }) : null;
+const rawGenerateContent = ai?.models.generateContent.bind(ai.models);
+const rawGenerateContentStream = ai?.models.generateContentStream.bind(ai.models);
 
 // What Taki says out loud when a vendor is the problem, not the question. Kept
 // vague on purpose — end users shouldn't hear "billing" or "quota".
-export const AI_UNAVAILABLE_SPOKEN = "Sorry — my service is temporarily unavailable right now. Please try again in a little while.";
-export const VOICE_UNAVAILABLE_SPOKEN = "Sorry — my voice service is temporarily unavailable right now. Please try again in a little while.";
+export const AI_UNAVAILABLE_SPOKEN = "I couldn't reach Taki's answer service just now. Your question wasn't the problem — please try again.";
+export const VOICE_UNAVAILABLE_SPOKEN = "I couldn't generate spoken audio just now. Please try voice again.";
 
 export type ServiceErrorKind = "ai_quota" | "ai_auth" | "ai_unavailable" | "voice_unavailable" | "server";
 
-// A vendor/infra failure (Gemini or ElevenLabs) rather than a bad answer. Thrown
+// A vendor/infra failure (OpenAI, Gemini, or ElevenLabs) rather than a bad answer. Thrown
 // so callers can bail out IMMEDIATELY with a spoken message instead of retrying
 // into the same wall (a depleted key answers a 429 in ~1s; the old fallback
 // chain turned that into a ~minute wait).
@@ -40,50 +63,235 @@ export class ServiceError extends Error {
   }
 }
 
-// Map a raw Gemini/SDK error to a ServiceError, or null if it's an ordinary
+// Map a raw provider/SDK error to a ServiceError, or null if it's an ordinary
 // failure (empty output, a timeout we chose, a parse error) we can still retry.
-export function classifyGeminiError(error: unknown): ServiceError | null {
+export function classifyAIError(error: unknown): ServiceError | null {
   if (error instanceof ServiceError) return error;
   const any = error as any;
   const status = Number(any?.status ?? any?.code ?? any?.response?.status ?? NaN);
   const message = String(any?.message ?? any ?? "").toLowerCase();
-  if (status === 429 || /resource_exhausted|\bquota\b|prepay|rate.?limit|too many requests|\b429\b/.test(message)) {
-    return new ServiceError("ai_quota", AI_UNAVAILABLE_SPOKEN, 429);
+  if (status === 402 || status === 429 || /resource_exhausted|\bquota\b|prepay|rate.?limit|too many requests|\b402\b|\b429\b/.test(message)) {
+    return new ServiceError("ai_quota", AI_UNAVAILABLE_SPOKEN, Number.isFinite(status) ? status : 429);
   }
   if (status === 401 || status === 403 || /api[_ ]?key|permission denied|unauthenticated|unauthorized|\b401\b|\b403\b/.test(message)) {
     return new ServiceError("ai_auth", AI_UNAVAILABLE_SPOKEN, Number.isFinite(status) ? status : undefined);
   }
-  if ((status >= 500 && status < 600) || /unavailable|overloaded|internal error|deadline exceeded|\b503\b|\b500\b/.test(message)) {
+  const explicitProviderOutage =
+    /\b(?:service|server|backend|model)(?:\s+is)?\s+(?:temporarily\s+)?unavailable\b/.test(message)
+    || /\b(?:model|server|service)\s+(?:is\s+)?overloaded\b/.test(message)
+    || /\bdeadline exceeded\b|\b(?:status|code)\s*[:=]?\s*(?:unavailable|503|500)\b|\b503\b|\b500\b/.test(message);
+  if ((status >= 500 && status < 600) || explicitProviderOutage) {
     return new ServiceError("ai_unavailable", AI_UNAVAILABLE_SPOKEN, Number.isFinite(status) ? status : undefined);
   }
   return null;
 }
 
-export async function generateContent(args: any): Promise<any> {
-  // Gemini 3 uses thinking levels rather than allowing thinking to be disabled.
-  // Translate the older zero-budget call sites so they remain fast and valid.
-  let request = args;
-  const model = String(args?.model || "").toLowerCase();
-  if (/gemini-3(?:\.|-)/.test(model) && args?.config?.thinkingConfig?.thinkingBudget === 0) {
-    const thinkingLevel = /3\.1-pro/.test(model) ? "LOW" : "MINIMAL";
-    request = {
-      ...args,
-      config: {
-        ...args.config,
-        thinkingConfig: { ...args.config.thinkingConfig, thinkingBudget: undefined, thinkingLevel }
-      }
+// Backward-compatible export used by existing tests and callers.
+export const classifyGeminiError = classifyAIError;
+
+export type TakiModelKey = "taki_2_0_swift" | "taki_2_1" | "taki_2_1_reasoning";
+
+function takiAnswerModel(key: TakiModelKey): string {
+  if (ACTIVE_AI_PROVIDER === "openai") {
+    if (key === "taki_2_0_swift") return String(process.env.OPENAI_FAST_MODEL || "gpt-5.4-nano").trim();
+    if (key === "taki_2_1_reasoning") return String(process.env.OPENAI_RESEARCH_MODEL || "gpt-5.4-mini").trim();
+    return String(process.env.OPENAI_MODEL || "gpt-5.4-mini").trim();
+  }
+  if (key === "taki_2_0_swift") return "gemini-3.5-flash-lite";
+  if (key === "taki_2_1_reasoning") return "gemini-3.1-pro-preview";
+  return "gemini-3.6-flash";
+}
+
+export const TAKI_MODELS = [
+  {
+    key: "taki_2_0_swift",
+    name: "Taki 2.0 Swift",
+    detail: "Fastest and lowest-credit option, with a higher chance of inaccurate or outdated information",
+    providerModel: takiAnswerModel("taki_2_0_swift")
+  },
+  {
+    key: "taki_2_1",
+    name: "Taki 2.1",
+    detail: "Balanced for speed, credit use, accuracy, and current information",
+    providerModel: takiAnswerModel("taki_2_1")
+  },
+  {
+    key: "taki_2_1_reasoning",
+    name: "Taki 2.1 Reasoning",
+    detail: "Smartest and highest-credit option, with the strongest chance of accurate and up-to-date answers",
+    providerModel: takiAnswerModel("taki_2_1_reasoning")
+  }
+] as const;
+
+export const DEFAULT_TAKI_MODEL: TakiModelKey = "taki_2_1";
+const modelSelectionStorage = new AsyncLocalStorage<TakiModelKey>();
+
+export function normalizeTakiModel(value: unknown): TakiModelKey {
+  const key = String(value || "").trim().toLowerCase();
+  return TAKI_MODELS.some((entry) => entry.key === key) ? key as TakiModelKey : DEFAULT_TAKI_MODEL;
+}
+
+export function takiModelInfo(value: unknown): typeof TAKI_MODELS[number] {
+  const key = normalizeTakiModel(value);
+  return TAKI_MODELS.find((entry) => entry.key === key)!;
+}
+
+export function withTakiModel<T>(value: unknown, fn: () => Promise<T>): Promise<T> {
+  return modelSelectionStorage.run(normalizeTakiModel(value), fn);
+}
+
+export function activeTakiModelInfo(): typeof TAKI_MODELS[number] {
+  return takiModelInfo(modelSelectionStorage.getStore());
+}
+
+// One quick alternate-model attempt handles temporary per-model capacity and
+// rate limits without turning a voice request into a long retry loop.
+export function fallbackModelCandidates(primary: string): string[] {
+  const id = String(primary || "").trim();
+  const production = /^gpt-/i.test(id)
+    ? ["gpt-5.4-mini", "gpt-5.4-nano"]
+    : ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"];
+  return [id, ...production.filter((candidate) => candidate !== id)].filter(Boolean).slice(0, 2);
+}
+
+export function modelForRequest(args: any): string {
+  const selected = modelSelectionStorage.getStore();
+  if (!selected) return String(args?.model || MAIN_MODEL);
+  // Swift genuinely uses the lowest-latency model for planning too. The planner
+  // audit and final validators still reject invented or unsafe action details.
+  // Balanced and Reasoning keep the more dependable dedicated action planner.
+  if (args?.config?.responseMimeType === "application/json") {
+    return selected === "taki_2_0_swift" ? takiModelInfo(selected).providerModel : PLANNER_MODEL;
+  }
+  return takiModelInfo(selected).providerModel;
+}
+
+function prepareGeminiRequest(args: any, selectedModel: string): any {
+  let config = { ...(args?.config || {}) };
+  // Current 3.5 Lite and 3.6 models choose their own sampling settings. Avoid
+  // sending legacy tuning fields that newer endpoints may reject.
+  if (/gemini-3\.(?:5-flash-lite|6-flash)/i.test(selectedModel)) {
+    const { temperature: _temperature, topP: _topP, topK: _topK, ...supported } = config;
+    config = supported;
+  }
+  if (/gemini-3(?:\.|-)/i.test(selectedModel) && config?.thinkingConfig?.thinkingBudget === 0) {
+    const thinkingLevel = /3\.1-pro/i.test(selectedModel) ? "LOW" : "MINIMAL";
+    config = {
+      ...config,
+      thinkingConfig: { ...config.thinkingConfig, thinkingBudget: undefined, thinkingLevel }
     };
   }
-  let response;
-  try {
-    response = await rawGenerateContent(request);
-  } catch (error) {
-    // Surface quota/auth/outage as a typed error so the caller fails fast and
-    // speaks a clear message instead of retrying into the same failure.
-    throw classifyGeminiError(error) ?? error;
+  return { ...args, model: selectedModel, config };
+}
+
+function prepareOpenAIRequest(args: any, selectedModel: string): any {
+  const selected = modelSelectionStorage.getStore();
+  const isPlanner = args?.config?.responseMimeType === "application/json";
+  const openAIReasoningEffort =
+    selected === "taki_2_1_reasoning" && !isPlanner
+      ? "medium"
+      : selected === "taki_2_1" || isPlanner
+        ? "low"
+        : "none";
+  return {
+    ...args,
+    model: selectedModel,
+    config: { ...(args?.config || {}), openAIReasoningEffort }
+  };
+}
+
+type ProviderCandidate = { provider: AIProvider; model: string };
+
+function geminiFallbackFor(openAIModel: string): string {
+  const id = String(openAIModel || "").toLowerCase();
+  if (/luna|nano/.test(id)) return "gemini-3.5-flash-lite";
+  if (/sol|pro/.test(id)) return "gemini-3.1-pro-preview";
+  return "gemini-3.6-flash";
+}
+
+function providerCandidates(primary: string): ProviderCandidate[] {
+  if (/^gpt-/i.test(primary)) {
+    const candidates: ProviderCandidate[] = [{ provider: "openai", model: primary }];
+    if (geminiApiKey) candidates.push({ provider: "gemini", model: geminiFallbackFor(primary) });
+    else {
+      const alternate = fallbackModelCandidates(primary)[1];
+      if (alternate) candidates.push({ provider: "openai", model: alternate });
+    }
+    return candidates;
   }
-  recordGeminiCall(request, response);
-  return response;
+  return fallbackModelCandidates(primary).map((model) => ({ provider: "gemini", model }));
+}
+
+function canTryNextProvider(error: unknown, serviceError: ServiceError | null): boolean {
+  if (error instanceof UnsupportedOpenAIInputError || error instanceof OpenAIHTTPError) return true;
+  return serviceError?.kind === "ai_quota"
+    || serviceError?.kind === "ai_auth"
+    || serviceError?.kind === "ai_unavailable";
+}
+
+export async function generateContent(args: any): Promise<any> {
+  const candidates = providerCandidates(modelForRequest(args));
+  let lastError: unknown;
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index];
+    const request = candidate.provider === "gemini"
+      ? prepareGeminiRequest(args, candidate.model)
+      : prepareOpenAIRequest(args, candidate.model);
+    try {
+      const response = candidate.provider === "openai"
+        ? await generateOpenAIContent(request, candidate.model, openAIApiKey)
+        : await rawGenerateContent!(request);
+      if (candidate.provider === "openai") recordOpenAICall(request, response);
+      else recordGeminiCall(request, response);
+      return response;
+    } catch (error) {
+      const serviceError = classifyAIError(error);
+      lastError = serviceError ?? error;
+      const canFailOver = candidate.provider === "openai" || canTryNextProvider(error, serviceError);
+      if (!canFailOver || index === candidates.length - 1) throw lastError;
+      console.warn(`Taki ${candidate.provider} model ${candidate.model} unavailable; trying ${candidates[index + 1].provider}.`);
+    }
+  }
+  throw lastError;
+}
+
+// Streaming counterpart used by voice answers. It preserves model selection,
+// metering, and failover, but only fails over before any text has been emitted
+// so a user can never hear the beginning of one model's answer and the ending
+// of another model's answer.
+export async function* generateContentStream(args: any): AsyncGenerator<any> {
+  const candidates = providerCandidates(modelForRequest(args));
+  let lastError: unknown;
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index];
+    const request = candidate.provider === "gemini"
+      ? prepareGeminiRequest(args, candidate.model)
+      : prepareOpenAIRequest(args, candidate.model);
+    let emitted = false;
+    let lastResponse: any;
+    try {
+      const stream = candidate.provider === "openai"
+        ? generateOpenAIContentStream(request, candidate.model, openAIApiKey)
+        : await rawGenerateContentStream!(request);
+      for await (const response of stream) {
+        if (String(response?.text || "")) emitted = true;
+        lastResponse = response;
+        yield response;
+      }
+      if (lastResponse) {
+        if (candidate.provider === "openai") recordOpenAICall(request, lastResponse);
+        else recordGeminiCall(request, lastResponse);
+      }
+      return;
+    } catch (error) {
+      const serviceError = classifyAIError(error);
+      lastError = serviceError ?? error;
+      const canFailOver = !emitted && (candidate.provider === "openai" || canTryNextProvider(error, serviceError));
+      if (!canFailOver || index === candidates.length - 1) throw lastError;
+      console.warn(`Taki streaming ${candidate.provider} model ${candidate.model} unavailable; trying ${candidates[index + 1].provider}.`);
+    }
+  }
+  throw lastError;
 }
 
 export const PORT = Number(process.env.PORT || 8787);
@@ -104,15 +312,23 @@ function currentModel(configured: string | undefined, fallback: string): string 
  *                      it dropped recipients ("text Chris" -> "who?"), so flash
  *                      is the fastest model that still routes correctly.
  *   MAIN_MODEL      -> balanced model, for general answers + research extraction.
- *   RESEARCH_MODEL  -> most accurate model + Google grounding, for current/
+ *   RESEARCH_MODEL  -> most accurate model + web grounding, for current/
  *                      changeable facts (scores, prices, schedules, news).
  */
-export const PLANNER_MODEL = currentModel(process.env.GEMINI_PLANNER_MODEL, "gemini-3.5-flash");
-export const MAIN_MODEL = currentModel(process.env.GEMINI_MODEL, "gemini-3.5-flash");
-export const RESEARCH_MODEL = currentModel(process.env.GEMINI_RESEARCH_MODEL, "gemini-3.1-pro-preview");
+export const PLANNER_MODEL = ACTIVE_AI_PROVIDER === "openai"
+  ? String(process.env.OPENAI_PLANNER_MODEL || "gpt-5.4-mini").trim()
+  : currentModel(process.env.GEMINI_PLANNER_MODEL, "gemini-3.6-flash");
+export const MAIN_MODEL = ACTIVE_AI_PROVIDER === "openai"
+  ? String(process.env.OPENAI_MODEL || "gpt-5.4-mini").trim()
+  : currentModel(process.env.GEMINI_MODEL, "gemini-3.6-flash");
+export const RESEARCH_MODEL = ACTIVE_AI_PROVIDER === "openai"
+  ? String(process.env.OPENAI_RESEARCH_MODEL || "gpt-5.4-mini").trim()
+  : currentModel(process.env.GEMINI_RESEARCH_MODEL, "gemini-3.1-pro-preview");
 // FAST_MODEL answers easy, static knowledge questions (no routing/extraction —
 // that's where flash-lite failed as a planner; as a plain answerer it's fine).
-export const FAST_MODEL = currentModel(process.env.GEMINI_FAST_MODEL, "gemini-3.5-flash-lite");
+export const FAST_MODEL = ACTIVE_AI_PROVIDER === "openai"
+  ? String(process.env.OPENAI_FAST_MODEL || "gpt-5.4-nano").trim()
+  : currentModel(process.env.GEMINI_FAST_MODEL, "gemini-3.5-flash-lite");
 
 // Timeouts (ms), env-overridable. The planner uses minimal thinking for quick
 // routing. Grounded research on the Pro model gets a longer budget.
@@ -124,7 +340,7 @@ export const LIST_RESEARCH_TIMEOUT_MS = Number(process.env.LIST_RESEARCH_TIMEOUT
 export const TIME_ZONE = process.env.ASSISTANT_TIMEZONE || "America/New_York";
 
 /* ---- Teen Mode (ages 13-17) safety -------------------------------------- *
- * Hard Gemini content filters for minors. Harassment / hate / sexual are
+ * Hard Gemini content filters for minors when Gemini is active. Harassment / hate / sexual are
  * blocked strictly; dangerous content is BLOCK_MEDIUM so factual news about
  * real (dangerous) events still gets through — the "no graphic detail" nuance
  * is handled by the prompt. Spread via safetyConfig() into a call's config.

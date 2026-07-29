@@ -1,6 +1,7 @@
-import { generateContent, FAST_MODEL, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, LIST_RESEARCH_TIMEOUT_MS, TIME_ZONE, safetyConfig, ServiceError } from "./ai.js";
+import { generateContent, generateContentStream, activeTakiModelInfo, FAST_MODEL, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, LIST_RESEARCH_TIMEOUT_MS, TIME_ZONE, safetyConfig, ServiceError } from "./ai.js";
 import { personaPromptBlock, characterDirective, GUARDRAILS } from "./persona.js";
 import { capabilityPromptBlock } from "./capabilities.js";
+import { productKnowledgePromptBlock } from "./productKnowledge.js";
 import type { UserPersona } from "./persona.js";
 import { isoFromYmdTime, addMinutesToIsoLocal, addDaysToYmd, ymdInTimeZone, extractJsonObject, VOICE_MAX_CHARS, briefForVoice } from "./util.js";
 import { extractFlightCode, hasExplicitFinanceCue, hasProductPriceCue } from "./entityClassifier.js";
@@ -1444,13 +1445,15 @@ export function parseMusicCommand(message: string): { action: string; query: str
       /^it\s+(by ear|cool|safe|smart|straight|by the book|forward|off)\b/.test(obj) ||
       /^(hardball|dumb|coy|possum|dead|hooky|favou?rites?|nice|along|house|doctor|god|the (field|fool|victim|blame|odds)|devil'?s advocate|hard to get|with fire|mind games?|games with)\b/.test(obj);
     if (!nonMusic) {
+      if (/^(?:(?:some|my|the)\s+)?(?:apple\s+)?music(?:\s+please)?$/.test(obj)) {
+        return { action: "play", query: "" };
+      }
       // Keep the query close to what they said (so "goat songs" / "all falls down"
       // match); only trim framing words.
       const q = obj
         .replace(/\bon apple music\b/g, "")
         .replace(/\bplease\b/g, "")
         .replace(/^(some|my|the|a|an)\s+/, "")
-        .replace(/\b(playlist|album)$/g, "")
         .replace(/[?.!]/g, " ")
         .replace(/\s+/g, " ")
         .trim();
@@ -2215,10 +2218,10 @@ export async function getStrictWebAnswer(
     : "";
 
   const factPrompt = `${GUARDRAILS}
-You are Taki AI, a daily-life phone assistant. Answer like a Google AI Overview:
+You are Taki AI, a daily-life phone assistant. Answer like a concise web-grounded overview:
 direct, current, and concise.
 
-Use live Google Search results (do not rely on memory for current facts).
+Use live web search results (do not rely on memory for current facts).
 ${persona}
 Rules:${tzRule}
 - Answer the EXACT question asked, and nothing more. Lead with the direct answer.
@@ -2238,7 +2241,7 @@ ${message}
   // Prediction mode: it is correct (and ChatGPT-like) to answer with live odds,
   // form, and expert consensus, clearly framed as a prediction.
   const predictionPrompt = `
-You are Taki AI, a daily-life phone assistant with live Google Search.
+You are Taki AI, a daily-life phone assistant with live web search.
 
 The user is asking for a PREDICTION or expectation (who is favored / who will win /
 odds / chances), not a settled fact.
@@ -2654,7 +2657,10 @@ export function eventQueryFromCalendarMessage(message: string) {
 
 /* ---- General conversational answer -------------------------------------- */
 
-export async function getGeneralAnswer(state: ConversationState): Promise<{ text: string }> {
+export async function getGeneralAnswer(
+  state: ConversationState,
+  onStableVoiceText?: (text: string) => void | Promise<void>
+): Promise<{ text: string }> {
   const memoryText = state.fullTranscriptText
     ? `
 
@@ -2684,12 +2690,14 @@ ${personaPromptBlock(state.userProfile)}
 Current date & time (the user's LOCAL time — use THIS for "today"/"tomorrow"/day-of-week): ${nowInTimeZone(state.timeZone)}.
 Any date/time you mention must be in the user's LOCAL time (${state.timeZone}) — never another timezone.
 ${capabilityPromptBlock()}
+${productKnowledgePromptBlock(state.accountSummary, state.timeZone)}
 ${voiceBlock}
 How to answer:
 - BE CONCISE. Answer the exact question and nothing more. Follow the LENGTH rule in the personality above (balanced ≈ 1-3 sentences). Lead with the answer; no preamble ("Great question", "Of course", "Sure!"), no restating the question, no wrap-up summary.
 - Do NOT volunteer extra background, history, caveats, alternatives, or lists unless the user explicitly asked for them. If they ask "what" give the fact; only explain "why/how" when asked.
 - Still be accurate and complete enough to fully satisfy the question — concise, not vague or partial.
-- For anything recent, time-sensitive, or that you're unsure of, USE Google Search and rely on the results — never guess at current facts or make things up. If you can't find it, say so plainly.
+- For anything recent, time-sensitive, or that you're unsure of, USE web search and rely on the results — never guess at current facts or make things up. If you can't find it, say so plainly.
+- If the question depends on private, visual, physical, or personal information that is not in the conversation, an attachment, device data, or a supported tool, say "I don't have enough information to know that." Briefly say what the user could share to make it answerable. Never call an unanswerable question a service outage.
 - Resolve "it", "that", "there", names, dates, and elliptical follow-ups from RECENT CONVERSATION FOCUS and the conversation history. If more than one interpretation remains plausible, ask one precise question instead of choosing.
 - Never say Taki cannot perform a listed shipping capability. Explain the exact permission, account, supported-device, or confirmation requirement when one applies. Never claim an unlisted capability.
 - Plain text only — NO markdown: no **bold**/*asterisks*, no #headers, no JSON. Plain numbered steps ("1. ...") are fine only if a list was requested. Never say "as an AI".
@@ -2710,43 +2718,70 @@ ${memoryText}
     return state.voiceMode && t ? briefForVoice(t) : t;
   };
 
-  // Three speed tiers. Live/current questions get the strongest research model
-  // with grounding (text chat). Easy static questions get the FASTEST model with
-  // minimal thinking and no search tool — declaring search invites the model to
-  // run it, which is the main latency on questions that never needed it. Search
-  // stays available on the middle tier so uncertain facts can still ground;
-  // metering charges it only when grounding metadata confirms it actually ran.
+  // Three speed tiers. Search is offered only for a genuinely current question;
+  // attaching it to every substantive prompt made even timeless answers wait on
+  // tool selection. Swift intentionally skips grounding for maximum speed (its
+  // UI already explains the freshness tradeoff); Balanced and Reasoning ground
+  // current facts while keeping timeless answers on a single model request.
   const isLive = looksLikeLiveInfoQuestion(state.message) || looksLikeFreshFactQuestion(state.message);
   // A short question is "easy" only if it's genuinely conversational/subjective.
   // Consequential, objective decisions (purchases, products, money) escalate to
   // the informational model even when phrased briefly.
   const isEasy = !isLive && looksLikeEasyQuestion(state.message) && !looksLikeSubstantiveQuestion(state.message);
+  const selectedModel = activeTakiModelInfo();
+  const allowSearch = isLive && selectedModel.key !== "taki_2_0_swift";
   const primaryModel = isLive && !state.voiceMode ? RESEARCH_MODEL : isEasy ? FAST_MODEL : MAIN_MODEL;
   const primaryConfig: any = {
-    ...(isEasy ? {} : { tools: [{ googleSearch: {} }] }),
+    ...(allowSearch ? { tools: [{ googleSearch: {} }] } : {}),
     thinkingConfig: isEasy || state.voiceMode ? { thinkingLevel: "MINIMAL" } : { thinkingLevel: "LOW" },
+    maxOutputTokens: state.voiceMode ? 160 : selectedModel.key === "taki_2_0_swift" ? 480 : 768,
     ...safetyConfig(state.userProfile?.teen)
   };
 
+  let progressiveTextStarted = false;
   try {
-    const response: any = await withTimeout(
-      generateContent({
+    let generatedText = "";
+    if (state.voiceMode && onStableVoiceText) {
+      const stream = generateContentStream({
         model: primaryModel,
         contents: prompt,
         config: primaryConfig
-      } as any),
-      RESEARCH_TIMEOUT_MS,
-      "General answer"
-    );
-    const text = stripMarkdown(String(response.text || "").trim());
+      } as any);
+      for await (const chunk of stream) {
+        generatedText += String(chunk?.text || "");
+        if (!progressiveTextStarted) {
+          const clean = stripMarkdown(generatedText).replace(/\s+/g, " ").trim();
+          // A complete first phrase is safe to speak while the model finishes.
+          // Do not stream a huge run-on sentence that briefForVoice may rewrite.
+          const sentence = clean.match(/^(.{12,210}?[.!?])(?:\s|$)/)?.[1]?.trim();
+          if (sentence) {
+            progressiveTextStarted = true;
+            await onStableVoiceText(sentence);
+          }
+        }
+      }
+    } else {
+      const response: any = await withTimeout(
+        generateContent({
+          model: primaryModel,
+          contents: prompt,
+          config: primaryConfig
+        } as any),
+        RESEARCH_TIMEOUT_MS,
+        "General answer"
+      );
+      generatedText = String(response.text || "");
+    }
+    const text = stripMarkdown(generatedText.trim());
     if (text) {
       return { text: cap(text) };
     }
     throw new Error("empty");
   } catch (error) {
-    // Vendor outage (quota/auth/down): the fallback model would hit the same
-    // wall, so skip it and speak the clear message right away.
-    if (error instanceof ServiceError) return { text: cap(error.spoken) };
+    if (progressiveTextStarted) throw error;
+    // Preserve typed outages for the route instead of turning infrastructure
+    // state into the conversational answer.
+    if (error instanceof ServiceError) throw error;
     console.error("General answer (primary) failed, falling back to flash:", error);
     // Graceful degrade so we always reply, even if the strong model times out.
     try {
@@ -2758,14 +2793,15 @@ ${memoryText}
       const fb = cap(stripMarkdown(String(r2.text || "").trim()));
       if (fb) return { text: fb };
       return { text: "I'm not sure how to answer that — can you say a bit more?" };
-    } catch {
+    } catch (fallbackError) {
+      if (fallbackError instanceof ServiceError) throw fallbackError;
       return { text: "I had trouble answering that — try me again?" };
     }
   }
 }
 
 // Vision: answer a question about a photo (base64 JPEG/PNG) the user took.
-// Gemini is multimodal, so we pass the image + the question as parts.
+// The provider adapter translates the image + question parts to its multimodal API.
 export async function answerAboutImage(
   base64: string,
   mimeType: string,
@@ -2879,7 +2915,7 @@ export async function answerAboutAttachments(
         parts.push({ inlineData: { mimeType: mime, data: attachment.base64 } });
         parts.push({ text: `The preceding attachment is named ${name}.` });
       } else {
-        parts.push({ text: `The user attached ${name}, but its ${mime} format is not readable by the current Gemini attachment input. Say that clearly if the question depends on its contents.` });
+        parts.push({ text: `The user attached ${name}, but its ${mime} format is not readable by the current attachment input. Say that clearly if the question depends on its contents.` });
       }
     }
   }
@@ -2891,7 +2927,7 @@ ${tz ? `The user's local time is ${nowInTimeZone(tz)}.\n` : ""}Question: "${q}"
 
 - Lead with the answer and distinguish source facts from your inference.
 - Never guess about content you cannot access. State the exact limitation.
-- You can inspect supported inputs, but you cannot generate or return images, videos, audio, downloadable files, or other media.
+- You can inspect supported inputs and export plain-text .txt files through the device action. You cannot generate or return images, videos, audio, or other media.
 - Plain text only. Do not claim that an attachment or generated file was created.
 - Match the configured personality without sacrificing accuracy.` });
 

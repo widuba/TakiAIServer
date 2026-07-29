@@ -30,6 +30,12 @@ export interface UsageAnalytics {
   sessions: number;
   totalSessionSeconds: number;
   recentSessions: { at: number; durationSeconds: number; campaign?: string }[];
+  billingEvents: BillingEvent[];
+}
+export interface BillingEvent {
+  at: number;
+  name: string;
+  properties: Record<string, string | number | boolean | null>;
 }
 export interface EngagementPreferences {
   interests: string[];
@@ -65,7 +71,7 @@ async function loadUser(identity: string): Promise<UserRecord> {
   const u = await storeGet<UserRecord>(uKey(identity), {
     identity, firstSeenAt: 0, lastSeenAt: 0, requestCount: 0, creditsUsed: 0,
     tier: "free", tierHistory: [], ips: [], revenueUsd: 0, purchases: [], activeDays: [],
-    analytics: { textQuestions: 0, voiceQuestions: 0, textCostUsd: 0, voiceCostUsd: 0, featureUsage: {}, recentQuestions: [], sessions: 0, totalSessionSeconds: 0, recentSessions: [] },
+    analytics: { textQuestions: 0, voiceQuestions: 0, textCostUsd: 0, voiceCostUsd: 0, featureUsage: {}, recentQuestions: [], sessions: 0, totalSessionSeconds: 0, recentSessions: [], billingEvents: [] },
     engagement: { interests: [], pushEnabled: false, emailEnabled: false, updatedAt: 0 }
   });
   u.identity = identity;
@@ -74,7 +80,7 @@ async function loadUser(identity: string): Promise<UserRecord> {
   if (!Array.isArray(u.purchases)) u.purchases = [];
   if (!Array.isArray(u.activeDays)) u.activeDays = [];
   if (!u.analytics || typeof u.analytics !== "object") {
-    u.analytics = { textQuestions: 0, voiceQuestions: 0, textCostUsd: 0, voiceCostUsd: 0, featureUsage: {}, recentQuestions: [], sessions: 0, totalSessionSeconds: 0, recentSessions: [] };
+    u.analytics = { textQuestions: 0, voiceQuestions: 0, textCostUsd: 0, voiceCostUsd: 0, featureUsage: {}, recentQuestions: [], sessions: 0, totalSessionSeconds: 0, recentSessions: [], billingEvents: [] };
   }
   u.analytics.textQuestions = Number(u.analytics.textQuestions || 0);
   u.analytics.voiceQuestions = Number(u.analytics.voiceQuestions || 0);
@@ -85,6 +91,7 @@ async function loadUser(identity: string): Promise<UserRecord> {
   u.analytics.sessions = Number(u.analytics.sessions || 0);
   u.analytics.totalSessionSeconds = Number(u.analytics.totalSessionSeconds || 0);
   if (!Array.isArray(u.analytics.recentSessions)) u.analytics.recentSessions = [];
+  if (!Array.isArray(u.analytics.billingEvents)) u.analytics.billingEvents = [];
   if (!u.engagement || typeof u.engagement !== "object") {
     u.engagement = { interests: [], pushEnabled: false, emailEnabled: false, updatedAt: 0 };
   }
@@ -139,6 +146,27 @@ export async function noteUser(identity: string, ip: string, ua: string): Promis
 export async function noteSpend(identity: string, credits: number): Promise<void> {
   if (!identity || !(credits > 0)) return;
   try { await withUser(identity, async (u) => { u.creditsUsed += credits; await saveUser(u); }); } catch (e) { console.error("noteSpend:", e); }
+}
+
+// Billing telemetry deliberately accepts only scalar metadata. Never attach
+// prompts, transcripts, contacts, chat titles, or other user content here.
+export async function noteBillingEvent(
+  identity: string,
+  name: string,
+  properties: Record<string, string | number | boolean | null | undefined> = {}
+): Promise<void> {
+  if (!identity || !name) return;
+  const safe: BillingEvent["properties"] = {};
+  for (const [key, value] of Object.entries(properties).slice(0, 20)) {
+    if (value === undefined) continue;
+    if (["string", "number", "boolean"].includes(typeof value) || value === null) safe[key.slice(0, 50)] = value as any;
+  }
+  try { await withUser(identity, async (u) => {
+    u.analytics.billingEvents.push({ at: Date.now(), name: name.replace(/[^a-z0-9_]/gi, "_").slice(0, 80), properties: safe });
+    u.analytics.billingEvents = u.analytics.billingEvents.slice(-250);
+    await saveUser(u);
+    await addToIndex(identity);
+  }); } catch (e) { console.error("noteBillingEvent:", e); }
 }
 
 export async function noteTier(identity: string, tier: string, source: string): Promise<void> {

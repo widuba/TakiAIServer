@@ -8,10 +8,10 @@ import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
 import { finalizeResponse, resolveCalendarUpdateDates, validateAction } from "../src/validators.js";
 import { briefForVoice, VOICE_MAX_CHARS } from "../src/util.js";
-import { formatMathNumber, parsePackageTracking, youtubeVideoInputURL } from "../src/tools.js";
+import { formatMathNumber, parseMusicCommand, parsePackageTracking, youtubeVideoInputURL } from "../src/tools.js";
 import { usageLimitsFor } from "../src/credits.js";
 import { subscriptionMergeDecision } from "../src/iap.js";
-import { billableAudioDurationMs, normalizeTextForSpeech, speechCharacterCount, stabilityForVariability, STT_MODEL, TTS_MODEL } from "../src/voice.js";
+import { billableAudioDurationMs, normalizeSpeechKeyterms, normalizeTextForSpeech, shouldAskForVoiceRepeat, speechCharacterCount, splitTextForProgressiveSpeech, stabilityForVariability, STT_MODEL, TTS_MODEL, VOICE_REPEAT_PROMPT } from "../src/voice.js";
 import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
@@ -20,6 +20,7 @@ import { looksLikeEasyQuestion, looksLikeSubstantiveQuestion, looksLikeFlightQue
 import { parseUserPersona, personaPromptBlock } from "../src/persona.js";
 import { normalizeChatTitle } from "../src/chatTitle.js";
 import { currencyConversionSource } from "../src/conversions.js";
+import { isProductKnowledgeQuestion, productAnswerFor, productKnowledgePromptBlock } from "../src/productKnowledge.js";
 
 function stateFor(message: string, turns: { role: "user" | "assistant"; text: string }[] = []) {
   return buildConversationState(message, JSON.stringify({ chatMessages: turns }), undefined, "America/New_York");
@@ -73,6 +74,58 @@ test("capability questions use the shipping contract but concrete commands keep 
   assert.match(capabilityAnswerFor("What can Taki do?") || "", /HealthKit/);
   assert.equal(capabilityAnswerFor("Can you call Mom?"), null);
   assert.equal(capabilityAnswerFor("Can you set an alarm for 7?"), null);
+});
+
+test("Taki knows its authoritative plans, credit rules, and live account", async () => {
+  const pricing = productAnswerFor("How much does Taki cost?") || "";
+  assert.match(pricing, /Plus is \$9\.99/);
+  assert.match(pricing, /Premium is \$14\.99/);
+  assert.match(pricing, /Pro is \$24\.99/);
+  assert.match(pricing, /4,000 AI Credits and 50 Voice Credits/);
+  assert.match(pricing, /6,000 AI Credits and 300 Voice Credits/);
+  assert.match(pricing, /12,000 AI Credits and 600 Voice Credits/);
+
+  const voice = productAnswerFor("How do Voice Credits work?") || "";
+  assert.match(voice, /normal variable AI Credits/);
+  assert.match(voice, /plus 40 AI Credits/);
+  assert.match(productAnswerFor("Do my credits roll over?") || "", /expire 90 days/);
+  assert.match(productAnswerFor("What happens if I cancel my subscription?") || "", /keeps the paid tier and balances through the current period/);
+
+  const account = {
+    tier: "plus_voice",
+    balance: 3210,
+    aiCredits: 3210,
+    voiceCredits: 287,
+    subscriptionStatus: "active",
+    billingPeriodEnd: Date.UTC(2026, 7, 15, 16),
+    daily: { used: 1, limit: 300, resetsAt: 0, percent: 1 },
+    monthly: { used: 1, limit: 6000, resetsAt: 0, percent: 1 }
+  } as any;
+  const current = productAnswerFor("What plan am I on?", { account, timeZone: "America/New_York" }) || "";
+  assert.match(current, /Premium/);
+  assert.match(current, /3,210 AI Credits/);
+  assert.match(current, /287 Voice Credits/);
+  assert.match(current, /August 15, 2026/);
+
+  const state = stateFor("How much are your subscriptions?");
+  const planned = await planAssistantResponse(state);
+  assert.equal(planned.action, null);
+  assert.match(planned.spokenText, /\$9\.99/);
+});
+
+test("product self-knowledge is broad without hijacking ordinary plans and prices", () => {
+  for (const message of ["What plan am I on?", "Explain AI Credits", "Are you free?", "When does my subscription renew?", "What Taki model am I using?"]) {
+    assert.equal(isProductKnowledgeQuestion(message), true, message);
+  }
+  for (const message of ["Plan my day", "What is Apple's stock price?", "How much does an iPhone cost?"]) {
+    assert.equal(isProductKnowledgeQuestion(message), false, message);
+  }
+  const prompt = productKnowledgePromptBlock();
+  assert.match(prompt, /authoritative/);
+  assert.match(prompt, /Premium is \$14\.99/);
+  assert.match(prompt, /do not roll over/);
+  assert.match(prompt, /Taki 2\.1 Reasoning/);
+  assert.match(productAnswerFor("What Taki model am I using?") || "", /You're using Taki 2\.1/);
 });
 
 test("low-confidence executable model plans are clarified instead of executed", () => {
@@ -244,6 +297,44 @@ test("shipping actions have deterministic missing-detail checks", () => {
   }
 });
 
+test("ten everyday additions route to executable device actions", async () => {
+  const cases: Array<[string, string, (action: ReturnType<typeof blankAction>) => void]> = [
+    ["Complete my reminder to buy milk", "reminder_update", (action) => assert.equal(action.reminderCompleted, true)],
+    ["Reschedule my reminder to call Mom to tomorrow at 3 PM", "reminder_update", (action) => assert.ok(action.dueDate)],
+    ["Delete my buy milk reminder", "reminder_delete", (action) => assert.match(action.reminderQuery || "", /buy milk/i)],
+    ["What's Chris's phone number?", "contact_search", (action) => assert.equal(action.contactField, "phone")],
+    ["Change Chris's phone number to 404-555-0199", "contact_update", (action) => assert.equal(action.recipientPhone, "404-555-0199")],
+    ["Delete Chris from my contacts", "contact_delete", (action) => assert.equal(action.contactQuery, "Chris")],
+    ["Copy that to my clipboard", "clipboard_copy", (action) => assert.equal(action.body, "The trail closes at sunset.")],
+    ["Save that as a text file called Trail Notes", "file_export", (action) => assert.equal(action.title, "Trail Notes")],
+    ["Turn my flashlight on", "flashlight_control", (action) => assert.equal(action.deviceAction, "on")],
+    ["What's my battery level?", "device_status", () => undefined]
+  ];
+  const prior = [{ role: "assistant" as const, text: "The trail closes at sunset." }];
+  for (const [message, expectedType, verify] of cases) {
+    const result = await planAssistantResponse(stateFor(message, prior));
+    assert.equal(result.action?.type, expectedType, message);
+    verify(result.action!);
+    assert.equal(validateAction(result.action), null, message);
+  }
+});
+
+test("new mutating actions reject missing targets and invalid flashlight values", () => {
+  for (const [type, expected] of [
+    ["reminder_update", /Which reminder/],
+    ["reminder_delete", /Which reminder/],
+    ["contact_search", /Which contact/],
+    ["contact_update", /Which contact/],
+    ["contact_delete", /Which contact/],
+    ["clipboard_copy", /What text/],
+    ["file_export", /What text/],
+    ["flashlight_control", /on or off/]
+  ] as const) {
+    assert.match(validateAction(blankAction(type)) || "", expected, type);
+  }
+  assert.equal(validateAction(blankAction("device_status")), null);
+});
+
 test("calendar forwarding accepts grounded contacts and direct addresses", () => {
   const messageAction = blankAction("calendar_forward");
   messageAction.shareKind = "message";
@@ -286,6 +377,36 @@ test("voice uses low-latency Flash v2.5 with current transcription", () => {
   assert.equal(billableAudioDurationMs(Buffer.alloc(4_000).toString("base64")), 1_000);
   assert.equal(billableAudioDurationMs(Buffer.alloc(4_000).toString("base64"), 1_200), 1_200);
   assert.equal(billableAudioDurationMs(Buffer.alloc(4_000).toString("base64"), 60_000), 60_000);
+});
+
+test("voice keyterms preserve uncommon names and reject invalid provider input", () => {
+  assert.deepEqual(
+    normalizeSpeechKeyterms(["Amicalola", "Dyckert", "amicalola", "  Blue Ridge  ", "bad<term", "six word phrases are not accepted here"]),
+    ["Amicalola", "Dyckert", "Blue Ridge"]
+  );
+});
+
+test("voice recognition misses get an immediate repeat prompt without rejecting names", () => {
+  assert.equal(VOICE_REPEAT_PROMPT, "Please repeat that.");
+  for (const miss of ["", "...", "um", "uh hmm", "(inaudible)", "(background noise)"]) {
+    assert.equal(shouldAskForVoiceRepeat(miss), true, miss);
+  }
+  for (const valid of ["Amicalola", "Dyckert", "yes", "call Mom", "what time is it"]) {
+    assert.equal(shouldAskForVoiceRepeat(valid), false, valid);
+  }
+});
+
+test("CarPlay music commands cover playback, playlists, shuffle, and restart", () => {
+  assert.deepEqual(parseMusicCommand("Play music"), { action: "play", query: "" });
+  assert.deepEqual(parseMusicCommand("Play my road trip playlist"), { action: "play", query: "road trip playlist" });
+  assert.deepEqual(parseMusicCommand("Shuffle my music"), { action: "shuffleon", query: "" });
+  assert.deepEqual(parseMusicCommand("Turn shuffle off"), { action: "shuffleoff", query: "" });
+  assert.deepEqual(parseMusicCommand("Restart this song"), { action: "restart", query: "" });
+  for (const musicAction of ["restart", "shuffleon", "shuffleoff"]) {
+    const action = blankAction("music_control");
+    action.musicAction = musicAction;
+    assert.equal(validateAction(action), null, musicAction);
+  }
 });
 
 test("voice speaks large numeric answers naturally without changing its budget", () => {
@@ -332,6 +453,16 @@ test("obvious knowledge questions bypass action planning safely in voice AND tex
   const typedAction = buildConversationState("What is the weather today?", "", undefined, "America/New_York");
   assert.equal(looksLikePlainVoiceKnowledgeQuestion(typedKnowledge), true);
   assert.equal(looksLikePlainVoiceKnowledgeQuestion(typedAction), false);
+  assert.equal(looksLikePlainVoiceKnowledgeQuestion(stateFor("Who invented the telephone?")), true);
+  assert.equal(looksLikePlainVoiceKnowledgeQuestion(stateFor("Can you call Chris?")), false);
+});
+
+test("progressive speech chunks are ordered, complete, and small enough to start quickly", () => {
+  const text = "The first sentence can start playing immediately. The second sentence is generated while the first one is already being heard.";
+  const chunks = splitTextForProgressiveSpeech(text, 70);
+  assert.ok(chunks.length >= 2);
+  assert.equal(chunks.join(" "), text);
+  assert.ok(chunks.every((chunk) => chunk.length <= 70));
 });
 
 test("easy questions route to the fast model; drafting, analysis, and long asks do not", () => {
@@ -632,9 +763,9 @@ test("all common YouTube links route through video input", () => {
 });
 
 test("usage limits add purchased credits to both plan windows", () => {
-  assert.deepEqual(usageLimitsFor("plus", 5_000), { daily: 5_150, monthly: 8_000 });
-  assert.deepEqual(usageLimitsFor("plus_voice", 0), { daily: 200, monthly: 4_000 });
-  assert.deepEqual(usageLimitsFor("pro", 0), { daily: 750, monthly: 15_000 });
+  assert.deepEqual(usageLimitsFor("plus", 5_000), { daily: 5_200, monthly: 9_000 });
+  assert.deepEqual(usageLimitsFor("plus_voice", 0), { daily: 300, monthly: 6_000 });
+  assert.deepEqual(usageLimitsFor("pro", 0), { daily: 600, monthly: 12_000 });
   assert.deepEqual(usageLimitsFor("free", 0), { daily: 250, monthly: 250 });
   assert.deepEqual(usageLimitsFor("free", 500), { daily: 750, monthly: 750 });
 });

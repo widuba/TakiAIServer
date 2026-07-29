@@ -14,10 +14,9 @@ import { sttCostUsd, ttsCostUsd } from "../src/metering.js";
 function account(overrides: Record<string, any> = {}) {
   return {
     tier: "plus_voice",
-    balance: 4000,
-    voiceUsed: 10,
-    voiceCycleUsed: 10,
-    baseCredits: 4000,
+    balance: 6000,
+    voiceCredits: 300,
+    baseCredits: 6000,
     limitReached: false,
     limitReason: null,
     daily: { used: 0, limit: 5000, resetsAt: 0, percent: 0 },
@@ -26,7 +25,7 @@ function account(overrides: Record<string, any> = {}) {
   };
 }
 
-test("a refused voice turn never consumes an included voice turn", () => {
+test("a refused voice request never consumes a Voice Credit", () => {
   const overDaily = account({ daily: { used: 4999, limit: 5000, resetsAt: 0, percent: 99 } });
   const refused = decideAssistantCharge({
     summary: overDaily,
@@ -50,10 +49,11 @@ test("a refused voice turn never consumes an included voice turn", () => {
     voiceOutputUsd: ttsCostUsd(280)
   });
   assert.equal(answered.block, null);
-  assert.equal(answered.consumeIncludedVoice, true);
+  assert.equal(answered.consumeIncludedVoice, false);
+  assert.equal(answered.includedVoice, true);
 });
 
-test("included voice keeps speech off the bill; paid voice adds STT and TTS", () => {
+test("voice always uses normal AI usage; no Voice Credit adds exactly 40 AI Credits", () => {
   const speechIn = sttCostUsd(30_000);
   const speechOut = ttsCostUsd(280);
   const included = decideAssistantCharge({
@@ -63,19 +63,13 @@ test("included voice keeps speech off the bill; paid voice adds STT and TTS", ()
   assert.equal(included.usageUsd, 0.02);
 
   const paid = decideAssistantCharge({
-    summary: account(), tier: "plus_voice", voiceMode: true, includedVoice: false,
+    summary: account({ voiceCredits: 0 }), tier: "plus_voice", voiceMode: true, includedVoice: false,
     baseUsd: 0.02, voiceInputUsd: speechIn, voiceOutputUsd: speechOut
   });
-  assert.equal(paid.usageUsd, 0.02 + speechIn + speechOut);
+  assert.equal(paid.usageUsd, 0.02);
+  assert.equal(paid.requiredCredits, included.requiredCredits + 40);
   assert.equal(paid.consumeIncludedVoice, false);
 
-  // Free-tier included turns are counted by the lifetime voice counter instead.
-  const free = decideAssistantCharge({
-    summary: account({ tier: "free", voiceUsed: 1 }), tier: "free", voiceMode: true, includedVoice: true,
-    baseUsd: 0.02, voiceInputUsd: speechIn, voiceOutputUsd: speechOut
-  });
-  assert.equal(free.consumeIncludedVoice, false);
-  assert.equal(free.usageUsd, 0.02);
 });
 
 test("correction synthesis is included only with a valid deferral token", () => {
@@ -110,19 +104,15 @@ test("correction synthesis is included only with a valid deferral token", () => 
   assert.equal(paidToken.allowed, false);
 });
 
-test("voice preflight asks for the whole turn, not the one-credit floor", () => {
+test("voice preflight differs by exactly the 40-AI-Credit fallback", () => {
   const paid = voiceTurnEstimateCredits(false);
   const included = voiceTurnEstimateCredits(true);
-  // A paid turn commits to full-length transcription plus a capped spoken reply.
-  assert.ok(paid >= Math.ceil((sttCostUsd(60_000) + ttsCostUsd(280)) / 0.001), String(paid));
-  assert.ok(paid > included, `${paid} should exceed ${included}`);
+  assert.equal(paid - included, 40);
   assert.ok(included >= MIN_REQUEST_CREDITS);
-  // An included turn only has to cover the planning model.
-  assert.ok(included < paid / 2, String(included));
 });
 
 test("usage blocks report the reason the app renders", () => {
   assert.equal(usageBlockFor(account({ balance: 0 }), 10, false)?.reason, "credits");
-  assert.equal(usageBlockFor(account({ tier: "free", voiceUsed: 5 }), 10, true)?.reason, "voice");
+  assert.equal(usageBlockFor(account({ tier: "free", voiceCredits: 0 }), 10, true), null);
   assert.equal(usageBlockFor(account(), 10, false), null);
 });

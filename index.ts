@@ -4,7 +4,7 @@ import Stripe from "stripe";
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-import { PORT, MAIN_MODEL, PLANNER_MODEL, RESEARCH_MODEL, ServiceError, VOICE_UNAVAILABLE_SPOKEN } from "./src/ai.js";
+import { PORT, ACTIVE_AI_PROVIDER, MAIN_MODEL, PLANNER_MODEL, RESEARCH_MODEL, ServiceError, VOICE_UNAVAILABLE_SPOKEN, normalizeTakiModel, withTakiModel } from "./src/ai.js";
 import type { DeviceLocation, DeviceWeather } from "./src/types.js";
 import { buildConversationState } from "./src/context.js";
 import { planAssistantResponse } from "./src/planner.js";
@@ -22,17 +22,17 @@ import { cachedTrackerSnapshot } from "./src/tracker.js";
 import { extractFlightCode, normalizeTrackerKind } from "./src/entityClassifier.js";
 import { clearPushToken, getPushToken, setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, clearAlertsForReset, type Alert } from "./src/alerts.js";
-import { isDurable, storeDelete, storeGet, storeSet } from "./src/store.js";
-import { summary as creditSummary, spendUsageUsd, reset as resetCredits, isFreeVoice, noteFreeVoice, tierCatalog, grantForTransaction, activateSubscriptionTier, grantForConsumableTransaction, grantWebTopup, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, noteVoiceQuestion, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, CREDIT_USD, type Tier } from "./src/credits.js";
+import { isDurable, storeDelete, storeDeleteCategory, storeGet, storeSet } from "./src/store.js";
+import { summary as creditSummary, chargeUsageUsd, InsufficientCreditsError, reset as resetCredits, tierCatalog, grantForTransaction, activateSubscriptionTier, updateSubscriptionStatus, grantForConsumableTransaction, grantWebTopup, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, CREDIT_USD, type Tier } from "./src/credits.js";
 import { measureUsage, sttCostUsd, totalUsageUsd, ttsCostUsd } from "./src/metering.js";
 import { decideAssistantCharge, planCorrectionSynthesis, usageBlockFor, usageBlockedPayload, voiceTurnEstimateCredits } from "./src/usage.js";
 import { verifyTransaction, verifyCreditTransaction, claimCreditTransaction, transferCreditTransaction, rebindCreditTransactions, linkTransactionIdentity, transferSubscriptionIdentity, claimSubscriptionPeriod, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
 import { revokeAppleAuthorizationCode, verifyAppleIdentityToken } from "./src/appleauth.js";
 import { purgeAppleAccount } from "./src/accountDeletion.js";
 import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, linkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG, promptExtractionMessageForMode } from "./src/safety.js";
-import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, noteInteraction, noteChannelCost, noteSession, noteEngagementPreferences, userForIdentity, identitiesForIp, allUsers, deleteUser, type UserRecord } from "./src/users.js";
+import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, noteInteraction, noteChannelCost, noteSession, noteEngagementPreferences, noteBillingEvent, userForIdentity, identitiesForIp, allUsers, deleteUser, type UserRecord } from "./src/users.js";
 import { TIERS } from "./src/credits.js";
-import { billableAudioDurationMs, transcribe, synthesize, listVoices, isVoiceConfigured, speechCharacterCount } from "./src/voice.js";
+import { billableAudioDurationMs, transcribe, synthesize, splitTextForProgressiveSpeech, listVoices, isVoiceConfigured, speechCharacterCount, shouldAskForVoiceRepeat, VOICE_REPEAT_PROMPT } from "./src/voice.js";
 import { emailProviderConfigured, createOAuthState, buildAuthUrl, completeOAuth, loadConnection, disconnectEmail, moveEmailConnection, sendEmail, saveDraft, searchConnectedEmail, type EmailProvider } from "./src/email.js";
 import { extractDurableMemories } from "./src/userMemory.js";
 import { createChatTitle } from "./src/chatTitle.js";
@@ -42,6 +42,7 @@ import { performFullReset, previewFullReset, type FullResetPreview } from "./src
 import { bypassResetGeneration, hasCurrentResetGeneration, RESET_EPOCH_HEADER } from "./src/resetGeneration.js";
 import { isKnownIdentity, markWebAuthenticated } from "./src/identity.js";
 import { googleWebClientId, isGoogleWebAuthConfigured, verifyGoogleIdToken } from "./src/webauth.js";
+import { isProductKnowledgeQuestion, productAnswerFor } from "./src/productKnowledge.js";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
 // Render. (The purchase-simulating grant endpoint was removed when real
@@ -90,9 +91,26 @@ function takeVoiceSynthesisToken(token: string, deviceId: string): PendingVoiceS
 
 async function chargeMeasuredUsage(deviceId: string, usage: { geminiUsd: number; searchUsd: number }): Promise<number> {
   if (!deviceId) throw new Error("Cannot meter usage without an account identity");
-  const charged = await spendUsageUsd(deviceId, usage.geminiUsd + usage.searchUsd);
+  const charged = await chargeUsageUsd(deviceId, usage.geminiUsd + usage.searchUsd, "text", randomUUID());
   await noteSpend(deviceId, charged.spent);
   return charged.spent;
+}
+
+async function noteCreditCharge(
+  identity: string,
+  mode: "text" | "voice",
+  charge: { spent: number; balance: number; voiceCredits: number; voiceCreditsCharged: number; voiceSurchargeCredits: number }
+): Promise<void> {
+  if (mode === "voice") {
+    await noteBillingEvent(identity,
+      charge.voiceCreditsCharged > 0 ? "voice_request_used_credit" : "voice_request_used_ai_surcharge",
+      { aiCreditsCharged: charge.spent, voiceCreditsCharged: charge.voiceCreditsCharged, surchargeAiCredits: charge.voiceSurchargeCredits }
+    );
+    if (charge.voiceCreditsCharged > 0 && charge.voiceCredits === 0) {
+      await noteBillingEvent(identity, "voice_credits_exhausted", { balance: 0 });
+    }
+  }
+  if (charge.balance === 0) await noteBillingEvent(identity, "ai_credits_exhausted", { balance: 0 });
 }
 
 function assistantFeature(response: any): string {
@@ -190,8 +208,9 @@ app.get("/health", async (_req, res) => {
     ok: true,
     app: "Taki AI server",
     mode: "planner-first-modular-v3",
-    version: "2026-07-23-shazam-weatherkit-v1",
+    version: "2026-07-28-openai-light-v1",
     durableStorage: isDurable(),
+    aiProvider: ACTIVE_AI_PROVIDER,
     models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL },
     // Live Activity background updates require APNs config (APNS_KEY_P8 or
     // APNS_KEY_PATH + KEY_ID + TEAM_ID). Surfaced here so a missing key on the
@@ -672,18 +691,13 @@ app.post("/api/vision", async (req, res) => {
   const visionGate = await safetyGate(deviceId, question, req);
   if (visionGate) { res.json({ spokenText: visionGate.message, blocked: true, ...(visionGate.block ? { access: visionGate.block, accessMessage: visionGate.message } : {}) }); return; }
   let tier: Tier = "free";
-  let visionBaseCredits = 0;
-  let visionVoiceUsed = 0;
-  let visionVoiceLifetimeUsed = 0;
   const sum = await creditSummary(deviceId);
   tier = sum.tier;
-  visionBaseCredits = sum.baseCredits;
-  visionVoiceUsed = sum.voiceCycleUsed;
-  visionVoiceLifetimeUsed = sum.voiceUsed;
   const block = usageBlockFor(sum, ATTACHMENT_BASE_CREDITS, voiceMode);
   if (block) { res.status(402).json(usageBlockedPayload(block)); return; }
   try {
-    const measured = await measureUsage(() => withTimeout(answerAboutImage(image, mime, question, userProfile, timeZone), 28000, "Vision"));
+    const takiModel = normalizeTakiModel(req.body?.profile?.model);
+    const measured = await measureUsage(() => withTakiModel(takiModel, () => withTimeout(answerAboutImage(image, mime, question, userProfile, timeZone), 28000, "Vision")));
     const spokenText = measured.value;
     const speechUsd = voiceMode ? ttsCostUsd(speechCharacterCount(spokenText || "")) : 0;
     const ownerCostUsd = totalUsageUsd(measured.usage) + speechUsd;
@@ -692,15 +706,14 @@ app.post("/api/vision", async (req, res) => {
       summary: fresh,
       tier,
       voiceMode,
-      includedVoice: voiceMode && isFreeVoice(tier, visionBaseCredits, visionVoiceUsed, visionVoiceLifetimeUsed),
+      includedVoice: voiceMode && fresh.voiceCredits > 0,
       baseUsd: totalUsageUsd(measured.usage) + ATTACHMENT_BASE_CREDITS * CREDIT_USD,
       voiceOutputUsd: speechUsd
     });
     if (charge.block) { res.status(402).json(usageBlockedPayload(charge.block)); return; }
-    if (charge.consumeIncludedVoice) await noteFreeVoice(deviceId);
-    const s = await spendUsageUsd(deviceId, charge.usageUsd);
-    if (voiceMode && tier === "free") await noteVoiceQuestion(deviceId);
+    const s = await chargeUsageUsd(deviceId, charge.usageUsd, voiceMode ? "voice" : "text", String(req.body?.requestId || randomUUID()));
     await noteSpend(deviceId, s.spent);
+    await noteCreditCharge(deviceId, voiceMode ? "voice" : "text", s);
     await noteInteraction(deviceId, {
       channel: voiceMode ? "voice" : "text",
       feature: "photo",
@@ -709,6 +722,11 @@ app.post("/api/vision", async (req, res) => {
     });
     res.json({ spokenText, credits: { ...s, cost: s.spent } });
   } catch (error) {
+    if (error instanceof InsufficientCreditsError) {
+      const fresh = await creditSummary(deviceId);
+      res.status(402).json(usageBlockedPayload(usageBlockFor(fresh, error.required, voiceMode)!));
+      return;
+    }
     console.error("Vision error:", error);
     res.status(502).json({ error: "vision unavailable" });
   }
@@ -729,19 +747,14 @@ app.post("/api/attachments", async (req, res) => {
   if (gate) { res.json({ spokenText: gate.message, blocked: true, ...(gate.block ? { access: gate.block, accessMessage: gate.message } : {}) }); return; }
 
   let tier: Tier = "free";
-  let baseCredits = 0;
-  let voiceUsed = 0;
-  let voiceLifetimeUsed = 0;
   const attachmentSummary = await creditSummary(deviceId);
   tier = attachmentSummary.tier;
-  baseCredits = attachmentSummary.baseCredits;
-  voiceUsed = attachmentSummary.voiceCycleUsed;
-  voiceLifetimeUsed = attachmentSummary.voiceUsed;
   const attachmentBlock = usageBlockFor(attachmentSummary, Math.max(MIN_REQUEST_CREDITS, attachmentCredits), voiceMode);
   if (attachmentBlock) { res.status(402).json(usageBlockedPayload(attachmentBlock)); return; }
 
   try {
-    const measured = await measureUsage(() => answerAboutAttachments(attachments, question, userProfile, timeZone));
+    const takiModel = normalizeTakiModel(req.body?.profile?.model);
+    const measured = await measureUsage(() => withTakiModel(takiModel, () => answerAboutAttachments(attachments, question, userProfile, timeZone)));
     const answer = measured.value;
     const speechUsd = voiceMode ? ttsCostUsd(speechCharacterCount(answer.text)) : 0;
     const ownerCostUsd = totalUsageUsd(measured.usage) + speechUsd;
@@ -750,14 +763,12 @@ app.post("/api/attachments", async (req, res) => {
       summary: fresh,
       tier,
       voiceMode,
-      includedVoice: voiceMode && isFreeVoice(tier, baseCredits, voiceUsed, voiceLifetimeUsed),
+      includedVoice: voiceMode && fresh.voiceCredits > 0,
       baseUsd: totalUsageUsd(measured.usage) + attachmentCredits * CREDIT_USD,
       voiceOutputUsd: speechUsd
     });
     if (charge.block) { res.status(402).json(usageBlockedPayload(charge.block)); return; }
-    if (charge.consumeIncludedVoice) await noteFreeVoice(deviceId);
-    const spent = await spendUsageUsd(deviceId, charge.usageUsd);
-    if (voiceMode && tier === "free") await noteVoiceQuestion(deviceId);
+    const spent = await chargeUsageUsd(deviceId, charge.usageUsd, voiceMode ? "voice" : "text", String(req.body?.requestId || randomUUID()));
     await noteSpend(deviceId, spent.spent);
     await noteInteraction(deviceId, {
       channel: voiceMode ? "voice" : "text",
@@ -767,6 +778,11 @@ app.post("/api/attachments", async (req, res) => {
     });
     res.json({ spokenText: answer.text, sources: answer.sources, credits: { ...spent, cost: spent.spent } });
   } catch (error) {
+    if (error instanceof InsufficientCreditsError) {
+      const fresh = await creditSummary(deviceId);
+      res.status(402).json(usageBlockedPayload(usageBlockFor(fresh, error.required, voiceMode)!));
+      return;
+    }
     console.error("Attachment answer failed:", error);
     res.status(502).json({ error: error instanceof Error ? error.message : "attachment unavailable" });
   }
@@ -938,6 +954,19 @@ app.post("/api/analytics/session", async (req, res) => {
   res.json({ ok: true });
 });
 
+const CLIENT_BILLING_EVENTS = new Set(["pricing_page_viewed", "plan_selected"]);
+app.post("/api/analytics/billing", async (req, res) => {
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  const event = typeof req.body?.event === "string" ? req.body.event.trim() : "";
+  if (!(await requireCreditIdentity(identity, res))) return;
+  if (!CLIENT_BILLING_EVENTS.has(event)) { res.status(400).json({ error: "unsupported billing event" }); return; }
+  const tier = (["plus", "plus_voice", "pro"] as string[]).includes(String(req.body?.tier || ""))
+    ? String(req.body.tier)
+    : undefined;
+  await noteBillingEvent(identity, event, { tier: tier || null, surface: String(req.body?.surface || "app").slice(0, 30) });
+  res.json({ ok: true });
+});
+
 app.post("/api/engagement/open", async (req, res) => {
   const campaign = typeof req.body?.campaign === "string" ? req.body.campaign.trim() : "";
   const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
@@ -1000,15 +1029,25 @@ app.post("/api/credits/preflight", async (req, res) => {
   const kind = req.body?.kind === "voice" ? "voice" : req.body?.kind === "attachment" ? "attachment" : "text";
   const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments.slice(0, 6) : [];
   const summary = await creditSummary(deviceId);
+  const supportMessage = typeof req.body?.message === "string" ? req.body.message.trim().slice(0, 1000) : "";
+  if (kind === "text" && supportMessage && isProductKnowledgeQuestion(supportMessage)) {
+    // Account, pricing, and renewal help must remain reachable when the reason
+    // the user is asking is that their balance has run out.
+    res.json({ allowed: true, support: true, requiredCredits: 0, credits: { ...summary, cost: 0 } });
+    return;
+  }
   // A voice turn commits to STT + a planning call + TTS the moment it starts,
   // so preflight has to ask for what the whole turn can cost — not the floor.
   const requiredCredits = kind === "attachment"
     ? Math.max(MIN_REQUEST_CREDITS, attachmentBaseCostCredits(attachments))
     : kind === "voice"
-      ? voiceTurnEstimateCredits(isFreeVoice(summary.tier, summary.baseCredits, summary.voiceCycleUsed, summary.voiceUsed))
+      ? voiceTurnEstimateCredits(summary.voiceCredits > 0)
       : MIN_REQUEST_CREDITS;
   const block = usageBlockFor(summary, requiredCredits, kind === "voice");
-  if (block) { res.status(402).json(usageBlockedPayload(block)); return; }
+  if (block) {
+    await noteBillingEvent(deviceId, "insufficient_credits_blocked", { mode: kind, requiredAiCredits: requiredCredits, availableAiCredits: summary.balance });
+    res.status(402).json(usageBlockedPayload(block)); return;
+  }
   res.json({ allowed: true, requiredCredits, credits: { ...summary, cost: 0 } });
 });
 
@@ -1216,7 +1255,7 @@ app.post("/api/credits/checkout", async (req, res) => {
   try {
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
-      line_items: [{ quantity: 1, price_data: { currency: "usd", unit_amount: cents, product_data: { name: `${credits.toLocaleString()} Taki AI credits${v.tier === "pro" ? " (Pro price)" : v.tier === "plus_voice" ? " (Plus Voice price)" : ""}` } } }],
+      line_items: [{ quantity: 1, price_data: { currency: "usd", unit_amount: cents, product_data: { name: `${credits.toLocaleString()} Taki AI credits${v.tier === "pro" ? " (Pro price)" : v.tier === "plus_voice" ? " (Premium price)" : ""}` } } }],
       metadata: { identity: v.ledgerIdentity, publicId: identity, credits: String(credits), purchaseType: "credits" },
       success_url: `${WEB_BASE_URL}/buy?status=success&kind=credits&account=${encodeURIComponent(identity)}`,
       cancel_url: `${WEB_BASE_URL}/buy?status=canceled`
@@ -1228,7 +1267,17 @@ app.post("/api/credits/checkout", async (req, res) => {
   }
 });
 
-type WebSubscription = { id: string; identity: string; publicId: string; tier: Tier; active: boolean; updatedAt: number };
+type WebSubscription = {
+  id: string;
+  identity: string;
+  publicId: string;
+  tier: Tier;
+  active: boolean;
+  status?: string;
+  periodStart?: number | null;
+  periodEnd?: number | null;
+  updatedAt: number;
+};
 const webSubKey = (id: string) => `stripe:subscription:${id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 const webSubsForIdentityKey = (identity: string) => `stripe:identity-subs:${identity.replace(/[^a-zA-Z0-9_:-]/g, "_")}`;
 
@@ -1301,7 +1350,7 @@ app.post("/api/plans/checkout", async (req, res) => {
           currency: "usd",
           unit_amount: unitAmount,
           recurring: { interval: "month" },
-          product_data: { name: `Taki AI ${config.label}`, description: `${config.creditsPerCycle.toLocaleString()} credits each month` }
+          product_data: { name: `Taki AI ${config.label}`, description: `${config.creditsPerCycle.toLocaleString()} AI Credits and ${config.voiceCreditsPerCycle.toLocaleString()} Voice Credits each month` }
         }
       }],
       metadata,
@@ -1338,12 +1387,21 @@ app.post("/api/stripe/webhook", async (req, res) => {
       const dedupeKey = `stripe:session:${s.id}`;
       try {
         if (identity && subscriptionId && (["plus", "plus_voice", "pro"] as string[]).includes(tier) && !(await storeGet<boolean>(dedupeKey, false))) {
-          await saveWebSubscription({ id: subscriptionId, identity, publicId: s.metadata?.publicId || "", tier, active: true, updatedAt: Date.now() });
+          await saveWebSubscription({ id: subscriptionId, identity, publicId: s.metadata?.publicId || "", tier, active: true, status: "active", periodStart: Date.now(), periodEnd: null, updatedAt: Date.now() });
           await retireOtherWebSubscriptions(identity, subscriptionId);
-          const granted = await grantForTransaction(identity, tier, `stripe:first:${s.id}`);
+          const granted = await grantForTransaction(identity, tier, `stripe:first:${s.id}`, {
+            subscriptionId,
+            transactionId: s.id,
+            productId: `${tier}_monthly`,
+            periodStart: Date.now(),
+            periodEnd: null,
+            reason: "stripe_subscription_started",
+            status: "active"
+          });
           await storeSet(dedupeKey, true);
           if (granted.granted) {
             await noteTier(identity, tier, "stripe_subscription");
+            await noteBillingEvent(identity, "subscription_started", { tier, provider: "stripe" });
             await noteRevenue(identity, { at: Date.now(), kind: "web_subscription", amountUsd: (s.amount_total || TIERS[tier].priceUsd * 100) / 100, credits: TIERS[tier].creditsPerCycle, tier });
           }
         }
@@ -1379,10 +1437,25 @@ app.post("/api/stripe/webhook", async (req, res) => {
       try {
         const record = subscriptionId ? await storeGet<WebSubscription | null>(webSubKey(subscriptionId), null) : null;
         if (record?.active && !(await storeGet<boolean>(dedupeKey, false))) {
-          const granted = await grantForTransaction(record.identity, record.tier, `stripe:renewal:${invoice.id}`);
+          const periodStart = Number(invoice.period_start || 0) * 1000 || null;
+          const periodEnd = Number(invoice.period_end || 0) * 1000 || null;
+          record.periodStart = periodStart;
+          record.periodEnd = periodEnd;
+          record.status = "active";
+          await saveWebSubscription(record);
+          const granted = await grantForTransaction(record.identity, record.tier, `stripe:renewal:${invoice.id}`, {
+            subscriptionId,
+            transactionId: String(invoice.id || ""),
+            productId: `${record.tier}_monthly`,
+            periodStart,
+            periodEnd,
+            reason: "stripe_subscription_renewed",
+            status: "active"
+          });
           await storeSet(dedupeKey, true);
           if (granted.granted) {
             await noteTier(record.identity, record.tier, "stripe_renewal");
+            await noteBillingEvent(record.identity, "subscription_renewed", { tier: record.tier, provider: "stripe" });
             await noteRevenue(record.identity, { at: Date.now(), kind: "web_subscription", amountUsd: Number(invoice.amount_paid || 0) / 100, credits: TIERS[record.tier].creditsPerCycle, tier: record.tier });
           }
         }
@@ -1390,6 +1463,32 @@ app.post("/api/stripe/webhook", async (req, res) => {
         console.error("Stripe renewal grant error:", e);
         res.status(500).json({ error: "webhook processing failed" });
         return;
+      }
+    }
+  }
+  if (event.type === "customer.subscription.updated") {
+    const subscription: any = event.data.object;
+    const record = await storeGet<WebSubscription | null>(webSubKey(String(subscription.id || "")), null);
+    if (record) {
+      const previousTier = record.tier;
+      const nextTier = String(subscription.metadata?.tier || record.tier) as Tier;
+      if ((["plus", "plus_voice", "pro"] as string[]).includes(nextTier)) record.tier = nextTier;
+      record.active = !["canceled", "unpaid", "incomplete_expired"].includes(String(subscription.status || ""));
+      record.status = subscription.cancel_at_period_end ? "cancelled" : String(subscription.status || "active");
+      record.periodStart = Number(subscription.current_period_start || 0) * 1000 || record.periodStart || null;
+      record.periodEnd = Number(subscription.current_period_end || 0) * 1000 || record.periodEnd || null;
+      record.updatedAt = Date.now();
+      await saveWebSubscription(record);
+      await updateSubscriptionStatus(record.identity,
+        subscription.cancel_at_period_end ? "cancelled" : subscription.status === "past_due" ? "billing_retry" : "active",
+        { subscriptionId: record.id, productId: `${record.tier}_monthly`, periodStart: record.periodStart, periodEnd: record.periodEnd }
+      );
+      if (nextTier !== previousTier) {
+        const rank: Record<string, number> = { plus: 1, plus_voice: 2, pro: 3 };
+        if ((rank[nextTier] || 0) > (rank[previousTier] || 0)) await activateSubscriptionTier(record.identity, nextTier);
+        await noteBillingEvent(record.identity, (rank[nextTier] || 0) > (rank[previousTier] || 0) ? "subscription_upgraded" : "subscription_downgraded", { fromTier: previousTier, toTier: nextTier, provider: "stripe" });
+      } else if (subscription.cancel_at_period_end) {
+        await noteBillingEvent(record.identity, "subscription_cancelled", { tier: record.tier, provider: "stripe", accessUntilPeriodEnd: true });
       }
     }
   }
@@ -1401,8 +1500,9 @@ app.post("/api/stripe/webhook", async (req, res) => {
       record.updatedAt = Date.now();
       await storeSet(webSubKey(record.id), record);
       if (!(await hasOtherActiveWebSubscription(record.identity, record.id)) && !(await primarySubscriptionForIdentity(record.identity))) {
-        await downgradeToFree(record.identity);
+        await downgradeToFree(record.identity, { subscriptionId: record.id, productId: `${record.tier}_monthly`, periodStart: record.periodStart, periodEnd: record.periodEnd });
         await noteTier(record.identity, "free", "stripe_subscription_ended");
+        await noteBillingEvent(record.identity, "subscription_expired", { tier: record.tier, provider: "stripe" });
       }
     }
   }
@@ -1597,11 +1697,29 @@ app.post("/api/iap/verify", async (req, res) => {
     // way the entitlement (tier) applies to the presenting device.
     const periodIsNew = await claimSubscriptionPeriod(info.periodKey);
     const r = periodIsNew
-      ? await grantForTransaction(identity, info.tier, info.periodKey)
-      : { granted: false, summary: await activateSubscriptionTier(identity, info.tier) };
+      ? await grantForTransaction(identity, info.tier, info.periodKey, {
+          subscriptionId: info.originalTransactionId,
+          transactionId: info.transactionId,
+          productId: info.productId,
+          periodStart: info.purchaseDate ?? null,
+          periodEnd: info.expiresDate ?? null,
+          reason: "storekit_subscription",
+          status: "active"
+        })
+      : { granted: false, summary: await (async () => {
+          await activateSubscriptionTier(identity, info.tier);
+          return updateSubscriptionStatus(identity, "active", {
+            subscriptionId: info.originalTransactionId,
+            transactionId: info.transactionId,
+            productId: info.productId,
+            periodStart: info.purchaseDate ?? null,
+            periodEnd: info.expiresDate ?? null
+          });
+        })() };
     if (r.granted) {
       // Analytics: record the plan + gross revenue for this billing period.
       await noteTier(identity, info.tier, "subscription");
+      await noteBillingEvent(identity, "subscription_started_or_renewed", { tier: info.tier, provider: "app_store" });
       const conf = TIERS[info.tier];
       if (conf) await noteRevenue(identity, { at: Date.now(), kind: "subscription", amountUsd: conf.priceUsd, credits: conf.creditsPerCycle, tier: info.tier });
     }
@@ -1766,6 +1884,13 @@ app.post("/api/iap/notifications", async (req, res) => {
       const identity = binding.identity;
       if (identity) {
         const t = note.notificationType;
+        const context = {
+          subscriptionId: tx.originalTransactionId,
+          transactionId: tx.transactionId,
+          productId: tx.productId,
+          periodStart: tx.purchaseDate ?? null,
+          periodEnd: tx.expiresDate ?? null
+        };
         if (binding.role === "secondary") {
           if (t === "REFUND" || t === "REVOKE") {
             await revokeMergedSubscriptionCredits(identity, tx.originalTransactionId);
@@ -1773,11 +1898,27 @@ app.post("/api/iap/notifications", async (req, res) => {
             await clearRetiredSubscription(identity, tx.originalTransactionId);
           }
         } else if (t === "SUBSCRIBED" || t === "DID_RENEW" || t === "OFFER_REDEEMED") {
-          await grantForTransaction(identity, tx.tier, tx.periodKey);
+          const granted = await grantForTransaction(identity, tx.tier, tx.periodKey, {
+            ...context,
+            reason: t.toLowerCase(),
+            status: "active"
+          });
+          if (granted.granted) {
+            await noteTier(identity, tx.tier, t === "DID_RENEW" ? "subscription_renewed" : "subscription_started");
+            await noteBillingEvent(identity, t === "DID_RENEW" ? "subscription_renewed" : "subscription_started", { tier: tx.tier, provider: "app_store" });
+          }
         } else if (t === "REFUND" || t === "REVOKE") {
-          await revokeSubscription(identity);
+          await revokeSubscription(identity, context);
+          await noteBillingEvent(identity, "subscription_refunded_or_revoked", { tier: tx.tier, provider: "app_store" });
         } else if (t === "EXPIRED" || t === "GRACE_PERIOD_EXPIRED") {
-          await downgradeToFree(identity);
+          await downgradeToFree(identity, context);
+          await noteTier(identity, "free", "subscription_expired");
+          await noteBillingEvent(identity, "subscription_expired", { tier: tx.tier, provider: "app_store" });
+        } else if (t === "DID_FAIL_TO_RENEW") {
+          await updateSubscriptionStatus(identity, note.subtype === "GRACE_PERIOD" ? "grace" : "billing_retry", context);
+        } else if (t === "DID_CHANGE_RENEWAL_STATUS") {
+          await updateSubscriptionStatus(identity, note.subtype === "AUTO_RENEW_DISABLED" ? "cancelled" : "active", context);
+          if (note.subtype === "AUTO_RENEW_DISABLED") await noteBillingEvent(identity, "subscription_cancelled", { tier: tx.tier, provider: "app_store", accessUntilPeriodEnd: true });
         }
         // Other types (DID_CHANGE_RENEWAL_STATUS, DID_FAIL_TO_RENEW grace, TEST,
         // etc.) need no ledger change.
@@ -2076,7 +2217,8 @@ function combineAdminUsers(identity: string, records: UserRecord[]): UserRecord 
       lastQuestionAt: Math.max(0, ...records.map((record) => record.analytics.lastQuestionAt || 0)) || undefined,
       sessions: records.reduce((sum, record) => sum + Number(record.analytics.sessions || 0), 0),
       totalSessionSeconds: records.reduce((sum, record) => sum + Number(record.analytics.totalSessionSeconds || 0), 0),
-      recentSessions: records.flatMap((record) => record.analytics.recentSessions || []).sort((a, b) => b.at - a.at).slice(0, 100)
+      recentSessions: records.flatMap((record) => record.analytics.recentSessions || []).sort((a, b) => b.at - a.at).slice(0, 100),
+      billingEvents: records.flatMap((record) => record.analytics.billingEvents || []).sort((a, b) => b.at - a.at).slice(0, 250)
     },
     engagement: engagementRecord?.engagement || { interests: [], pushEnabled: false, emailEnabled: false, updatedAt: 0 }
   };
@@ -2345,10 +2487,16 @@ async function safetyGate(identity: string, message: string, req: any, voiceMode
   const ip = clientIp(req);
   const dev = identity.startsWith("apple:") ? undefined : identity;
   try {
-    await recordAssoc(identity, dev, ip);
-    await noteUser(identity, ip, String(req.headers?.["user-agent"] || ""));
-    if ((await isBanned(identity, dev, ip)) || (await isTestRestricted(identity))) return { message: BANNED_MSG, block: "banned" };
-    const acct = await getSafetyAccount(identity);
+    await Promise.all([
+      recordAssoc(identity, dev, ip),
+      noteUser(identity, ip, String(req.headers?.["user-agent"] || ""))
+    ]);
+    const [banned, testRestricted, acct] = await Promise.all([
+      isBanned(identity, dev, ip),
+      isTestRestricted(identity),
+      getSafetyAccount(identity)
+    ]);
+    if (banned || testRestricted) return { message: BANNED_MSG, block: "banned" };
     if (acct.status !== "active") return { message: SUSPENDED_MSG, block: "suspended" };
     // Prompt/instruction extraction: never help, break character with a fixed
     // reply, and count a strike (repeated attempts → suspension = "restriction").
@@ -2375,26 +2523,53 @@ async function runAssistant(
   deviceId: string,
   voiceMode: boolean,
   supportsDeferredActionSynthesis = false,
+  prefersDeviceSpeech = false,
   voiceInputUsd = 0,
-  beforeUsageCommit?: (details: { response: any; deferVoiceSynthesis: boolean; includedVoice: boolean }) => Promise<void>
+  beforeUsageCommit?: (details: { response: any; deferVoiceSynthesis: boolean; includedVoice: boolean }) => Promise<void>,
+  onStableVoiceText?: (text: string) => void | Promise<void>
 ): Promise<any> {
   let tier: Tier = "free";
-  let baseCredits = 0;     // remaining base-subscription credits (for free-voice check)
-  let voiceCycleUsed = 0;  // free voice turns used this cycle
-  let voiceLifetimeUsed = 0;
   let usageSummary: Awaited<ReturnType<typeof creditSummary>> | null = null;
   if (deviceId) {
     const sum = await creditSummary(deviceId);
     usageSummary = sum;
     tier = sum.tier;
-    baseCredits = sum.baseCredits;
-    voiceCycleUsed = sum.voiceCycleUsed;
-    voiceLifetimeUsed = sum.voiceUsed;
-    const block = usageBlockFor(sum, MIN_REQUEST_CREDITS, voiceMode);
+    state.accountSummary = sum;
+  }
+
+  // Product/support questions are answered from the authoritative catalog and
+  // live ledger without an AI call or credit charge. This remains available
+  // even when the account is out of credits, which is essential for explaining
+  // how to renew, upgrade, or restore access.
+  const productAnswer = productAnswerFor(state.message, {
+    account: usageSummary,
+    timeZone: state.timeZone,
+    voiceMode
+  });
+  if (productAnswer) {
+    const response = finalizeResponse({
+      spokenText: productAnswer,
+      action: null,
+      sources: [],
+      memoryPatch: { pendingClarification: null },
+      needsExecution: false
+    }, state);
+    if (voiceMode && response.spokenText) response.spokenText = await fitVoiceResponse(response.spokenText, state.userProfile);
+    if (beforeUsageCommit) await beforeUsageCommit({ response, deferVoiceSynthesis: false, includedVoice: false });
+    return {
+      ...response,
+      ...(usageSummary ? { credits: { ...usageSummary, cost: 0 } } : {})
+    };
+  }
+
+  if (deviceId && usageSummary) {
+    const sum = usageSummary;
+    const estimated = voiceMode ? voiceTurnEstimateCredits(sum.voiceCredits > 0) : MIN_REQUEST_CREDITS;
+    const block = usageBlockFor(sum, estimated, voiceMode);
     if (block) return usageBlockedPayload(block);
   }
   const measured = await measureUsage(async () => {
-    const plan = await withTimeout(planAssistantResponse(state), 45000, "Assistant plan");
+    const plan = await withTimeout(planAssistantResponse(state, onStableVoiceText), 45000, "Assistant plan");
     const response = finalizeResponse(plan, state);
     // Voice action confirmations already come from the capability-aware planner.
     if (!voiceMode && response.spokenText && (response.action || response.memory?.pendingClarification)) {
@@ -2407,20 +2582,18 @@ async function runAssistant(
   });
   const finalized = measured.value;
   const hasActions = !!finalized.action || (Array.isArray(finalized.actions) && finalized.actions.length > 0);
-  const deferVoiceSynthesis = voiceMode && supportsDeferredActionSynthesis && hasActions && !!deviceId;
+  const deferVoiceSynthesis = voiceMode && !prefersDeviceSpeech && supportsDeferredActionSynthesis && hasActions && !!deviceId;
   if (deviceId) {
     const modelAndSearchUsd = totalUsageUsd(measured.usage);
-    const voiceOutputUsd = voiceMode && !deferVoiceSynthesis
+    const voiceOutputUsd = voiceMode && !prefersDeviceSpeech && !deferVoiceSynthesis
       ? ttsCostUsd(speechCharacterCount(finalized.spokenText || ""))
       : 0;
     const ownerCostUsd = modelAndSearchUsd + (voiceMode ? Math.max(0, voiceInputUsd) + voiceOutputUsd : 0);
-    // Voice: free within the per-cycle allowance on Plus Voice / Pro (base credits
-    // only); beyond that, or on top-ups / other tiers, pay per spoken character.
     const charge = decideAssistantCharge({
       summary: usageSummary,
       tier,
       voiceMode,
-      includedVoice: voiceMode && isFreeVoice(tier, baseCredits, voiceCycleUsed, voiceLifetimeUsed),
+      includedVoice: voiceMode && (usageSummary?.voiceCredits || 0) > 0,
       baseUsd: modelAndSearchUsd,
       voiceInputUsd,
       voiceOutputUsd
@@ -2431,10 +2604,20 @@ async function runAssistant(
     if (beforeUsageCommit) {
       await beforeUsageCommit({ response: finalized, deferVoiceSynthesis, includedVoice: charge.includedVoice });
     }
-    if (charge.consumeIncludedVoice) await noteFreeVoice(deviceId);
     const voiceSynthesisIncluded = charge.includedVoice;
-    const s = await spendUsageUsd(deviceId, charge.usageUsd);
+    let s: Awaited<ReturnType<typeof chargeUsageUsd>>;
+    try {
+      s = await chargeUsageUsd(deviceId, charge.usageUsd, voiceMode ? "voice" : "text", randomUUID());
+    } catch (error) {
+      if (error instanceof InsufficientCreditsError) {
+        const fresh = await creditSummary(deviceId);
+        await noteBillingEvent(deviceId, "insufficient_credits_blocked", { mode: voiceMode ? "voice" : "text", requiredAiCredits: error.required, availableAiCredits: error.available });
+        return usageBlockedPayload(usageBlockFor(fresh, error.required, voiceMode)!);
+      }
+      throw error;
+    }
     await noteSpend(deviceId, s.spent);
+    await noteCreditCharge(deviceId, voiceMode ? "voice" : "text", s);
     await noteInteraction(deviceId, {
       channel: voiceMode ? "voice" : "text",
       feature: assistantFeature(finalized),
@@ -2468,7 +2651,8 @@ app.post("/api/assistant", async (req, res) => {
   // Personalization lives on-device. The account-confirmation name is the only
   // profile field retained, and only because the user opted to show it on /buy.
   const userProfile = parseUserPersona(req.body?.profile, req.body?.addressUser);
-  await captureRequestDeviceInfo(req, userProfile.name);
+  const takiModel = normalizeTakiModel(req.body?.profile?.model);
+  void captureRequestDeviceInfo(req, userProfile.name).catch((error) => console.error("device info capture:", error));
 
   const state = buildConversationState(userMessage, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, voiceMode, deviceId, deviceWeather);
 
@@ -2482,7 +2666,7 @@ app.post("/api/assistant", async (req, res) => {
   }
 
   try {
-    const result = await runAssistant(state, deviceId, voiceMode);
+    const result = await withTakiModel(takiModel, () => runAssistant(state, deviceId, voiceMode));
     if (result?.usageBlocked) { res.status(402).json(result); return; }
     res.json(result);
   } catch (error) {
@@ -2508,10 +2692,43 @@ app.post("/api/assistant", async (req, res) => {
 // surcharge applies) → synthesize the reply. The device still executes the
 // returned action; only the extra STT/TTS is voice-specific.
 app.post("/api/voice", async (req, res) => {
-  if (!isVoiceConfigured()) { res.status(503).json({ error: "voice not configured (set ELEVENLABS_API_KEY)" }); return; }
   const audioBase64 = typeof req.body?.audioBase64 === "string" ? req.body.audioBase64 : "";
   if (audioBase64.length > 3_000_000) { res.status(413).json({ error: "voice recording too large" }); return; }
   const deviceTranscript = typeof req.body?.transcript === "string" ? req.body.transcript.trim().slice(0, 4000) : "";
+  const prefersDeviceSpeech = req.body?.deviceSpeech === true;
+  const progressiveVoice = req.body?.progressiveVoice === true;
+  let voiceStreamStarted = false;
+  const startVoiceStream = () => {
+    if (!progressiveVoice || voiceStreamStarted) return;
+    voiceStreamStarted = true;
+    res.status(200);
+    res.set("Content-Type", "application/x-ndjson; charset=utf-8");
+    res.set("Cache-Control", "no-cache, no-transform");
+    res.set("X-Accel-Buffering", "no");
+    res.flushHeaders();
+  };
+  const writeVoiceEvent = (event: Record<string, unknown>) => {
+    if (!voiceStreamStarted) return;
+    res.write(`${JSON.stringify(event)}\n`);
+  };
+  const finishVoiceResponse = (payload: Record<string, unknown>, status = 200) => {
+    if (voiceStreamStarted) {
+      writeVoiceEvent({ type: "final", response: payload });
+      res.end();
+    } else {
+      res.status(status).json(payload);
+    }
+  };
+  // CarPlay supplies Apple's transcription and can speak the reply locally, so
+  // it does not need to wait for either ElevenLabs request. Other voice clients
+  // retain the selected cloud voice and the cloud transcription fallback.
+  if (!isVoiceConfigured() && (!deviceTranscript || !prefersDeviceSpeech)) {
+    res.status(503).json({ error: "voice not configured (set ELEVENLABS_API_KEY)" }); return;
+  }
+  const speechHints = [
+    "Taki", "Amicalola", "Amicalola Falls", "Dyckert",
+    ...(Array.isArray(req.body?.speechHints) ? req.body.speechHints : [])
+  ];
   const audioDurationMs = billableAudioDurationMs(audioBase64, req.body?.audioDurationMs);
   const mime = typeof req.body?.mime === "string" ? req.body.mime : "audio/m4a";
   const rawContext = typeof req.body?.context === "string" ? req.body.context.slice(-120_000) : "";
@@ -2521,7 +2738,7 @@ app.post("/api/voice", async (req, res) => {
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   if (!(await requireCreditIdentity(deviceId, res))) return;
   const voiceId = typeof req.body?.voiceId === "string" ? req.body.voiceId : undefined;
-  if (voiceId && !(await listVoices()).some((voice) => voice.id === voiceId)) {
+  if (!prefersDeviceSpeech && voiceId && !(await listVoices()).some((voice) => voice.id === voiceId)) {
     res.status(400).json({ error: "voice is not available" }); return;
   }
   const voiceVariability = typeof req.body?.voiceVariability === "number"
@@ -2529,61 +2746,106 @@ app.post("/api/voice", async (req, res) => {
     : 0.5;
   const styleProfiles = parseIncomingStyleProfiles(req.body?.styleProfiles);
   const userProfile = parseUserPersona(req.body?.profile, req.body?.addressUser);
-  await captureRequestDeviceInfo(req, userProfile.name);
+  const takiModel = normalizeTakiModel(req.body?.profile?.model);
+  void captureRequestDeviceInfo(req, userProfile.name).catch((error) => console.error("device info capture:", error));
   if (!audioBase64 && !deviceTranscript) { res.status(400).json({ error: "audioBase64 or transcript required" }); return; }
 
-  // The first five Free-tier turns include speech. Later turns continue normally
-  // and charge STT/TTS against credits instead of hard-blocking Voice.
-  let freeTier = false;
-  const voiceSummary = await creditSummary(deviceId);
-  freeTier = voiceSummary.tier === "free";
-  const voiceBlock = usageBlockFor(voiceSummary, MIN_REQUEST_CREDITS, true);
-  if (voiceBlock) { res.status(402).json(usageBlockedPayload(voiceBlock)); return; }
-
   try {
-    // Prefer Apple's on-device transcription when the phone supplied one. This
+    // Prefer Apple's transcription when the phone supplied a confident one. This
     // removes an entire sequential cloud STT request from normal voice turns;
     // audio remains the fallback for unsupported devices or uncertain results.
     const usedCloudTranscription = !deviceTranscript;
-    const transcript = deviceTranscript || await transcribe(audioBase64, mime);
+    const transcript = deviceTranscript || await transcribe(audioBase64, mime, speechHints);
     if (!transcript) {
-      // Nothing intelligible (silence) — let the device re-listen or end.
-      res.json({ transcript: "", spokenText: "", action: null, actions: null, empty: true });
+      res.json({ transcript: "", spokenText: VOICE_REPEAT_PROMPT, action: null, actions: null, empty: true, needsRepeat: true });
       return;
     }
+    if (shouldAskForVoiceRepeat(transcript)) {
+      // A filler/noise-only miss is handled before safety, planning, metering,
+      // or TTS. CarPlay speaks this response immediately on-device.
+      res.json({ transcript, spokenText: VOICE_REPEAT_PROMPT, action: null, actions: null, needsRepeat: true });
+      return;
+    }
+
     const gate = await safetyGate(deviceId, transcript, req, true);
     if (gate) {
       let audio = "";
-      try { audio = await synthesize(gate.message, voiceId, voiceVariability); } catch { /* text still returns if TTS is temporarily unavailable */ }
+      if (!prefersDeviceSpeech) {
+        try { audio = await synthesize(gate.message, voiceId, voiceVariability); } catch { /* text still returns if TTS is temporarily unavailable */ }
+      }
       res.json({ transcript, spokenText: gate.message, action: null, actions: null, audioBase64: audio, mime: "audio/mpeg", blocked: true, ...(gate.block ? { access: gate.block, accessMessage: gate.message } : {}) });
       return;
     }
+    startVoiceStream();
+    writeVoiceEvent({ type: "transcript", transcript });
     const state = buildConversationState(transcript, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, true, deviceId, deviceWeather);
     let audio = "";
-    const result = await runAssistant(
+    let progressiveText = "";
+    let progressiveAudioStarted = false;
+    let progressiveSpeechStarted = false;
+    let progressiveAudioQueue: Promise<void> = Promise.resolve();
+    const queueProgressiveText = (rawText: string) => {
+      const text = rawText.replace(/\s+/g, " ").trim();
+      if (!progressiveVoice || !text) return;
+      progressiveText = `${progressiveText}${progressiveText ? " " : ""}${text}`.trim();
+      if (prefersDeviceSpeech) {
+        progressiveSpeechStarted = true;
+        writeVoiceEvent({ type: "speech", text });
+        return;
+      }
+      progressiveAudioQueue = progressiveAudioQueue.then(async () => {
+        const chunkAudio = await synthesize(text, voiceId, voiceVariability);
+        if (!chunkAudio) throw new ServiceError("voice_unavailable", VOICE_UNAVAILABLE_SPOKEN);
+        progressiveAudioStarted = true;
+        writeVoiceEvent({ type: "audio", text, audioBase64: chunkAudio, mime: "audio/mpeg" });
+      });
+    };
+    // runAssistant owns the authoritative entitlement/credit check. Avoiding a
+    // duplicate account-store round trip here shortens every CarPlay turn.
+    const result = await withTakiModel(takiModel, () => runAssistant(
       state,
       deviceId,
       true,
       req.body?.deferredActionSynthesis === true,
+      prefersDeviceSpeech,
       usedCloudTranscription ? sttCostUsd(audioDurationMs) : 0,
       async ({ response, deferVoiceSynthesis }) => {
         if (deferVoiceSynthesis) return;
+        if (progressiveVoice) {
+          let finalText = String(response.spokenText || "").replace(/\s+/g, " ").trim();
+          if (progressiveText) {
+            if (finalText.startsWith(progressiveText)) {
+              finalText = finalText.slice(progressiveText.length).trim();
+            } else {
+              // The final voice clamp should normally preserve the first stable
+              // sentence. If it did rewrite it, keep the already-spoken truthful
+              // phrase instead of speaking a contradictory duplicate.
+              response.spokenText = progressiveText;
+              finalText = "";
+            }
+          }
+          for (const chunk of splitTextForProgressiveSpeech(finalText)) queueProgressiveText(chunk);
+          await progressiveAudioQueue;
+          return;
+        }
+        if (prefersDeviceSpeech) return;
         audio = await synthesize(response.spokenText || "", voiceId, voiceVariability);
         if (!audio && (response.spokenText || "").trim()) {
           throw new ServiceError("voice_unavailable", VOICE_UNAVAILABLE_SPOKEN);
         }
-      }
-    );
-    if (result?.usageBlocked) { res.status(402).json(result); return; }
-    let voiceUsed: number | undefined;
-    if (freeTier && deviceId) {
-      voiceUsed = await noteVoiceQuestion(deviceId);
-      if (result.credits) {
-        const updated = await creditSummary(deviceId);
-        result.credits = { ...result.credits, ...updated, cost: result.credits.cost };
-      }
-    }
-    res.json({ ...result, transcript, transcriptionSource: deviceTranscript ? "device" : "cloud", audioBase64: audio, mime: "audio/mpeg", voiceUsed });
+      },
+      progressiveVoice ? queueProgressiveText : undefined
+    ));
+    if (result?.usageBlocked) { finishVoiceResponse(result, 402); return; }
+    finishVoiceResponse({
+      ...result,
+      transcript,
+      transcriptionSource: deviceTranscript ? "device" : "cloud",
+      audioBase64: audio,
+      mime: "audio/mpeg",
+      ...(progressiveAudioStarted ? { progressiveAudioStarted: true } : {}),
+      ...(progressiveSpeechStarted ? { progressiveSpeechStarted: true } : {})
+    });
   } catch (error) {
     // Vendor outage: speak the message right away. For an AI (Gemini) outage
     // ElevenLabs is usually fine, so voice it in the user's selected voice; for
@@ -2591,10 +2853,10 @@ app.post("/api/voice", async (req, res) => {
     // the phone read it aloud.
     if (error instanceof ServiceError) {
       let audio = "";
-      if (error.kind !== "voice_unavailable") {
+      if (!prefersDeviceSpeech && error.kind !== "voice_unavailable") {
         try { audio = await synthesize(error.spoken, voiceId, voiceVariability); } catch { /* text-only fallback */ }
       }
-      res.status(503).json({
+      finishVoiceResponse({
         transcript: deviceTranscript || "",
         spokenText: error.spoken,
         action: null,
@@ -2603,11 +2865,11 @@ app.post("/api/voice", async (req, res) => {
         mime: "audio/mpeg",
         serviceUnavailable: true,
         serviceError: error.kind
-      });
+      }, 503);
       return;
     }
     console.error("Voice route error:", error);
-    res.status(502).json({ error: "voice unavailable" });
+    finishVoiceResponse({ error: "voice unavailable" }, 502);
   }
 });
 
@@ -2717,7 +2979,7 @@ app.post("/api/voice/synthesize", async (req, res) => {
     const speechUsd = ttsCostUsd(speechCharacterCount(text));
     await noteChannelCost(deviceId, "voice", speechUsd);
     if (!plan.included) {
-      const charged = await spendUsageUsd(deviceId, speechUsd);
+      const charged = await chargeUsageUsd(deviceId, speechUsd, "text", `voice-correction:${randomUUID()}`);
       await noteSpend(deviceId, charged.spent);
     }
     res.json({ audioBase64: audio, mime: "audio/mpeg", spokenText: text });
@@ -2764,6 +3026,11 @@ app.get("/api/voice/sample", async (req, res) => {
   res.json({ audioBase64: audio, mime: "audio/mpeg" });
 });
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Taki AI server (planner-first, modular) listening on http://0.0.0.0:${PORT}`);
-});
+void storeDeleteCategory("connected_knowledge")
+  .then((removed) => { if (removed) console.log(`Removed ${removed} retired connected-knowledge record(s).`); })
+  .catch((error) => { console.error("Could not purge retired connected-knowledge records:", error); })
+  .finally(() => {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Taki AI server (planner-first, modular) listening on http://0.0.0.0:${PORT}`);
+    });
+  });

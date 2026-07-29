@@ -1,4 +1,4 @@
-import { storeGet, storeSet, isDurable } from "./store.js";
+import { storeGet, storeSet, storeUpdate, isDurable } from "./store.js";
 import { CREDIT_USD, sttCostUsd, ttsCostUsd } from "./metering.js";
 
 export { CREDIT_USD } from "./metering.js";
@@ -10,12 +10,8 @@ export { CREDIT_USD } from "./metering.js";
  * metadata, grounding requests, and paid TTS are accumulated as microdollars;
  * only complete credits are deducted. Credits expire 90 days after each grant.
  *
- * Identity is the device id for now (no accounts yet). Real Apple IAP + accounts
- * are a later pass; tiers are granted via /api/credits/grant meanwhile.
- *
- * Persistence: the Postgres-durable blob store (store.ts), one blob per device
- * under "credits:<deviceId>". A per-device in-memory mutex serializes the
- * read-modify-write (fine for a single Render instance).
+ * Persistence is one ledger per verified identity. Postgres updates take a row
+ * lock, so checks and deductions remain atomic across server instances.
  * ==========================================================================*/
 
 /* ---- CONFIG (tune these) ------------------------------------------------- */
@@ -28,29 +24,35 @@ export type Tier = "free" | "plus" | "plus_voice" | "pro";
 
 export interface TierConfig {
   label: string;
-  creditsPerCycle: number;   // granted each subscription cycle
-  priceUsd: number;          // display only (real pricing lives in App Store later)
-  voiceIncluded: boolean;    // voice-mode questions cost no surcharge
+  creditsPerCycle: number;   // AI Credits granted each subscription cycle
+  voiceCreditsPerCycle: number;
+  priceUsd: number;
+  description: string;
+  badge?: string;
   extraCreditDiscount: number; // discount on extra credit packs (used when IAP lands)
 }
 
-// Credits are direct usage value: 3,000 credits cover $3.00 of vendor usage.
+// One authoritative catalog feeds APIs and every client pricing surface. The
+// internal `plus_voice` key and existing App Store product remain supported for
+// installed builds and current subscribers; its customer-facing name is Premium.
 export const TIERS: Record<Tier, TierConfig> = {
-  free:       { label: "Free",       creditsPerCycle: 0,     priceUsd: 0,     voiceIncluded: false, extraCreditDiscount: 0 },
-  plus:       { label: "Plus",       creditsPerCycle: 3000,  priceUsd: 9.99,  voiceIncluded: false, extraCreditDiscount: 0 },
-  plus_voice: { label: "Plus Voice", creditsPerCycle: 4000,  priceUsd: 14.99, voiceIncluded: true,  extraCreditDiscount: 0.2 },
-  // Pro now includes voice (on base credits only, like Plus Voice).
-  pro:        { label: "Pro",        creditsPerCycle: 15000, priceUsd: 29.99, voiceIncluded: true,  extraCreditDiscount: 0.4 }
+  free:       { label: "Free",    creditsPerCycle: 0,      voiceCreditsPerCycle: 0,   priceUsd: 0,     description: "Try Taki", extraCreditDiscount: 0 },
+  plus:       { label: "Plus",    creditsPerCycle: 4_000,  voiceCreditsPerCycle: 50,  priceUsd: 9.99,  description: "Best for mostly text usage", extraCreditDiscount: 0 },
+  plus_voice: { label: "Premium", creditsPerCycle: 6_000,  voiceCreditsPerCycle: 300, priceUsd: 14.99, description: "Best for voice", badge: "Most Popular", extraCreditDiscount: 0.2 },
+  pro:        { label: "Pro",     creditsPerCycle: 12_000, voiceCreditsPerCycle: 600, priceUsd: 24.99, description: "Best for heavy overall usage", extraCreditDiscount: 0.4 }
 };
 
-// Voice pricing. "Included"/"free" voice never means a free request — it only
-// waives the extra speech-to-text + text-to-speech surcharge, so a voice turn
-// costs the same credits as the identical question typed as text. Plus Voice /
-// Pro get a per-cycle allowance of surcharge-free speech; after that, voice
-// continues and the STT/TTS surcharge is charged against normal credits.
-// Free gets FREE_VOICE_LIMIT surcharge-free turns per month (reset each cycle).
-export const FREE_VOICE_PER_CYCLE: Record<Tier, number> = { free: 0, plus: 0, plus_voice: 150, pro: 300 };
-export const FREE_VOICE_LIMIT = 5;
+// Voice pricing: every voice request consumes its normal variable AI Credits.
+// One Voice Credit removes the fixed 40-AI-Credit surcharge; without one, voice
+// remains available when the account can afford normal usage plus that surcharge.
+export const FREE_VOICE_PER_CYCLE: Record<Tier, number> = {
+  free: 0,
+  plus: TIERS.plus.voiceCreditsPerCycle,
+  plus_voice: TIERS.plus_voice.voiceCreditsPerCycle,
+  pro: TIERS.pro.voiceCreditsPerCycle
+};
+export const FREE_VOICE_LIMIT = 0;
+export const VOICE_SURCHARGE_CREDITS = 40;
 export const APP_STORE_COMMISSION_RATE = 0.15;
 export const MAX_VOICE_RESPONSE_CHARS = 280;
 export const MAX_VOICE_INPUT_MS = 60_000;
@@ -66,7 +68,7 @@ export function attachmentBaseCostCredits(attachments: Array<{ kind?: unknown }>
 // Is this voice turn covered by the free-voice allowance? Only on an included
 // tier, only while base subscription credits remain, and only under the cap.
 export function isFreeVoice(tier: Tier, baseCredits: number, voiceCycleUsed: number, voiceLifetimeUsed = 0): boolean {
-  if (tier === "free") return voiceLifetimeUsed < FREE_VOICE_LIMIT;
+  if (tier === "free") return false;
   const cap = FREE_VOICE_PER_CYCLE[tier] || 0;
   return cap > 0 && baseCredits > 0 && voiceCycleUsed < cap;
 }
@@ -76,7 +78,7 @@ export function isFreeVoice(tier: Tier, baseCredits: number, voiceCycleUsed: num
 // pay the per-turn voice surcharge — a paying user should never be locked out of
 // voice just because the free monthly voice turns are used up.
 export function hasVoiceAccess(tier: Tier, voiceLifetimeUsed = 0, hasPurchasedCredits = false): boolean {
-  return tier !== "free" || voiceLifetimeUsed < FREE_VOICE_LIMIT || hasPurchasedCredits;
+  return tier !== "free" || hasPurchasedCredits;
 }
 // Credits charged for a paid voice turn (beyond the free allowance).
 export function worstCaseContributionUsd(tier: Tier): number {
@@ -101,13 +103,53 @@ export interface CreditGrant {
   source: string;      // "free_starter" | "subscription:plus" | ...
 }
 
+export type SubscriptionStatus = "none" | "active" | "cancelled" | "billing_retry" | "grace" | "expired" | "revoked";
+
+export interface CreditGrantAudit {
+  userId: string;
+  subscriptionId: string;
+  transactionId: string;
+  productId: string;
+  periodStart: number | null;
+  periodEnd: number | null;
+  aiCreditsGranted: number;
+  voiceCreditsGranted: number;
+  idempotencyKey: string;
+  createdAt: number;
+  reason: string;
+}
+
+export interface CreditUsageTransaction {
+  userId: string;
+  requestId: string;
+  mode: "text" | "voice";
+  normalAiCredits: number;
+  voiceSurchargeCredits: number;
+  voiceCreditsCharged: number;
+  totalAiCreditsCharged: number;
+  aiCreditBalanceAfter: number;
+  voiceCreditBalanceAfter: number;
+  createdAt: number;
+  status: "charged" | "reversed" | "rejected";
+  reversedAt?: number;
+}
+
 // Minimum balance required to ask anything (cut users off before they hit 0,
 // so a request can't overspend into a negative balance).
 export const MIN_REQUEST_CREDITS = 1;
 export interface CreditAccount {
+  schemaVersion?: number;
   deviceId: string;
   tier: Tier;
   grants: CreditGrant[];
+  voiceCredits?: number;
+  subscriptionStatus?: SubscriptionStatus;
+  billingPeriodStart?: number | null;
+  billingPeriodEnd?: number | null;
+  subscriptionId?: string;
+  productId?: string;
+  grantLedger?: CreditGrantAudit[];
+  usageLedger?: CreditUsageTransaction[];
   starterGiven?: boolean;
   // UTC month ("YYYY-MM") of the free tier's last recurring allotment, so the
   // 500 free credits + free-voice count refresh once per month, not every load.
@@ -148,6 +190,11 @@ export interface UsageWindow {
 export interface CreditSummary {
   tier: Tier;
   balance: number;
+  aiCredits: number;
+  voiceCredits: number;
+  subscriptionStatus: SubscriptionStatus;
+  billingPeriodStart: number | null;
+  billingPeriodEnd: number | null;
   nextExpiry: number | null; // epoch ms of the soonest-expiring grant
   // Per-grant breakdown so the UI can show "1,000 credits expire Sep 27".
   expiring: { credits: number; expiresAt: number }[];
@@ -174,6 +221,47 @@ function keyFor(deviceId: string): string {
   return `credits:${deviceId.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 }
 
+function emptyAccount(deviceId: string): CreditAccount {
+  return { deviceId, tier: "free", grants: [], voiceCredits: 0, subscriptionStatus: "none", starterGiven: false, updatedAt: 0 };
+}
+
+// Version-2 migration is deliberately non-destructive: every existing AI grant
+// and purchased top-up is kept exactly as-is. `plus_voice` remains the internal
+// compatibility key but is presented as Premium. Existing paid users receive
+// the unused portion of the new Voice Credit allowance for their current cycle;
+// no AI balance is reduced or replaced during migration.
+function normalizeAccount(acct: CreditAccount, deviceId: string): CreditAccount {
+  acct.deviceId = deviceId;
+  if (!(["free", "plus", "plus_voice", "pro"] as string[]).includes(acct.tier)) acct.tier = "free";
+  if (!Array.isArray(acct.grants)) acct.grants = [];
+  if (!Array.isArray(acct.grantLedger)) acct.grantLedger = [];
+  if (!Array.isArray(acct.usageLedger)) acct.usageLedger = [];
+  if ((acct.schemaVersion || 0) < 2) {
+    const alreadyUsed = Math.max(0, Math.floor(acct.voiceCycleCount || 0));
+    const migratedRemaining = Math.max(0, TIERS[acct.tier].voiceCreditsPerCycle - alreadyUsed);
+    acct.voiceCredits = Math.max(Math.floor(acct.voiceCredits || 0), migratedRemaining);
+    acct.subscriptionStatus = acct.tier === "free" ? "none" : "active";
+    acct.billingPeriodStart = acct.billingPeriodStart ?? null;
+    acct.billingPeriodEnd = acct.billingPeriodEnd ?? null;
+    acct.schemaVersion = 2;
+  }
+  acct.voiceCredits = Math.max(0, Math.floor(acct.voiceCredits || 0));
+  acct.subscriptionStatus ||= acct.tier === "free" ? "none" : "active";
+  return acct;
+}
+
+async function updateAccount<R>(
+  identity: string,
+  fn: (acct: CreditAccount) => Promise<R> | R
+): Promise<R> {
+  return storeUpdate(keyFor(identity), emptyAccount(identity), async (raw) => {
+    const acct = normalizeAccount(raw, identity);
+    const result = await fn(acct);
+    acct.updatedAt = Date.now();
+    return { value: acct, result };
+  });
+}
+
 // Per-device serialization so concurrent requests don't clobber the blob.
 const chains = new Map<string, Promise<unknown>>();
 function withLock<T>(deviceId: string, fn: () => Promise<T>): Promise<T> {
@@ -192,11 +280,7 @@ function withLocks<T>(deviceIds: string[], fn: () => Promise<T>): Promise<T> {
 }
 
 async function load(deviceId: string): Promise<CreditAccount> {
-  const acct = await storeGet<CreditAccount>(keyFor(deviceId), {
-    deviceId, tier: "free", grants: [], starterGiven: false, updatedAt: 0
-  });
-  acct.deviceId = deviceId;
-  if (!Array.isArray(acct.grants)) acct.grants = [];
+  const acct = normalizeAccount(await storeGet<CreditAccount>(keyFor(deviceId), emptyAccount(deviceId)), deviceId);
   const now = Date.now();
   // Migrate credit packs from the earlier non-expiring implementation.
   for (const grant of acct.grants) {
@@ -245,6 +329,178 @@ function addGrant(acct: CreditAccount, source: string, amount: number, expiresAt
 export function balanceOf(acct: CreditAccount): number {
   const now = Date.now();
   return acct.grants.reduce((sum, g) => (g.expiresAt > now ? sum + g.remaining : sum), 0);
+}
+
+export interface CreditChargeQuote {
+  normalAiCredits: number;
+  voiceSurchargeCredits: number;
+  voiceCreditsCharged: number;
+  totalAiCredits: number;
+}
+
+export class InsufficientCreditsError extends Error {
+  readonly code = "insufficient_credits";
+  constructor(
+    public readonly balance: "ai" | "voice",
+    public readonly required: number,
+    public readonly available: number
+  ) {
+    super(balance === "ai"
+      ? `This request needs ${required} AI Credits, but only ${available} are available. Upgrade or renew to continue.`
+      : "A Voice Credit is not available.");
+  }
+}
+
+export function quoteCreditCharge(normalAiCredits: number, mode: "text" | "voice", voiceCreditsAvailable: number): CreditChargeQuote {
+  const normal = Math.max(0, Math.ceil(normalAiCredits));
+  const useVoiceCredit = mode === "voice" && Math.floor(voiceCreditsAvailable) > 0;
+  const surcharge = mode === "voice" && !useVoiceCredit ? VOICE_SURCHARGE_CREDITS : 0;
+  return {
+    normalAiCredits: normal,
+    voiceSurchargeCredits: surcharge,
+    voiceCreditsCharged: useVoiceCredit ? 1 : 0,
+    totalAiCredits: normal + surcharge
+  };
+}
+
+function deductAiCredits(acct: CreditAccount, amount: number): void {
+  let remaining = Math.max(0, Math.floor(amount));
+  const now = Date.now();
+  const ordered = acct.grants
+    .filter((grant) => grant.expiresAt > now && grant.remaining > 0)
+    .sort(compareGrantSpendOrder);
+  for (const grant of ordered) {
+    if (remaining <= 0) break;
+    const take = Math.min(grant.remaining, remaining);
+    grant.remaining -= take;
+    remaining -= take;
+  }
+  if (remaining > 0) throw new Error("credit invariant violated");
+  acct.grants = acct.grants.filter((grant) => grant.expiresAt > now && grant.remaining > 0);
+}
+
+export async function chargeRequestCredits(args: {
+  identity: string;
+  requestId: string;
+  mode: "text" | "voice";
+  normalAiCredits: number;
+}): Promise<CreditSummary & CreditChargeQuote & { spent: number }> {
+  let rejection: InsufficientCreditsError | null = null;
+  const result = await updateAccount(args.identity, (acct) => {
+    ensureFreeCycle(acct);
+    const existing = (acct.usageLedger || []).find((entry) => entry.requestId === args.requestId && entry.status === "charged");
+    if (existing) {
+      return {
+        ...summarize(acct),
+        normalAiCredits: existing.normalAiCredits,
+        voiceSurchargeCredits: existing.voiceSurchargeCredits,
+        voiceCreditsCharged: existing.voiceCreditsCharged,
+        totalAiCredits: existing.totalAiCreditsCharged,
+        spent: existing.totalAiCreditsCharged
+      };
+    }
+    const quote = quoteCreditCharge(args.normalAiCredits, args.mode, acct.voiceCredits || 0);
+    const available = balanceOf(acct);
+    if (available < quote.totalAiCredits) {
+      rejection = new InsufficientCreditsError("ai", quote.totalAiCredits, available);
+      acct.usageLedger = [...(acct.usageLedger || []), {
+        userId: args.identity,
+        requestId: args.requestId,
+        mode: args.mode,
+        ...quote,
+        totalAiCreditsCharged: quote.totalAiCredits,
+        aiCreditBalanceAfter: available,
+        voiceCreditBalanceAfter: Math.max(0, acct.voiceCredits || 0),
+        createdAt: Date.now(),
+        status: "rejected" as const
+      }].slice(-2000);
+      return { ...summarize(acct), ...quote, spent: 0 };
+    }
+    deductAiCredits(acct, quote.totalAiCredits);
+    if (quote.voiceCreditsCharged) acct.voiceCredits = Math.max(0, (acct.voiceCredits || 0) - 1);
+    rollUsageWindows(acct);
+    acct.dailyUsage!.used += quote.totalAiCredits;
+    acct.monthlyUsage!.used += quote.totalAiCredits;
+    const after = summarize(acct);
+    acct.usageLedger = [...(acct.usageLedger || []), {
+      userId: args.identity,
+      requestId: args.requestId,
+      mode: args.mode,
+      normalAiCredits: quote.normalAiCredits,
+      voiceSurchargeCredits: quote.voiceSurchargeCredits,
+      voiceCreditsCharged: quote.voiceCreditsCharged,
+      totalAiCreditsCharged: quote.totalAiCredits,
+      aiCreditBalanceAfter: after.balance,
+      voiceCreditBalanceAfter: after.voiceCredits,
+      createdAt: Date.now(),
+      status: "charged" as const
+    }].slice(-2000);
+    return { ...after, ...quote, spent: quote.totalAiCredits };
+  });
+  if (rejection) throw rejection;
+  return result;
+}
+
+export async function chargeUsageUsd(
+  identity: string,
+  costUsd: number,
+  mode: "text" | "voice",
+  requestId: string
+): Promise<CreditSummary & CreditChargeQuote & { spent: number; usageUsd: number }> {
+  const costMicros = Math.max(0, Math.round(costUsd * 1_000_000));
+  let rejection: InsufficientCreditsError | null = null;
+  const charged = await updateAccount(identity, (acct) => {
+    ensureFreeCycle(acct);
+    const existing = (acct.usageLedger || []).find((entry) => entry.requestId === requestId && entry.status === "charged");
+    if (existing) {
+      return {
+        ...summarize(acct),
+        normalAiCredits: existing.normalAiCredits,
+        voiceSurchargeCredits: existing.voiceSurchargeCredits,
+        voiceCreditsCharged: existing.voiceCreditsCharged,
+        totalAiCredits: existing.totalAiCreditsCharged,
+        spent: existing.totalAiCreditsCharged,
+        usageUsd: costMicros / 1_000_000
+      };
+    }
+    const accumulated = Math.max(0, Math.floor(acct.usageRemainderMicros || 0)) + costMicros;
+    const quote = quoteCreditCharge(Math.floor(accumulated / 1000), mode, acct.voiceCredits || 0);
+    const available = balanceOf(acct);
+    if (available < quote.totalAiCredits) {
+      rejection = new InsufficientCreditsError("ai", quote.totalAiCredits, available);
+      acct.usageLedger = [...(acct.usageLedger || []), {
+        userId: identity, requestId, mode,
+        normalAiCredits: quote.normalAiCredits,
+        voiceSurchargeCredits: quote.voiceSurchargeCredits,
+        voiceCreditsCharged: quote.voiceCreditsCharged,
+        totalAiCreditsCharged: quote.totalAiCredits,
+        aiCreditBalanceAfter: available,
+        voiceCreditBalanceAfter: Math.max(0, acct.voiceCredits || 0),
+        createdAt: Date.now(), status: "rejected" as const
+      }].slice(-2000);
+      return { ...summarize(acct), ...quote, spent: 0, usageUsd: costMicros / 1_000_000 };
+    }
+    deductAiCredits(acct, quote.totalAiCredits);
+    if (quote.voiceCreditsCharged) acct.voiceCredits = Math.max(0, (acct.voiceCredits || 0) - 1);
+    acct.usageRemainderMicros = accumulated % 1000;
+    rollUsageWindows(acct);
+    acct.dailyUsage!.used += quote.totalAiCredits;
+    acct.monthlyUsage!.used += quote.totalAiCredits;
+    const after = summarize(acct);
+    acct.usageLedger = [...(acct.usageLedger || []), {
+      userId: identity, requestId, mode,
+      normalAiCredits: quote.normalAiCredits,
+      voiceSurchargeCredits: quote.voiceSurchargeCredits,
+      voiceCreditsCharged: quote.voiceCreditsCharged,
+      totalAiCreditsCharged: quote.totalAiCredits,
+      aiCreditBalanceAfter: after.balance,
+      voiceCreditBalanceAfter: after.voiceCredits,
+      createdAt: Date.now(), status: "charged" as const
+    }].slice(-2000);
+    return { ...after, ...quote, spent: quote.totalAiCredits, usageUsd: costMicros / 1_000_000 };
+  });
+  if (rejection) throw rejection;
+  return charged;
 }
 
 export function isPurchasedGrant(grant: Pick<CreditGrant, "source">): boolean {
@@ -347,15 +603,17 @@ function summarize(acct: CreditAccount): CreditSummary {
   const limits = usageLimitsFor(acct.tier, additionalCredits);
   const daily = usageWindow(acct.dailyUsage?.used || 0, limits.daily, nextUTCDay(now));
   const monthly = usageWindow(acct.monthlyUsage?.used || 0, limits.monthly, nextUTCMonth(now));
-  const voiceAllowanceLimit = acct.tier === "free" ? FREE_VOICE_LIMIT : FREE_VOICE_PER_CYCLE[acct.tier] || 0;
-  const voiceAllowanceUsed = Math.min(
-    voiceAllowanceLimit,
-    acct.tier === "free" ? acct.voiceCount || 0 : acct.voiceCycleCount || 0
-  );
+  const voiceAllowanceLimit = TIERS[acct.tier].voiceCreditsPerCycle;
+  const voiceAllowanceUsed = Math.max(0, voiceAllowanceLimit - Math.max(0, acct.voiceCredits || 0));
   const limitReason = daily.used >= daily.limit ? "daily" : monthly.used >= monthly.limit ? "monthly" : null;
   return {
     tier: acct.tier,
     balance: balanceOf(acct),
+    aiCredits: balanceOf(acct),
+    voiceCredits: Math.max(0, Math.floor(acct.voiceCredits || 0)),
+    subscriptionStatus: acct.subscriptionStatus || (acct.tier === "free" ? "none" : "active"),
+    billingPeriodStart: acct.billingPeriodStart ?? null,
+    billingPeriodEnd: acct.billingPeriodEnd ?? null,
     nextExpiry: live.find((g) => g.expiresAt < NON_EXPIRING_GRANT_DATE)?.expiresAt ?? null,
     expiring: live.filter((g) => g.expiresAt < NON_EXPIRING_GRANT_DATE).map((g) => ({ credits: g.remaining, expiresAt: g.expiresAt })),
     purchasedExpiring: live.filter(isPurchasedGrant).map((g) => ({ credits: g.remaining, expiresAt: g.expiresAt })),
@@ -363,7 +621,7 @@ function summarize(acct: CreditAccount): CreditSummary {
     durable: isDurable(),
     voiceUsed: acct.voiceCount || 0,
     baseCredits: live.filter((g) => g.source.startsWith("subscription:")).reduce((s, g) => s + g.remaining, 0),
-    voiceCycleUsed: acct.voiceCycleCount || 0,
+    voiceCycleUsed: voiceAllowanceUsed,
     voiceAllowanceUsed,
     voiceAllowanceLimit,
     additionalCredits,
@@ -388,8 +646,7 @@ export async function noteFreeVoice(identity: string): Promise<number> {
 // Grant a one-off block of credits (e.g. a web top-up purchase). 90-day expiry
 // like any grant; does NOT change the subscription tier.
 export async function grantCredits(identity: string, amount: number, source: string): Promise<CreditSummary> {
-  return withLock(identity, async () => {
-    const acct = await load(identity);
+  return updateAccount(identity, async (acct) => {
     const grant = addGrant(acct, source, Math.max(0, Math.floor(amount)));
     if (grant && /topup/i.test(source)) {
       acct.topupAllowances = acct.topupAllowances || [];
@@ -397,7 +654,6 @@ export async function grantCredits(identity: string, amount: number, source: str
       acct.hasPurchasedCredits = true;
     }
     acct.starterGiven = true;
-    await save(acct);
     return summarize(acct);
   });
 }
@@ -407,8 +663,7 @@ export async function grantWebTopup(
   amount: number,
   checkoutSessionId: string
 ): Promise<{ granted: boolean; summary: CreditSummary }> {
-  return withLock(identity, async () => {
-    const acct = await load(identity);
+  return updateAccount(identity, async (acct) => {
     acct.processedWebTopups = acct.processedWebTopups || [];
     if (!checkoutSessionId || acct.processedWebTopups.includes(checkoutSessionId)) {
       return { granted: false, summary: summarize(acct) };
@@ -421,7 +676,6 @@ export async function grantWebTopup(
     acct.starterGiven = true;
     acct.processedWebTopups.push(checkoutSessionId);
     if (acct.processedWebTopups.length > 500) acct.processedWebTopups = acct.processedWebTopups.slice(-500);
-    await save(acct);
     return { granted: true, summary: summarize(acct) };
   });
 }
@@ -475,8 +729,7 @@ export async function grantForConsumableTransaction(
   transactionId: string,
   productId: string
 ): Promise<{ granted: boolean; credits: number; priceCents: number; summary: CreditSummary }> {
-  return withLock(identity, async () => {
-    const acct = await load(identity);
+  return updateAccount(identity, async (acct) => {
     const pack = IN_APP_CREDIT_PRODUCTS[productId];
     const credits = inAppCreditsForProduct(productId, acct.tier);
     if (!pack || !credits || !transactionId) {
@@ -495,7 +748,6 @@ export async function grantForConsumableTransaction(
     acct.processedConsumableTx.push(transactionId);
     if (acct.processedConsumableTx.length > 500) acct.processedConsumableTx = acct.processedConsumableTx.slice(-500);
     acct.starterGiven = true;
-    await save(acct);
     return { granted: true, credits, priceCents: pack.priceCents, summary: summarize(acct) };
   });
 }
@@ -512,9 +764,8 @@ export async function noteVoiceQuestion(identity: string): Promise<number> {
 
 // First-touch starter grant + current summary.
 export async function summary(deviceId: string): Promise<CreditSummary> {
-  return withLock(deviceId, async () => {
-    const acct = await load(deviceId);
-    if (ensureFreeCycle(acct)) await save(acct);
+  return updateAccount(deviceId, async (acct) => {
+    ensureFreeCycle(acct);
     return summarize(acct);
   });
 }
@@ -522,16 +773,16 @@ export async function summary(deviceId: string): Promise<CreditSummary> {
 // Grant a tier's credits (simulates a purchase/renewal until IAP). New grant
 // expires in 90 days; sets the account's tier.
 export async function grantTier(deviceId: string, tier: Tier): Promise<CreditSummary> {
-  return withLock(deviceId, async () => {
-    const acct = await load(deviceId);
+  return updateAccount(deviceId, async (acct) => {
     const conf = TIERS[tier];
     if (conf) {
       acct.grants = acct.grants.filter((grant) => grant.source !== "free_starter" && grant.source !== "free_monthly");
       addGrant(acct, `subscription:${tier}`, conf.creditsPerCycle);
     }
     acct.tier = tier;
+    acct.voiceCredits = conf?.voiceCreditsPerCycle || 0;
+    acct.subscriptionStatus = tier === "free" ? "none" : "active";
     acct.starterGiven = true;
-    await save(acct);
     return summarize(acct);
   });
 }
@@ -607,24 +858,55 @@ function higherTier(a: Tier, b: Tier): Tier {
 // credits — used when a transferred subscription's current period was already
 // granted to a prior identity, so the entitlement (tier) still applies.
 export async function activateSubscriptionTier(identity: string, tier: Tier): Promise<CreditSummary> {
-  return withLock(identity, async () => {
-    const acct = await load(identity);
-    acct.tier = higherTier(acct.tier, tier);
+  return updateAccount(identity, async (acct) => {
+    const priorAllowance = TIERS[acct.tier].voiceCreditsPerCycle;
+    const nextTier = higherTier(acct.tier, tier);
+    if (nextTier !== acct.tier) {
+      // StoreKit upgrades can take effect inside an already-granted billing
+      // period. Do not grant AI Credits twice; add only the Voice Credit
+      // allowance difference. Downgrades remain effective at renewal.
+      acct.voiceCredits = Math.max(0, acct.voiceCredits || 0) + Math.max(0, TIERS[nextTier].voiceCreditsPerCycle - priorAllowance);
+    }
+    acct.tier = nextTier;
+    acct.subscriptionStatus = "active";
     acct.starterGiven = true;
-    await save(acct);
     return summarize(acct);
   });
 }
 
+export interface SubscriptionGrantContext {
+  subscriptionId?: string;
+  transactionId?: string;
+  productId?: string;
+  periodStart?: number | null;
+  periodEnd?: number | null;
+  reason?: string;
+  status?: SubscriptionStatus;
+}
+
 export async function grantForTransaction(
-  identity: string, tier: Tier, periodKey: string
+  identity: string, tier: Tier, periodKey: string, context: SubscriptionGrantContext = {}
 ): Promise<{ granted: boolean; summary: CreditSummary }> {
-  return withLock(identity, async () => {
-    const acct = await load(identity);
+  return updateAccount(identity, async (acct) => {
     acct.processedTx = acct.processedTx || [];
+    const incomingEnd = context.periodEnd ?? null;
+    if (incomingEnd && acct.billingPeriodEnd && incomingEnd < acct.billingPeriodEnd && !acct.processedTx.includes(periodKey)) {
+      return { granted: false, summary: summarize(acct) };
+    }
     if (periodKey && acct.processedTx.includes(periodKey)) {
-      acct.tier = higherTier(acct.tier, tier);
-      await save(acct);
+      const priorAllowance = TIERS[acct.tier].voiceCreditsPerCycle;
+      const nextTier = higherTier(acct.tier, tier);
+      if (nextTier !== acct.tier) {
+        acct.voiceCredits = Math.max(0, acct.voiceCredits || 0) + Math.max(0, TIERS[nextTier].voiceCreditsPerCycle - priorAllowance);
+      }
+      acct.tier = nextTier;
+      acct.subscriptionStatus = context.status || "active";
+      if (incomingEnd && incomingEnd >= (acct.billingPeriodEnd || 0)) {
+        acct.billingPeriodStart = context.periodStart ?? acct.billingPeriodStart ?? null;
+        acct.billingPeriodEnd = incomingEnd;
+        acct.subscriptionId = context.subscriptionId || acct.subscriptionId;
+        acct.productId = context.productId || acct.productId;
+      }
       return { granted: false, summary: summarize(acct) };
     }
     const conf = TIERS[tier];
@@ -633,14 +915,51 @@ export async function grantForTransaction(
       addGrant(acct, `subscription:${tier}`, conf.creditsPerCycle);
     }
     acct.tier = tier;
+    acct.voiceCredits = conf?.voiceCreditsPerCycle || 0;
+    acct.subscriptionStatus = context.status || "active";
+    acct.billingPeriodStart = context.periodStart ?? acct.billingPeriodStart ?? null;
+    acct.billingPeriodEnd = context.periodEnd ?? acct.billingPeriodEnd ?? null;
+    acct.subscriptionId = context.subscriptionId || acct.subscriptionId;
+    acct.productId = context.productId || acct.productId;
     acct.starterGiven = true;
-    acct.voiceCycleCount = 0; // new cycle → reset the free-voice allowance
+    acct.voiceCycleCount = 0;
     if (periodKey) {
       acct.processedTx.push(periodKey);
       if (acct.processedTx.length > 200) acct.processedTx = acct.processedTx.slice(-200);
     }
-    await save(acct);
+    acct.grantLedger = [...(acct.grantLedger || []), {
+      userId: identity,
+      subscriptionId: context.subscriptionId || "",
+      transactionId: context.transactionId || "",
+      productId: context.productId || "",
+      periodStart: context.periodStart ?? null,
+      periodEnd: context.periodEnd ?? null,
+      aiCreditsGranted: conf?.creditsPerCycle || 0,
+      voiceCreditsGranted: conf?.voiceCreditsPerCycle || 0,
+      idempotencyKey: periodKey,
+      createdAt: Date.now(),
+      reason: context.reason || "subscription_cycle"
+    }].slice(-500);
     return { granted: true, summary: summarize(acct) };
+  });
+}
+
+export async function updateSubscriptionStatus(
+  identity: string,
+  status: SubscriptionStatus,
+  context: SubscriptionGrantContext = {}
+): Promise<CreditSummary> {
+  return updateAccount(identity, (acct) => {
+    const incomingEnd = context.periodEnd ?? null;
+    if (incomingEnd && acct.billingPeriodEnd && incomingEnd < acct.billingPeriodEnd) return summarize(acct);
+    acct.subscriptionStatus = status;
+    if (context.periodStart != null) acct.billingPeriodStart = context.periodStart;
+    if (incomingEnd != null) acct.billingPeriodEnd = incomingEnd;
+    if (context.subscriptionId) acct.subscriptionId = context.subscriptionId;
+    if (context.productId) acct.productId = context.productId;
+    // Cancellation and billing retry do not remove access. Apple/Stripe keeps
+    // the current entitlement active through the paid-through/grace date.
+    return summarize(acct);
   });
 }
 
@@ -708,25 +1027,27 @@ export async function mergeCredits(
 // Subscription lapsed naturally (EXPIRED / grace period over): drop to free but
 // keep any credits already granted (the user paid for them; 90-day expiry still
 // applies).
-export async function downgradeToFree(identity: string): Promise<void> {
-  return withLock(identity, async () => {
-    const acct = await load(identity);
+export async function downgradeToFree(identity: string, context: SubscriptionGrantContext = {}): Promise<void> {
+  return updateAccount(identity, async (acct) => {
+    if (context.periodEnd && acct.billingPeriodEnd && context.periodEnd < acct.billingPeriodEnd) return;
     acct.tier = "free";
-    await save(acct);
+    acct.voiceCredits = 0;
+    acct.subscriptionStatus = "expired";
   });
 }
 
 // Refund / revoke: drop to free AND claw back unused subscription-granted credits.
-export async function revokeSubscription(identity: string): Promise<void> {
-  return withLock(identity, async () => {
-    const acct = await load(identity);
+export async function revokeSubscription(identity: string, context: SubscriptionGrantContext = {}): Promise<void> {
+  return updateAccount(identity, async (acct) => {
+    if (context.periodEnd && acct.billingPeriodEnd && context.periodEnd < acct.billingPeriodEnd) return;
     acct.tier = "free";
+    acct.voiceCredits = 0;
+    acct.subscriptionStatus = "revoked";
     for (const g of acct.grants) {
       if (g.source.startsWith("subscription:")) g.remaining = 0;
     }
     const now = Date.now();
     acct.grants = acct.grants.filter((g) => g.remaining > 0 && g.expiresAt > now);
-    await save(acct);
   });
 }
 
@@ -761,7 +1082,8 @@ export async function reset(deviceId: string): Promise<void> {
 export function tierCatalog() {
   return (Object.keys(TIERS) as Tier[]).map((key) => ({
     key,
+    planId: key === "plus_voice" ? "premium_monthly" : `${key}_monthly`,
     ...TIERS[key],
-    includedVoiceTurns: FREE_VOICE_PER_CYCLE[key]
+    voiceCredits: TIERS[key].voiceCreditsPerCycle
   }));
 }

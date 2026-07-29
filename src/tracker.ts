@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { generateContent, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, TIME_ZONE } from "./ai.js";
+import { generateContent, ACTIVE_AI_PROVIDER, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, TIME_ZONE } from "./ai.js";
 import { parse as parseHtml } from "node-html-parser";
 import { safeParseJsonObject, withTimeout } from "./util.js";
 import { storeDelete, storeGet, storeSet } from "./store.js";
@@ -116,7 +116,11 @@ const SPORTS_TEAM_NAMES: Record<string, string> = {
   tottenham: "Tottenham Hotspur", barcelona: "FC Barcelona", "real madrid": "Real Madrid",
   "bayern munich": "Bayern Munich", "inter miami": "Inter Miami CF"
 };
-const TRACKER_MODEL = String(process.env.GEMINI_TRACKER_MODEL || MAIN_MODEL).trim();
+const TRACKER_MODEL = String(
+  process.env.AI_TRACKER_MODEL
+  || (ACTIVE_AI_PROVIDER === "openai" ? process.env.OPENAI_TRACKER_MODEL : process.env.GEMINI_TRACKER_MODEL)
+  || MAIN_MODEL
+).trim();
 const TRACKER_TIMEOUT_MS = Number(process.env.TRACKER_TIMEOUT_MS || 35000);
 
 function groundingSources(response: any): AssistantSource[] {

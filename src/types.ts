@@ -24,6 +24,8 @@ export type AssistantActionType =
   | "calendar_delete"
   | "reminder_create"
   | "reminder_search"
+  | "reminder_update"
+  | "reminder_delete"
   | "compose_email"
   | "open_app"
   | "maps_search"
@@ -38,6 +40,9 @@ export type AssistantActionType =
   | "stopwatch_start"
   | "stopwatch_stop"
   | "contact_create"
+  | "contact_search"
+  | "contact_update"
+  | "contact_delete"
   | "health_query"
   | "health_log"
   | "health_trend"
@@ -61,6 +66,10 @@ export type AssistantActionType =
   | "recurring_reminder"
   | "memory_save"
   | "share_content"
+  | "clipboard_copy"
+  | "file_export"
+  | "flashlight_control"
+  | "device_status"
   | "calendar_forward";
 
 export type AssistantAction = {
@@ -77,7 +86,10 @@ export type AssistantAction = {
   location: string | null;
   notes: string | null;
   reminderQuery: string | null;
+  reminderCompleted: boolean | null;
   dueDate: string | null;
+  contactField: string | null;
+  deviceAction: string | null;
   emailAddress: string | null;
   emailSubject: string | null;
   appName: string | null;
@@ -120,7 +132,8 @@ export type AssistantAction = {
   homeAction: string | null;
   homeTarget: string | null;
   homeValue: number | null;
-  // music_control: action ("play"|"pause"|"resume"|"next"|"previous"), query.
+  // music_control: action ("play"|"pause"|"resume"|"next"|"previous"|
+  // "restart"|"shuffleon"|"shuffleoff"), query.
   musicAction: string | null;
   musicQuery: string | null;
   // photos_show: how many days back (0 = just most recent).
@@ -391,6 +404,10 @@ export type ConversationState = {
   // per-device durable state the planner reads/writes — e.g. custom home
   // routines.
   deviceId?: string;
+
+  // Live server-authoritative entitlement snapshot. Populated inside the
+  // assistant request after identity validation; never accepted from clients.
+  accountSummary?: import("./credits.js").CreditSummary | null;
 };
 
 /* ---- Planner output ----------------------------------------------------- */
@@ -408,6 +425,8 @@ export type PlannerIntent =
   | "calendar_delete"
   | "reminder_create"
   | "reminder_search"
+  | "reminder_update"
+  | "reminder_delete"
   | "calendar_search"
   | "personal_search"
   | "open_app"
@@ -417,12 +436,19 @@ export type PlannerIntent =
   | "weather_answer"
   | "location_answer"
   | "contact_create"
+  | "contact_search"
+  | "contact_update"
+  | "contact_delete"
   | "health_query"
   | "music_control"
   | "identify_song"
   | "home_control"
   | "photos_show"
   | "share_content"
+  | "clipboard_copy"
+  | "file_export"
+  | "flashlight_control"
+  | "device_status"
   | "calendar_forward"
   | "clarify";
 
@@ -487,7 +513,10 @@ export function blankAction(type: AssistantActionType): AssistantAction {
     location: null,
     notes: null,
     reminderQuery: null,
+    reminderCompleted: null,
     dueDate: null,
+    contactField: null,
+    deviceAction: null,
     emailAddress: null,
     emailSubject: null,
     appName: null,

@@ -66,6 +66,7 @@ export function storeCategory(key: string): string {
   if (/^(?:stripe:|stripe_|iap(?:map|identity|primary|credit|creditidentity):|iap(?:map|identity|primary|credit|creditidentity)_)/.test(key)) return "billing";
   if (/^(?:safety:|safety_)/.test(key)) return "safety";
   if (/^(?:email:|email_)/.test(key)) return "connected_email";
+  if (/^(?:knowledge:|knowledge_)/.test(key)) return "connected_knowledge";
   if (/^(?:routines:|routines_)/.test(key)) return "routines";
   if (key.startsWith("engagement") || key.startsWith("marketing")) return "engagement";
   if (/^(?:push:|nudges:|live-activity-|push_|nudges_|live-activity_)/.test(key)) return "notifications";
@@ -188,6 +189,57 @@ export async function storeSet(key: string, value: unknown): Promise<void> {
   }
 }
 
+// Atomically read, mutate, and persist one record. In production the KV row is
+// locked inside a Postgres transaction, so concurrent server instances cannot
+// both spend or grant the same balance. The file-backed development store uses
+// a per-key promise chain with the same semantics.
+const localUpdateChains = new Map<string, Promise<unknown>>();
+export async function storeUpdate<T, R>(
+  key: string,
+  fallback: T,
+  update: (value: T) => Promise<{ value: T; result: R }> | { value: T; result: R }
+): Promise<R> {
+  if (writesBlockedForReset) throw new Error("Store writes are blocked during a full reset");
+  if (DATABASE_URL) {
+    const pool = await ensurePg();
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "INSERT INTO kv (k, v, updated_at) VALUES ($1, $2, now()) ON CONFLICT (k) DO NOTHING",
+        [key, JSON.stringify(fallback)]
+      );
+      const selected = await client.query("SELECT v FROM kv WHERE k = $1 FOR UPDATE", [key]);
+      const current = (selected.rows[0]?.v ?? fallback) as T;
+      const next = await update(current);
+      await client.query("UPDATE kv SET v = $2, updated_at = now() WHERE k = $1", [key, JSON.stringify(next.value)]);
+      await client.query("COMMIT");
+      try { fs.writeFileSync(filePath(key), JSON.stringify(next.value)); } catch { /* diagnostic copy only */ }
+      return next.result;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  const prior = localUpdateChains.get(key) ?? Promise.resolve();
+  const run = prior.then(async () => {
+    const current = await storeGet(key, fallback);
+    const next = await update(current);
+    await storeSet(key, next.value);
+    return next.result;
+  }, async () => {
+    const current = await storeGet(key, fallback);
+    const next = await update(current);
+    await storeSet(key, next.value);
+    return next.result;
+  });
+  localUpdateChains.set(key, run.then(() => undefined, () => undefined));
+  return run;
+}
+
 export async function storeDelete(key: string): Promise<void> {
   if (writesBlockedForReset) throw new Error("Store writes are blocked during a full reset");
   let deletionError: unknown = null;
@@ -207,6 +259,17 @@ export async function storeDelete(key: string): Promise<void> {
     }
   }
   if (deletionError) throw deletionError;
+}
+
+// Used when a feature that stored sensitive authorization data is retired.
+// Enumerate the authoritative store and remove every record in that category,
+// including OAuth state records that were never exchanged.
+export async function storeDeleteCategory(category: string): Promise<number> {
+  const keys = (await storeEntries())
+    .map((entry) => entry.key)
+    .filter((key) => storeCategory(key) === category);
+  for (const key of keys) await storeDelete(key);
+  return keys.length;
 }
 
 // Whether durable (cross-redeploy) persistence is active.

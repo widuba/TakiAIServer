@@ -94,6 +94,17 @@ export function validateAction(action: AssistantAction | null): string | null {
     if (action.dueDate && !Number.isFinite(Date.parse(action.dueDate))) return "When should I remind you?";
   }
 
+  if (action.type === "reminder_update") {
+    if (!action.reminderQuery?.trim()) return "Which reminder should I update?";
+    const hasChange = action.reminderCompleted !== null || !!(action.dueDate || action.title || action.notes);
+    if (!hasChange) return "What should I change about that reminder?";
+    if (action.dueDate && !Number.isFinite(Date.parse(action.dueDate))) return "When should I reschedule that reminder?";
+  }
+
+  if (action.type === "reminder_delete" && !action.reminderQuery?.trim()) {
+    return "Which reminder should I delete?";
+  }
+
   if (action.type === "maps_search" && !action.mapsQuery) return "What should I search for in Maps?";
   if (action.type === "maps_directions" && !action.mapsDestination) return "Where do you want directions to?";
   // An empty query intentionally means the closest calendar event with a location.
@@ -117,7 +128,7 @@ export function validateAction(action: AssistantAction | null): string | null {
   }
 
   if (action.type === "music_control") {
-    const allowed = new Set(["play", "pause", "resume", "next", "previous"]);
+    const allowed = new Set(["play", "pause", "resume", "next", "previous", "restart", "shuffleon", "shuffleoff"]);
     if (!action.musicAction || !allowed.has(action.musicAction)) return "What should I play or control?";
   }
 
@@ -132,6 +143,21 @@ export function validateAction(action: AssistantAction | null): string | null {
   if (action.type === "contact_create") {
     if (!action.recipientName?.trim()) return "What is the contact's name?";
     if (!action.recipientPhone?.trim() && !action.emailAddress?.trim()) return "What is their phone number or email?";
+  }
+
+  if (action.type === "contact_search" && !action.contactQuery?.trim()) return "Which contact should I look up?";
+  if (action.type === "contact_update") {
+    if (!action.contactQuery?.trim()) return "Which contact should I update?";
+    if (!action.recipientName?.trim() && !action.recipientPhone?.trim() && !action.emailAddress?.trim()) {
+      return "What should I change about that contact?";
+    }
+  }
+  if (action.type === "contact_delete" && !action.contactQuery?.trim()) return "Which contact should I delete?";
+
+  if (action.type === "clipboard_copy" && !action.body?.trim()) return "What text should I copy?";
+  if (action.type === "file_export" && !action.body?.trim()) return "What text should I put in the file?";
+  if (action.type === "flashlight_control" && !new Set(["on", "off"]).has(action.deviceAction || "")) {
+    return "Should I turn the flashlight on or off?";
   }
 
   if (action.type === "memory_save" && !action.memoryFact?.trim()) return "What would you like me to remember?";
@@ -155,6 +181,7 @@ function actionOpensAppOrSystemSheet(action: AssistantAction | null): boolean {
     "email_connect",
     "service_handoff",
     "share_content",
+    "file_export",
     "calendar_forward"
   ]).has(action.type);
 }

@@ -30,8 +30,45 @@ export function billableAudioDurationMs(audioBase64: string, reportedMs?: number
   return Math.max(reported, estimated);
 }
 
+export function normalizeSpeechKeyterms(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const raw of values) {
+    const value = String(raw || "").trim().replace(/\s+/g, " ");
+    if (!value || value.length >= 50 || value.split(" ").length > 5 || /[<>{}\[\]\\]/.test(value)) continue;
+    const key = value.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(value);
+    if (output.length === 100) break;
+  }
+  return output;
+}
+
+// A recognition miss should never make the user wait for the assistant model.
+// Keep this deliberately short because it is spoken while the driver is
+// waiting to try again.
+export const VOICE_REPEAT_PROMPT = "Please repeat that.";
+
+export function shouldAskForVoiceRepeat(value: unknown): boolean {
+  const text = String(value || "")
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replace(/\((?:inaudible|unintelligible|noise|music|silence|background noise)\)/g, " ")
+    .trim();
+  if (!/[\p{L}\p{N}]/u.test(text)) return true;
+
+  const words = text.match(/[\p{L}\p{N}']+/gu) || [];
+  if (!words.length) return true;
+  const fillers = new Set([
+    "ah", "eh", "er", "hmm", "hm", "huh", "mm", "mmm", "oh", "uh", "ugh", "um"
+  ]);
+  return words.every((word) => fillers.has(word));
+}
+
 // Transcribe a base64 audio clip → text. Returns "" on failure.
-export async function transcribe(audioBase64: string, mime = "audio/m4a"): Promise<string> {
+export async function transcribe(audioBase64: string, mime = "audio/m4a", speechHints: unknown = []): Promise<string> {
   if (!ELEVEN_KEY || !audioBase64) return "";
   try {
     const bytes = new Uint8Array(Buffer.from(audioBase64, "base64"));
@@ -44,6 +81,7 @@ export async function transcribe(audioBase64: string, mime = "audio/m4a"): Promi
     // the brain) when the user is walking or in a noisy place.
     form.append("tag_audio_events", "false");
     form.append("diarize", "false");
+    for (const keyterm of normalizeSpeechKeyterms(speechHints)) form.append("keyterms", keyterm);
     const res: any = await withTimeout(
       fetch("https://api.elevenlabs.io/v1/speech-to-text", {
         method: "POST",
@@ -186,6 +224,43 @@ export function normalizeTextForSpeech(text: string): string {
 
 export function speechCharacterCount(text: string): number {
   return normalizeTextForSpeech(text).length;
+}
+
+export function splitTextForProgressiveSpeech(text: string, targetChars = 150): string[] {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (!normalized) return [];
+  const limit = Math.max(70, Math.min(220, Math.floor(targetChars)));
+  const sentences = normalized.match(/[^.!?]+[.!?]+|[^.!?]+$/g)?.map((part) => part.trim()).filter(Boolean) || [normalized];
+  const chunks: string[] = [];
+  let pending = "";
+  const flush = () => {
+    if (pending) chunks.push(pending);
+    pending = "";
+  };
+
+  for (const sentence of sentences) {
+    if (sentence.length <= limit) {
+      const combined = `${pending}${pending ? " " : ""}${sentence}`;
+      if (combined.length <= limit) pending = combined;
+      else {
+        flush();
+        pending = sentence;
+      }
+      continue;
+    }
+    flush();
+    let rest = sentence;
+    while (rest.length > limit) {
+      const window = rest.slice(0, limit + 1);
+      const splitAt = Math.max(window.lastIndexOf(", "), window.lastIndexOf("; "), window.lastIndexOf(" "));
+      const end = splitAt >= 50 ? splitAt + (window[splitAt] === " " ? 0 : 1) : limit;
+      chunks.push(rest.slice(0, end).trim());
+      rest = rest.slice(end).replace(/^[,;\s]+/, "");
+    }
+    if (rest) pending = rest;
+  }
+  flush();
+  return chunks;
 }
 
 export async function synthesize(text: string, voiceId?: string, variability?: number): Promise<string> {

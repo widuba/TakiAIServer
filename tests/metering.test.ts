@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { geminiListPriceUsd, googleSearchListPriceUsd, sttCostUsd, ttsCostUsd } from "../src/metering.js";
-import { ATTACHMENT_BASE_CREDITS, FREE_STARTER_CREDITS, FREE_VOICE_LIMIT, FREE_VOICE_PER_CYCLE, GRANT_EXPIRY_DAYS, IN_APP_CREDIT_PRODUCTS, TIERS, attachmentBaseCostCredits, compareGrantSpendOrder, hasVoiceAccess, inAppCreditsForProduct, isFreeVoice, summary as creditSummary, topupCentsPerCredit, topupPriceCents, worstCaseContributionUsd, type CreditGrant } from "../src/credits.js";
+import { geminiListPriceUsd, googleSearchListPriceUsd, openAIListPriceUsd, openAIWebSearchCallCount, sttCostUsd, ttsCostUsd } from "../src/metering.js";
+import { ATTACHMENT_BASE_CREDITS, FREE_STARTER_CREDITS, FREE_VOICE_LIMIT, FREE_VOICE_PER_CYCLE, GRANT_EXPIRY_DAYS, IN_APP_CREDIT_PRODUCTS, TIERS, attachmentBaseCostCredits, compareGrantSpendOrder, hasVoiceAccess, inAppCreditsForProduct, isFreeVoice, summary as creditSummary, topupCentsPerCredit, topupPriceCents, type CreditGrant } from "../src/credits.js";
 import { detectPersonalSearch } from "../src/planner.js";
 
 test("one credit always represents exactly $0.001 of vendor usage", () => {
@@ -34,45 +34,71 @@ test("Gemini 3 list pricing includes thinking tokens and actual search queries",
   assert.equal(googleSearchListPriceUsd("gemini-3.5-flash", grounded), 0.028);
   assert.equal(googleSearchListPriceUsd("gemini-2.5-flash", grounded), 0.035);
   assert.equal(googleSearchListPriceUsd("gemini-3.5-flash", { candidates: [{}] }), 0);
+  assert.equal(
+    geminiListPriceUsd("gemini-3.6-flash", { promptTokenCount: 1000, candidatesTokenCount: 1000 }),
+    0.009
+  );
+  assert.equal(
+    geminiListPriceUsd("gemini-3.5-flash-lite", { promptTokenCount: 1000, candidatesTokenCount: 1000 }),
+    0.0028
+  );
 });
 
-test("every paid tier remains contribution-positive at worst-case included usage", () => {
-  const contributions = (["plus", "plus_voice", "pro"] as const)
-    .map((tier) => ({ tier, contribution: worstCaseContributionUsd(tier) }));
-  assert.ok(contributions.every(({ contribution }) => contribution > 5), JSON.stringify(contributions));
-  assert.ok(worstCaseContributionUsd("pro") >= 5);
-  assert.equal(FREE_VOICE_PER_CYCLE.plus_voice, 150);
-  assert.equal(FREE_VOICE_PER_CYCLE.pro, 300);
-  assert.equal(TIERS.pro.creditsPerCycle, 15_000);
+test("OpenAI standard pricing accounts for cached tokens, output, and web calls", () => {
+  assert.equal(
+    openAIListPriceUsd("gpt-5.4-nano", {
+      input_tokens: 2000,
+      input_tokens_details: { cached_tokens: 1000 },
+      output_tokens: 1000
+    }),
+    0.00147
+  );
+  assert.equal(
+    openAIListPriceUsd("gpt-5.4-mini", {
+      input_tokens: 1000,
+      input_tokens_details: { cached_tokens: 0 },
+      output_tokens: 1000
+    }),
+    0.00525
+  );
+  assert.equal(openAIWebSearchCallCount({
+    output: [{ type: "web_search_call" }, { type: "message" }, { type: "web_search_call" }]
+  }), 2);
 });
 
-test("free accounts get 250 recurring credits and five surcharge-free voice turns per month", () => {
+test("the authoritative catalog contains the new plan grants and prices", () => {
+  assert.deepEqual(
+    (["plus", "plus_voice", "pro"] as const).map((tier) => [TIERS[tier].creditsPerCycle, TIERS[tier].voiceCreditsPerCycle, TIERS[tier].priceUsd]),
+    [[4_000, 50, 9.99], [6_000, 300, 14.99], [12_000, 600, 24.99]]
+  );
+  assert.equal(TIERS.plus_voice.label, "Premium");
+  assert.equal(TIERS.plus_voice.badge, "Most Popular");
+  assert.equal(FREE_VOICE_PER_CYCLE.plus_voice, 300);
+  assert.equal(FREE_VOICE_PER_CYCLE.pro, 600);
+});
+
+test("free accounts get recurring AI Credits but no Voice Credits", () => {
   assert.equal(FREE_STARTER_CREDITS, 250);
-  assert.equal(FREE_VOICE_LIMIT, 5);
-  // The 4th arg is this month's free-voice count (reset each cycle); under the
-  // cap the turn is surcharge-free, at/over it the surcharge applies.
-  assert.equal(isFreeVoice("free", 250, 0, 4), true);
-  assert.equal(isFreeVoice("free", 250, 0, 5), false);
-  assert.equal(hasVoiceAccess("free", 4), true);
-  assert.equal(hasVoiceAccess("free", 5), false);
-  // A free user who bought credits keeps voice access (pays the surcharge).
-  assert.equal(hasVoiceAccess("free", 5, true), true);
+  assert.equal(FREE_VOICE_LIMIT, 0);
+  assert.equal(isFreeVoice("free", 250, 0, 0), false);
+  assert.equal(hasVoiceAccess("free", 0), false);
+  assert.equal(hasVoiceAccess("free", 0, true), true);
   assert.equal(hasVoiceAccess("plus", 500), true);
 });
 
-test("a free account starts at 250 credits, five voice turns, and doesn't restack within the month", async () => {
+test("a free account starts at 250 AI Credits, zero Voice Credits, and doesn't restack within the month", async () => {
   const id = `free-cycle-${Date.now()}`;
   const first = await creditSummary(id);
   assert.equal(first.tier, "free");
   assert.equal(first.balance, FREE_STARTER_CREDITS);
-  assert.equal(first.voiceAllowanceLimit, FREE_VOICE_LIMIT);
+  assert.equal(first.voiceCredits, 0);
   const again = await creditSummary(id);
   assert.equal(again.balance, FREE_STARTER_CREDITS);
 });
 
-test("paid voice continues against credits after included turns and binary attachments have a forty-credit floor", () => {
-  assert.equal(isFreeVoice("plus_voice", 1000, 149), true);
-  assert.equal(isFreeVoice("plus_voice", 1000, 150), false);
+test("legacy voice helpers reflect the new Voice Credit allowances and attachment floor", () => {
+  assert.equal(isFreeVoice("plus_voice", 1000, 299), true);
+  assert.equal(isFreeVoice("plus_voice", 1000, 300), false);
   assert.equal(ATTACHMENT_BASE_CREDITS, 40);
   assert.equal(attachmentBaseCostCredits([
     { kind: "image" }, { kind: "file" }, { kind: "url" }, { kind: "text" }
