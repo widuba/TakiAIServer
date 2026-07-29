@@ -446,7 +446,7 @@ export async function chargeUsageUsd(
   costUsd: number,
   mode: "text" | "voice",
   requestId: string
-): Promise<CreditSummary & CreditChargeQuote & { spent: number; usageUsd: number }> {
+): Promise<CreditSummary & CreditChargeQuote & { spent: number; usageUsd: number; deduplicated: boolean }> {
   const costMicros = Math.max(0, Math.round(costUsd * 1_000_000));
   let rejection: InsufficientCreditsError | null = null;
   const charged = await updateAccount(identity, (acct) => {
@@ -460,7 +460,8 @@ export async function chargeUsageUsd(
         voiceCreditsCharged: existing.voiceCreditsCharged,
         totalAiCredits: existing.totalAiCreditsCharged,
         spent: existing.totalAiCreditsCharged,
-        usageUsd: costMicros / 1_000_000
+        usageUsd: costMicros / 1_000_000,
+        deduplicated: true
       };
     }
     const accumulated = Math.max(0, Math.floor(acct.usageRemainderMicros || 0)) + costMicros;
@@ -478,7 +479,7 @@ export async function chargeUsageUsd(
         voiceCreditBalanceAfter: Math.max(0, acct.voiceCredits || 0),
         createdAt: Date.now(), status: "rejected" as const
       }].slice(-2000);
-      return { ...summarize(acct), ...quote, spent: 0, usageUsd: costMicros / 1_000_000 };
+      return { ...summarize(acct), ...quote, spent: 0, usageUsd: costMicros / 1_000_000, deduplicated: false };
     }
     deductAiCredits(acct, quote.totalAiCredits);
     if (quote.voiceCreditsCharged) acct.voiceCredits = Math.max(0, (acct.voiceCredits || 0) - 1);
@@ -497,7 +498,7 @@ export async function chargeUsageUsd(
       voiceCreditBalanceAfter: after.voiceCredits,
       createdAt: Date.now(), status: "charged" as const
     }].slice(-2000);
-    return { ...after, ...quote, spent: quote.totalAiCredits, usageUsd: costMicros / 1_000_000 };
+    return { ...after, ...quote, spent: quote.totalAiCredits, usageUsd: costMicros / 1_000_000, deduplicated: false };
   });
   if (rejection) throw rejection;
   return charged;

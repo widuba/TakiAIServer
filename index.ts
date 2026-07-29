@@ -1,7 +1,7 @@
 import express from "express";
 import cors from "cors";
 import Stripe from "stripe";
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { PORT, ACTIVE_AI_PROVIDER, MAIN_MODEL, PLANNER_MODEL, RESEARCH_MODEL, ServiceError, VOICE_UNAVAILABLE_SPOKEN, normalizeTakiModel, withTakiModel } from "./src/ai.js";
@@ -56,6 +56,17 @@ const FULL_RESET_PHRASE = "DELETE EVERY TAKI ACCOUNT AND ALL DATA";
 const fullResetPreviews = new Map<string, { expiresAt: number; fingerprint: string }>();
 let fullResetInProgress = false;
 let activeRequests = 0;
+
+function turnMeteringRequestId(value: unknown, ...fingerprintParts: string[]): string {
+  const supplied = typeof value === "string" ? value.trim().slice(0, 128) : "";
+  // Request ids come from the signed app bundle but still remain untrusted.
+  // Binding the id to the exact turn prevents a modified client from reusing
+  // one id for different prompts to evade metering.
+  const clientId = /^[a-zA-Z0-9-]{16,128}$/.test(supplied) ? supplied : randomUUID();
+  const fingerprint = createHash("sha256");
+  for (const part of fingerprintParts) fingerprint.update(part).update("\0");
+  return `turn:${clientId}:${fingerprint.digest("hex").slice(0, 24)}`;
+}
 
 function isAdminAuthorized(value: unknown): boolean {
   if (!ADMIN_SECRET || typeof value !== "string") return false;
@@ -2546,6 +2557,7 @@ async function runAssistant(
   supportsDeferredActionSynthesis = false,
   prefersDeviceSpeech = false,
   voiceInputUsd = 0,
+  meteringRequestId: string = randomUUID(),
   beforeUsageCommit?: (details: { response: any; deferVoiceSynthesis: boolean; includedVoice: boolean }) => Promise<void>,
   onStableVoiceText?: (text: string) => void | Promise<void>
 ): Promise<any> {
@@ -2628,7 +2640,7 @@ async function runAssistant(
     const voiceSynthesisIncluded = charge.includedVoice;
     let s: Awaited<ReturnType<typeof chargeUsageUsd>>;
     try {
-      s = await chargeUsageUsd(deviceId, charge.usageUsd, voiceMode ? "voice" : "text", randomUUID());
+      s = await chargeUsageUsd(deviceId, charge.usageUsd, voiceMode ? "voice" : "text", meteringRequestId);
     } catch (error) {
       if (error instanceof InsufficientCreditsError) {
         const fresh = await creditSummary(deviceId);
@@ -2637,14 +2649,16 @@ async function runAssistant(
       }
       throw error;
     }
-    await noteSpend(deviceId, s.spent);
-    await noteCreditCharge(deviceId, voiceMode ? "voice" : "text", s);
-    await noteInteraction(deviceId, {
-      channel: voiceMode ? "voice" : "text",
-      feature: assistantFeature(finalized),
-      credits: s.spent,
-      costUsd: ownerCostUsd
-    });
+    if (!s.deduplicated) {
+      await noteSpend(deviceId, s.spent);
+      await noteCreditCharge(deviceId, voiceMode ? "voice" : "text", s);
+      await noteInteraction(deviceId, {
+        channel: voiceMode ? "voice" : "text",
+        feature: assistantFeature(finalized),
+        credits: s.spent,
+        costUsd: ownerCostUsd
+      });
+    }
     const deferredVoiceSynthesisToken = deferVoiceSynthesis
       ? createVoiceSynthesisToken(deviceId, voiceSynthesisIncluded)
       : undefined;
@@ -2673,6 +2687,14 @@ app.post("/api/assistant", async (req, res) => {
   // profile field retained, and only because the user opted to show it on /buy.
   const userProfile = parseUserPersona(req.body?.profile, req.body?.addressUser);
   const takiModel = normalizeTakiModel(req.body?.profile?.model);
+  const meteringRequestId = turnMeteringRequestId(
+    req.body?.requestId,
+    "assistant",
+    userMessage,
+    rawContext,
+    takiModel,
+    voiceMode ? "voice" : "text"
+  );
   void captureRequestDeviceInfo(req, userProfile.name).catch((error) => console.error("device info capture:", error));
 
   const state = buildConversationState(userMessage, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, voiceMode, deviceId, deviceWeather);
@@ -2687,7 +2709,15 @@ app.post("/api/assistant", async (req, res) => {
   }
 
   try {
-    const result = await withTakiModel(takiModel, () => runAssistant(state, deviceId, voiceMode));
+    const result = await withTakiModel(takiModel, () => runAssistant(
+      state,
+      deviceId,
+      voiceMode,
+      false,
+      false,
+      0,
+      meteringRequestId
+    ));
     if (result?.usageBlocked) { res.status(402).json(result); return; }
     res.json(result);
   } catch (error) {
@@ -2776,6 +2806,15 @@ app.post("/api/voice", async (req, res) => {
     userProfile.intensity = 10;
   }
   const takiModel = normalizeTakiModel(req.body?.profile?.model);
+  const meteringRequestId = turnMeteringRequestId(
+    req.body?.requestId,
+    "voice",
+    deviceTranscript,
+    audioBase64,
+    rawContext,
+    takiModel,
+    prefersDeviceSpeech ? "device-speech" : "cloud-speech"
+  );
   void captureRequestDeviceInfo(req, userProfile.name).catch((error) => console.error("device info capture:", error));
   if (!audioBase64 && !deviceTranscript) { res.status(400).json({ error: "audioBase64 or transcript required" }); return; }
 
@@ -2847,6 +2886,7 @@ app.post("/api/voice", async (req, res) => {
       req.body?.deferredActionSynthesis === true,
       prefersDeviceSpeech,
       usedCloudTranscription ? sttCostUsd(audioDurationMs) : 0,
+      meteringRequestId,
       async ({ response, deferVoiceSynthesis }) => {
         if (deferVoiceSynthesis) return;
         if (progressiveVoice) {

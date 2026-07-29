@@ -5,6 +5,7 @@ import {
   TIERS,
   VOICE_SURCHARGE_CREDITS,
   chargeRequestCredits,
+  chargeUsageUsd,
   downgradeToFree,
   grantForTransaction,
   quoteCreditCharge,
@@ -121,6 +122,20 @@ test("7. simultaneous requests cannot overspend or consume one Voice Credit twic
   const after = await summary(id);
   assert.equal(after.balance, 9);
   assert.equal(after.voiceCredits, 0);
+});
+
+test("7b. retrying one metered turn returns the original charge without deducting twice", async () => {
+  const id = identity("metered-retry");
+  await seed(id, 100, 2);
+  const first = await chargeUsageUsd(id, 0.009, "voice", "stable-turn-id");
+  const retry = await chargeUsageUsd(id, 0.009, "voice", "stable-turn-id");
+  assert.equal(first.deduplicated, false);
+  assert.equal(retry.deduplicated, true);
+  assert.equal(retry.spent, first.spent);
+  assert.equal(retry.balance, first.balance);
+  assert.equal(retry.voiceCredits, first.voiceCredits);
+  assert.equal((await summary(id)).balance, first.balance);
+  assert.equal((await summary(id)).voiceCredits, first.voiceCredits);
 });
 
 test("8. all plans grant the exact advertised monthly balances", async () => {
