@@ -379,14 +379,22 @@ export function extractReminderTitle(message: string) {
 // HARD length cap for spoken replies — keeps voice fast to synthesize + read AND
 // bounds the per-answer TTS cost (so included-voice tiers can't run up the bill).
 export const VOICE_MAX_CHARS = 280;
-export function briefForVoice(text: string): string {
+export function briefForVoice(
+  text: string,
+  maxChars = VOICE_MAX_CHARS,
+  maxSentences = 2
+): string {
+  const characterLimit = Math.max(40, Math.floor(maxChars));
+  const sentenceLimit = Math.max(1, Math.floor(maxSentences));
   const t = String(text || "").trim().replace(/[.…]+$/g, "").trim();
   if (!t) return t;
-  const sentences = t.match(/[^.!?]+[.!?]+(\s|$)|[^.!?]+$/g) || [t];
+  // Keep the entire prefix when a sentence contains internal punctuation
+  // (decimals, initials, domains) instead of restarting after that punctuation.
+  const sentences = t.match(/.*?[.!?]+(?=\s|$)|.+$/g) || [t];
   let out = "";
-  for (const sentence of sentences.slice(0, 2)) {
+  for (const sentence of sentences.slice(0, sentenceLimit)) {
     const candidate = `${out}${out ? " " : ""}${sentence.trim()}`.trim();
-    if (candidate.length > VOICE_MAX_CHARS) break;
+    if (candidate.length > characterLimit) break;
     out = candidate;
   }
   if (!out) {
@@ -403,10 +411,10 @@ export function briefForVoice(text: string): string {
       if (items.length >= 2) {
         const list = items.length === 2 ? `${items[0]} and ${items[1]}` : `${items[0]}, ${items[1]}, and ${items[2]}`;
         const candidate = `${prefix} ${list}.`;
-        if (candidate.length <= VOICE_MAX_CHARS) return candidate;
+        if (candidate.length <= characterLimit) return candidate;
       }
     }
-    let fragment = t.slice(0, VOICE_MAX_CHARS - 1).replace(/\s+\S*$/, "").trim();
+    let fragment = t.slice(0, characterLimit - 1).replace(/\s+\S*$/, "").trim();
     // An unfinished example list sounds especially broken aloud. Prefer the
     // complete lead-in over stopping after a few comma-separated examples.
     const fragmentListIntro = [...fragment.matchAll(/\b(?:such as|including|for example|like)\b/gi)].at(-1);
@@ -419,4 +427,33 @@ export function briefForVoice(text: string): string {
   }
   if (out && !/[.!?]$/.test(out)) out += ".";
   return out || "I don't have a short answer yet.";
+}
+
+// Return only newly completed spoken sentences from an in-progress model
+// response. The already-emitted prefix keeps repeated model stream snapshots
+// from being spoken twice, while the shared clamp guarantees that progressive
+// speech remains identical to the final voice response.
+export function progressiveVoiceBundles(
+  text: string,
+  emittedText = "",
+  maxChars = VOICE_MAX_CHARS,
+  maxSentences = 2
+): { bundles: string[]; emittedText: string } {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  // Use the complete prefix through the last stable sentence boundary. An
+  // anchored prefix is important: an internal period must never cause speech
+  // before it to disappear from a later stream snapshot.
+  const completedText = normalized.match(/^.*[.!?]+(?=\s|$)/)?.[0]?.trim() || "";
+  if (!completedText) return { bundles: [], emittedText };
+  const stableText = briefForVoice(completedText, maxChars, maxSentences);
+  if (!stableText || (emittedText && !stableText.startsWith(emittedText))) {
+    return { bundles: [], emittedText };
+  }
+
+  const tail = stableText.slice(emittedText.length).trim();
+  if (!tail) return { bundles: [], emittedText: stableText };
+  const bundles = (tail.match(/.*?[.!?]+(?=\s|$)|.+$/g) || [tail])
+    .map((bundle) => bundle.trim())
+    .filter(Boolean);
+  return { bundles, emittedText: stableText };
 }

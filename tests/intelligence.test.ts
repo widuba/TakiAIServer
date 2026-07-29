@@ -7,8 +7,8 @@ import { calendarDirectionsQuery, fastVoiceReply, looksLikePlainVoiceKnowledgeQu
 import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
 import { finalizeResponse, resolveCalendarUpdateDates, validateAction } from "../src/validators.js";
-import { briefForVoice, VOICE_MAX_CHARS } from "../src/util.js";
-import { formatMathNumber, parseMusicCommand, parsePackageTracking, youtubeVideoInputURL } from "../src/tools.js";
+import { briefForVoice, progressiveVoiceBundles, VOICE_MAX_CHARS } from "../src/util.js";
+import { formatMathNumber, parseMusicCommand, parsePackageTracking, responseStyleForTakiModel, youtubeVideoInputURL } from "../src/tools.js";
 import { usageLimitsFor } from "../src/credits.js";
 import { subscriptionMergeDecision } from "../src/iap.js";
 import { billableAudioDurationMs, normalizeSpeechKeyterms, normalizeTextForSpeech, shouldAskForVoiceRepeat, speechCharacterCount, splitTextForProgressiveSpeech, stabilityForVariability, STT_MODEL, TTS_MODEL, VOICE_REPEAT_PROMPT } from "../src/voice.js";
@@ -465,6 +465,53 @@ test("progressive speech chunks are ordered, complete, and small enough to start
   assert.ok(chunks.every((chunk) => chunk.length <= 70));
 });
 
+test("progressive model speech emits every completed bundle without duplicates", () => {
+  const first = progressiveVoiceBundles(
+    "The first sentence is ready. The second sentence is still",
+    "",
+    520,
+    4
+  );
+  assert.deepEqual(first.bundles, ["The first sentence is ready."]);
+
+  const second = progressiveVoiceBundles(
+    "The first sentence is ready. The second sentence is still being generated. The third is ready too.",
+    first.emittedText,
+    520,
+    4
+  );
+  assert.deepEqual(second.bundles, [
+    "The second sentence is still being generated.",
+    "The third is ready too."
+  ]);
+  assert.equal(
+    second.emittedText,
+    "The first sentence is ready. The second sentence is still being generated. The third is ready too."
+  );
+
+  const punctuation = progressiveVoiceBundles(
+    "The measured value is 3.14. The explanation is still",
+    "",
+    280,
+    2
+  );
+  assert.deepEqual(punctuation.bundles, ["The measured value is 3.14."]);
+});
+
+test("Taki model tiers have materially different answer-depth budgets", () => {
+  const swift = responseStyleForTakiModel("taki_2_0_swift");
+  const balanced = responseStyleForTakiModel("taki_2_1");
+  const reasoning = responseStyleForTakiModel("taki_2_1_reasoning");
+  assert.ok(swift.textMaxOutputTokens < balanced.textMaxOutputTokens);
+  assert.ok(balanced.textMaxOutputTokens < reasoning.textMaxOutputTokens);
+  assert.ok(swift.voiceMaxChars < balanced.voiceMaxChars);
+  assert.ok(balanced.voiceMaxChars < reasoning.voiceMaxChars);
+  assert.equal(swift.voiceMaxSentences, 1);
+  assert.equal(reasoning.voiceMaxSentences, 4);
+  assert.match(swift.textDirective, /essential answer quickly/i);
+  assert.match(reasoning.textDirective, /longer, more in-depth/i);
+});
+
 test("easy questions route to the fast model; drafting, analysis, and long asks do not", () => {
   assert.equal(looksLikeEasyQuestion("What is the capital of France?"), true);
   assert.equal(looksLikeEasyQuestion("Why is the sky blue?"), true);
@@ -750,6 +797,10 @@ test("voice fallback always fits without an ellipsis", () => {
   assert.ok(complete.length <= VOICE_MAX_CHARS);
   assert.doesNotMatch(complete, /(?:such as|including|for example|like|,|;|:)\s*$/i);
   assert.match(complete, /[.!?]$/);
+
+  const fourSentences = "One is concise. Two adds context. Three explains tradeoffs. Four gives an example.";
+  assert.equal(briefForVoice(fourSentences, 40, 1), "One is concise.");
+  assert.equal(briefForVoice(fourSentences, 200, 4), fourSentences);
 });
 
 test("all common YouTube links route through video input", () => {

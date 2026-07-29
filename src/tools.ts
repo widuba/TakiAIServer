@@ -3,7 +3,8 @@ import { personaPromptBlock, characterDirective, GUARDRAILS } from "./persona.js
 import { capabilityPromptBlock } from "./capabilities.js";
 import { productKnowledgePromptBlock } from "./productKnowledge.js";
 import type { UserPersona } from "./persona.js";
-import { isoFromYmdTime, addMinutesToIsoLocal, addDaysToYmd, ymdInTimeZone, extractJsonObject, VOICE_MAX_CHARS, briefForVoice } from "./util.js";
+import type { TakiModelKey } from "./ai.js";
+import { isoFromYmdTime, addMinutesToIsoLocal, addDaysToYmd, ymdInTimeZone, extractJsonObject, briefForVoice, progressiveVoiceBundles } from "./util.js";
 import { extractFlightCode, hasExplicitFinanceCue, hasProductPriceCue } from "./entityClassifier.js";
 
 function isValidTimeZone(tz: string): boolean {
@@ -2212,20 +2213,22 @@ export async function getStrictWebAnswer(
 ): Promise<AssistantResponse> {
   const allowPrediction = Boolean(opts.allowPrediction);
   const persona = personaPromptBlock(opts.persona);
+  const selectedModel = activeTakiModelInfo();
+  const responseStyle = responseStyleForTakiModel(selectedModel.key);
+  const depthDirective = opts.voiceMode ? responseStyle.voiceDirective : responseStyle.textDirective;
   const tz = opts.timeZone && isValidTimeZone(opts.timeZone) ? opts.timeZone : "";
   const tzRule = tz
     ? `\n- The user is in timezone ${tz}. If your answer includes any date or clock time (e.g. a game start time), convert it to the user's LOCAL time in ${tz} and state that (you may add the timezone abbreviation).`
     : "";
 
   const factPrompt = `${GUARDRAILS}
-You are Taki AI, a daily-life phone assistant. Answer like a concise web-grounded overview:
-direct, current, and concise.
+You are Taki AI, a daily-life phone assistant. Give a direct, current, web-grounded answer.
 
 Use live web search results (do not rely on memory for current facts).
 ${persona}
 Rules:${tzRule}
 - Answer the EXACT question asked, and nothing more. Lead with the direct answer.
-- Be concise: 1-2 sentences. Do NOT write paragraphs or list every option.
+- Response depth for ${selectedModel.name}: ${depthDirective}
 - If the question asks for the single best / latest / newest / fastest one, name that
   ONE item (you may add the single most relevant detail). Do not enumerate alternatives.
 - Always prefer the MOST UP-TO-DATE result. If a newer model/version/fact exists in the
@@ -2255,7 +2258,8 @@ Using current web results:
 - It is fine and expected to be uncertain. Do NOT refuse just because the outcome is unknown.
 - Only if you genuinely cannot find the relevant game or any odds/analysis, say:
   "I couldn't find any predictions or odds for that yet."
-- Keep it short and conversational, 1-3 sentences. No markdown. No JSON.${tzRule}
+- Response depth for ${selectedModel.name}: ${depthDirective}
+- Keep it conversational. No markdown. No JSON.${tzRule}
 
 User question:
 ${message}
@@ -2271,6 +2275,9 @@ ${message}
         config: {
           tools: [{ googleSearch: {} }],
           ...(opts.voiceMode ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
+          maxOutputTokens: opts.voiceMode
+            ? responseStyle.voiceMaxOutputTokens
+            : responseStyle.textMaxOutputTokens,
           ...safetyConfig(opts.persona?.teen)
         }
       } as any),
@@ -2657,6 +2664,46 @@ export function eventQueryFromCalendarMessage(message: string) {
 
 /* ---- General conversational answer -------------------------------------- */
 
+export type TakiResponseStyle = {
+  textMaxOutputTokens: number;
+  voiceMaxOutputTokens: number;
+  voiceMaxChars: number;
+  voiceMaxSentences: number;
+  textDirective: string;
+  voiceDirective: string;
+};
+
+export function responseStyleForTakiModel(key: TakiModelKey): TakiResponseStyle {
+  if (key === "taki_2_0_swift") {
+    return {
+      textMaxOutputTokens: 320,
+      voiceMaxOutputTokens: 96,
+      voiceMaxChars: 160,
+      voiceMaxSentences: 1,
+      textDirective: "Give the essential answer quickly. Normally use one or two short sentences or one compact paragraph, and omit nonessential background.",
+      voiceDirective: "Answer in ONE complete short sentence under 160 characters."
+    };
+  }
+  if (key === "taki_2_1_reasoning") {
+    return {
+      textMaxOutputTokens: 1800,
+      voiceMaxOutputTokens: 400,
+      voiceMaxChars: 520,
+      voiceMaxSentences: 4,
+      textDirective: "For substantive questions, give a longer, more in-depth answer with reasoning, nuance, tradeoffs, and useful examples. Use several developed paragraphs when they improve the answer; do not pad trivial replies.",
+      voiceDirective: "Give a complete, in-depth spoken answer in up to FOUR clear sentences under 520 characters."
+    };
+  }
+  return {
+    textMaxOutputTokens: 800,
+    voiceMaxOutputTokens: 180,
+    voiceMaxChars: 280,
+    voiceMaxSentences: 2,
+    textDirective: "Be concise but complete. Usually use one to three sentences, adding supporting detail when it is genuinely useful.",
+    voiceDirective: "Answer in one or two complete spoken sentences under 280 characters."
+  };
+}
+
 export async function getGeneralAnswer(
   state: ConversationState,
   onStableVoiceText?: (text: string) => void | Promise<void>
@@ -2674,13 +2721,15 @@ Rules for conversation history:
 - If the user corrected you earlier, respect the correction.`
     : "";
 
+  const selectedModel = activeTakiModelInfo();
+  const responseStyle = responseStyleForTakiModel(selectedModel.key);
   const voiceBlock = state.voiceMode
     ? `
-VOICE MODE — this reply is READ ALOUD, so brevity is mandatory:
-- Answer in ONE complete short sentence (a second only if truly necessary). Stay under 240 characters.
+VOICE MODE — this reply is READ ALOUD:
+- Follow the model-specific spoken length limit below.
 - Never begin a list or explanation that will not fit. Finish the thought naturally; never end on a comma, connector, or partial example.
 - No lists, no numbered steps, no URLs, no spelling things out — just the spoken answer.
-- Still sound fully in character, but trim every non-essential word. Short does NOT mean flat.
+- Still sound fully in character and keep every sentence useful.
 `
     : "";
 
@@ -2692,10 +2741,14 @@ Any date/time you mention must be in the user's LOCAL time (${state.timeZone}) �
 ${capabilityPromptBlock()}
 ${productKnowledgePromptBlock(state.accountSummary, state.timeZone)}
 ${voiceBlock}
+MODEL RESPONSE DEPTH (${selectedModel.name}):
+- ${state.voiceMode ? responseStyle.voiceDirective : responseStyle.textDirective}
+- A direct user request for a particular length, depth, or format takes precedence, except for the hard spoken limit in voice mode.
+
 How to answer:
-- BE CONCISE. Answer the exact question and nothing more. Follow the LENGTH rule in the personality above (balanced ≈ 1-3 sentences). Lead with the answer; no preamble ("Great question", "Of course", "Sure!"), no restating the question, no wrap-up summary.
-- Do NOT volunteer extra background, history, caveats, alternatives, or lists unless the user explicitly asked for them. If they ask "what" give the fact; only explain "why/how" when asked.
-- Still be accurate and complete enough to fully satisfy the question — concise, not vague or partial.
+- Follow MODEL RESPONSE DEPTH above. Lead with the answer; no preamble ("Great question", "Of course", "Sure!"), no restating the question, and no redundant wrap-up summary.
+- Include background, caveats, alternatives, or lists when the selected model depth or the user's request makes them useful; never add filler.
+- Be accurate and complete enough to fully satisfy the question.
 - For anything recent, time-sensitive, or that you're unsure of, USE web search and rely on the results — never guess at current facts or make things up. If you can't find it, say so plainly.
 - If the question depends on private, visual, physical, or personal information that is not in the conversation, an attachment, device data, or a supported tool, say "I don't have enough information to know that." Briefly say what the user could share to make it answerable. Never call an unanswerable question a service outage.
 - Resolve "it", "that", "there", names, dates, and elliptical follow-ups from RECENT CONVERSATION FOCUS and the conversation history. If more than one interpretation remains plausible, ask one precise question instead of choosing.
@@ -2715,7 +2768,9 @@ ${memoryText}
   // Voice replies are read aloud. This deterministic choke point guarantees a
   // complete response under the TTS limit without another sequential model call.
   const cap = (t: string): string => {
-    return state.voiceMode && t ? briefForVoice(t) : t;
+    return state.voiceMode && t
+      ? briefForVoice(t, responseStyle.voiceMaxChars, responseStyle.voiceMaxSentences)
+      : t;
   };
 
   // Three speed tiers. Search is offered only for a genuinely current question;
@@ -2728,19 +2783,21 @@ ${memoryText}
   // Consequential, objective decisions (purchases, products, money) escalate to
   // the informational model even when phrased briefly.
   const isEasy = !isLive && looksLikeEasyQuestion(state.message) && !looksLikeSubstantiveQuestion(state.message);
-  const selectedModel = activeTakiModelInfo();
   const allowSearch = isLive && selectedModel.key !== "taki_2_0_swift";
   const primaryModel = isLive && !state.voiceMode ? RESEARCH_MODEL : isEasy ? FAST_MODEL : MAIN_MODEL;
   const primaryConfig: any = {
     ...(allowSearch ? { tools: [{ googleSearch: {} }] } : {}),
     thinkingConfig: isEasy || state.voiceMode ? { thinkingLevel: "MINIMAL" } : { thinkingLevel: "LOW" },
-    maxOutputTokens: state.voiceMode ? 160 : selectedModel.key === "taki_2_0_swift" ? 480 : 768,
+    maxOutputTokens: state.voiceMode
+      ? responseStyle.voiceMaxOutputTokens
+      : responseStyle.textMaxOutputTokens,
     ...safetyConfig(state.userProfile?.teen)
   };
 
   let progressiveTextStarted = false;
   try {
     let generatedText = "";
+    let emittedVoiceText = "";
     if (state.voiceMode && onStableVoiceText) {
       const stream = generateContentStream({
         model: primaryModel,
@@ -2749,16 +2806,17 @@ ${memoryText}
       } as any);
       for await (const chunk of stream) {
         generatedText += String(chunk?.text || "");
-        if (!progressiveTextStarted) {
-          const clean = stripMarkdown(generatedText).replace(/\s+/g, " ").trim();
-          // A complete first phrase is safe to speak while the model finishes.
-          // Do not stream a huge run-on sentence that briefForVoice may rewrite.
-          const sentence = clean.match(/^(.{12,210}?[.!?])(?:\s|$)/)?.[1]?.trim();
-          if (sentence) {
-            progressiveTextStarted = true;
-            await onStableVoiceText(sentence);
-          }
+        const progress = progressiveVoiceBundles(
+          stripMarkdown(generatedText),
+          emittedVoiceText,
+          responseStyle.voiceMaxChars,
+          responseStyle.voiceMaxSentences
+        );
+        for (const bundle of progress.bundles) {
+          progressiveTextStarted = true;
+          await onStableVoiceText(bundle);
         }
+        emittedVoiceText = progress.emittedText;
       }
     } else {
       const response: any = await withTimeout(
@@ -2811,11 +2869,14 @@ export async function answerAboutImage(
 ): Promise<string> {
   const q = (question || "").trim() || "What is in this image?";
   const tz = timeZone && isValidTimeZone(timeZone) ? timeZone : "";
+  const selectedModel = activeTakiModelInfo();
+  const responseStyle = responseStyleForTakiModel(selectedModel.key);
   const prompt = `${GUARDRAILS}${personaPromptBlock(persona)}
 You are Taki AI looking at a photo the user just took or picked. Answer their question about it.
 ${tz ? `The user's local time is ${nowInTimeZone(tz)}.\n` : ""}Question: "${q}"
 
-- Answer accurately and concisely (a sentence or two unless more is clearly needed). Lead with the answer.
+- Response depth for ${selectedModel.name}: ${responseStyle.textDirective}
+- Answer accurately and lead with the answer.
 - If you genuinely can't tell what something is, say so honestly rather than guessing.
 - Plain text only — no markdown. Match the personality AND its intensity above (plain at low intensity, loud at high).`;
 
@@ -2824,7 +2885,7 @@ ${tz ? `The user's local time is ${nowInTimeZone(tz)}.\n` : ""}Question: "${q}"
       generateContent({
         model: MAIN_MODEL,
         contents: [{ inlineData: { mimeType: mimeType || "image/jpeg", data: base64 } }, { text: prompt }],
-        config: { ...safetyConfig(persona?.teen) }
+        config: { maxOutputTokens: responseStyle.textMaxOutputTokens, ...safetyConfig(persona?.teen) }
       } as any),
       25000,
       "Vision"
@@ -2838,7 +2899,8 @@ ${tz ? `The user's local time is ${nowInTimeZone(tz)}.\n` : ""}Question: "${q}"
 
 export async function fitVoiceResponse(text: string, _persona?: UserPersona): Promise<string> {
   const original = stripMarkdown(String(text || "").trim());
-  return briefForVoice(original);
+  const style = responseStyleForTakiModel(activeTakiModelInfo().key);
+  return briefForVoice(original, style.voiceMaxChars, style.voiceMaxSentences);
 }
 
 export type TakiAttachment = {
@@ -2880,6 +2942,8 @@ export async function answerAboutAttachments(
   timeZone?: string
 ): Promise<{ text: string; sources: { title: string; url: string }[] }> {
   const q = question.trim() || "Summarize the attached sources.";
+  const selectedModel = activeTakiModelInfo();
+  const responseStyle = responseStyleForTakiModel(selectedModel.key);
   const parts: any[] = [];
   const sources: { title: string; url: string }[] = [];
   let needsURLContext = false;
@@ -2925,6 +2989,7 @@ export async function answerAboutAttachments(
 You are Taki AI answering from the attachments and sources supplied in this request.
 ${tz ? `The user's local time is ${nowInTimeZone(tz)}.\n` : ""}Question: "${q}"
 
+- Response depth for ${selectedModel.name}: ${responseStyle.textDirective}
 - Lead with the answer and distinguish source facts from your inference.
 - Never guess about content you cannot access. State the exact limitation.
 - You can inspect supported inputs and export plain-text .txt files through the device action. You cannot generate or return images, videos, audio, or other media.
@@ -2937,6 +3002,7 @@ ${tz ? `The user's local time is ${nowInTimeZone(tz)}.\n` : ""}Question: "${q}"
       contents: parts,
       config: {
         ...(needsURLContext ? { tools: [{ urlContext: {} }] } : {}),
+        maxOutputTokens: responseStyle.textMaxOutputTokens,
         ...safetyConfig(persona?.teen)
       }
     } as any),

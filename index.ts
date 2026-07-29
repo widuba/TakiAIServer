@@ -2793,8 +2793,17 @@ app.post("/api/voice", async (req, res) => {
         writeVoiceEvent({ type: "speech", text });
         return;
       }
+      // Start synthesizing every newly generated bundle immediately. The
+      // ordered queue waits only to emit it, so the next audio is prepared
+      // while the user is still hearing the previous bundle.
+      const audioReady = synthesize(text, voiceId, voiceVariability).then(
+        (chunkAudio) => ({ chunkAudio, error: null as unknown }),
+        (error) => ({ chunkAudio: "", error })
+      );
       progressiveAudioQueue = progressiveAudioQueue.then(async () => {
-        const chunkAudio = await synthesize(text, voiceId, voiceVariability);
+        const ready = await audioReady;
+        if (ready.error) throw ready.error;
+        const chunkAudio = ready.chunkAudio;
         if (!chunkAudio) throw new ServiceError("voice_unavailable", VOICE_UNAVAILABLE_SPOKEN);
         progressiveAudioStarted = true;
         writeVoiceEvent({ type: "audio", text, audioBase64: chunkAudio, mime: "audio/mpeg" });
