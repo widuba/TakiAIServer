@@ -2167,9 +2167,16 @@ export function looksLikeLiveInfoQuestion(message: string) {
   if (/\bwho won\b/.test(m)) return true;
   if (/\b(what'?s|what is)\s+the\s+(score|result)\b/.test(m) || /\b(final score|current score|score of|standings|leaderboard)\b/.test(m)) return true;
 
-  // Live prices / markets.
-  if (/\b(stock price|share price|price of|how much (?:is|does|are|do)|worth|cost|exchange rate)\b/.test(m) &&
-      /\b(now|today|currently|right now|trading|cost|worth)\b/.test(m)) return true;
+  // Live prices / markets. "Worth watching/reading/playing" is recommendation
+  // language, not a valuation request; treating the bare word "worth" as a
+  // market signal routed movie questions through the strict fact verifier.
+  const nonFinancialWorth = /\bworth (?:watching|seeing|reading|playing|trying|visiting|hearing|listening to)\b/.test(m);
+  const explicitPriceQuestion =
+    /\b(stock price|share price|price of|exchange rate|trading at)\b/.test(m)
+    || /\bhow much (?:is|does|are|do)\b.{0,80}\b(?:cost|worth)\b/.test(m)
+    || /\bwhat(?:'s| is) .{1,80}\bworth\b/.test(m)
+    || /\b(?:cost|worth) (?:now|today|currently|right now)\b/.test(m);
+  if (!nonFinancialWorth && explicitPriceQuestion) return true;
 
   // Open / closed / status right now.
   if (/\b(open|closed)\b/.test(m) && /\b(right now|now|currently|today|at the moment|still)\b/.test(m)) return true;

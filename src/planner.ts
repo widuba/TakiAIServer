@@ -1658,14 +1658,11 @@ export async function planAssistantResponse(
     if (res) return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
   }
 
-  if (!isActionCommand && (looksLikeFreshFactQuestion(state.message) || looksLikeLiveInfoQuestion(state.message))) {
-    const res = await getStrictWebAnswer(state.message, { persona: state.userProfile, timeZone: state.timeZone, voiceMode: state.voiceMode });
-    return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
-  }
-
   // Current recommendations combine live release/availability information with
   // an explicitly subjective judgment. They must not go through the hard-fact
-  // verifier, which can mistake "good" for something unknowable.
+  // verifier, which can mistake "good" for something unknowable. This branch
+  // deliberately precedes generic live-fact routing so recommendation intent
+  // wins if a sentence also contains words such as "current" or "release."
   if (!isActionCommand && looksLikeCurrentRecommendationQuestion(state.message)) {
     const res = await getStrictWebAnswer(state.message, {
       allowRecommendation: true,
@@ -1673,6 +1670,11 @@ export async function planAssistantResponse(
       timeZone: state.timeZone,
       voiceMode: state.voiceMode
     });
+    return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
+  }
+
+  if (!isActionCommand && (looksLikeFreshFactQuestion(state.message) || looksLikeLiveInfoQuestion(state.message))) {
+    const res = await getStrictWebAnswer(state.message, { persona: state.userProfile, timeZone: state.timeZone, voiceMode: state.voiceMode });
     return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
   }
 
