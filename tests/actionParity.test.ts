@@ -10,10 +10,12 @@ const appSource = readFileSync(resolve(root, "app/src/App.tsx"), "utf8");
 const appProfileSource = readFileSync(resolve(root, "app/src/userProfile.ts"), "utf8");
 const appStyles = readFileSync(resolve(root, "app/src/App.css"), "utf8");
 const onboardingSource = readFileSync(resolve(root, "app/src/Onboarding.tsx"), "utf8");
+const routineStoreSource = readFileSync(resolve(root, "app/src/routineStore.ts"), "utf8");
 const nativeUiSource = readFileSync(resolve(root, "app/ios/App/App/NativeTakiUI.swift"), "utf8");
 const sharedContentBridgeSource = readFileSync(resolve(root, "app/ios/App/App/SharedContentBridge.swift"), "utf8");
 const contactsBridgeSource = readFileSync(resolve(root, "app/ios/App/App/ContactsBridge.swift"), "utf8");
 const deviceBridgeSource = readFileSync(resolve(root, "app/ios/App/App/DeviceBridge.swift"), "utf8");
+const cloudSyncBridgeSource = readFileSync(resolve(root, "app/ios/App/App/CloudSyncBridge.swift"), "utf8");
 const carPlaySource = readFileSync(resolve(root, "app/ios/App/App/CarPlaySceneDelegate.swift"), "utf8");
 
 function quotedValues(source: string): Set<string> {
@@ -152,4 +154,50 @@ test("maps and service handoffs are verified before success is shown", () => {
   assert.match(appSource, /await openExternalURL\(url\)/);
   assert.match(appSource, /if \(!\/\^\(uber\|lyft\):\/i\.test\(url\)\) throw error/);
   assert.match(appSource, /await openExternalURL\(buildServiceUrl\(action\)\)/);
+});
+
+test("CarPlay and iPhone use the same revisioned iCloud envelope", () => {
+  assert.match(appSource, /JSON\.stringify\(\{ t, data \}\)/);
+  assert.match(carPlaySource, /envelope\["t"\] is NSNumber/);
+  assert.match(carPlaySource, /let inner = envelope\["data"\] as\? String/);
+  assert.match(carPlaySource, /"t": revision/);
+  assert.match(carPlaySource, /guard cloud\.string\(forKey: key\) == envelopeJSON/);
+  assert.match(carPlaySource, /iCloud didn't keep that \\.* update, so I didn't mark it complete/);
+});
+
+test("personal management writes are verified and rolled back on local failure", () => {
+  assert.match(appSource, /localStorage\.getItem\(LISTS_KEY\) !== serialized/);
+  assert.match(appSource, /localStorage\.getItem\(EXPENSES_KEY\) !== serialized/);
+  assert.match(appSource, /localStorage\.getItem\(HABITS_KEY\) !== serialized/);
+  assert.match(appSource, /list\.pop\(\);\s+if \(!existed\) delete listsStore\[name\]/);
+  assert.match(appSource, /expensesStore\.pop\(\); throw error/);
+  assert.match(appSource, /if \(!existed\) delete habitsStore\[name\]/);
+  const listCloudMerge = between(appSource, "function mergeCloudLists(", "function niceListName(");
+  assert.doesNotMatch(listCloudMerge, /union|local\.some|local\.push/);
+  assert.match(listCloudMerge, /Object\.assign\(listsStore, cloud\)/);
+});
+
+test("routine deletions have durable tombstones and cannot be merged back", () => {
+  assert.match(routineStoreSource, /TOMBSTONE_KEY = "taki-routine-tombstones-v1"/);
+  assert.match(routineStoreSource, /routineSyncPayload/);
+  assert.match(routineStoreSource, /normalizeRoutineSyncPayload/);
+  assert.match(appSource, /routineTombstonesRef/);
+  assert.match(appSource, /\.filter\(\(routine\) => !deleted\[routine\.id\] \|\| routine\.updatedAt > deleted\[routine\.id\]\)/);
+  assert.match(appSource, /\[id\]: new Date\(\)\.toISOString\(\)/);
+  assert.match(appSource, /JSON\.stringify\(routineSyncPayload\(next, deleted\)\)/);
+});
+
+test("transient iCloud failures retain a monotonic durable outbox", () => {
+  assert.match(appSource, /CLOUD_PENDING_PREFIX = "ios-ai-cloud-pending-"/);
+  assert.match(appSource, /const t = Math\.max\(Date\.now\(\), priorRevision \+ 1\)/);
+  assert.match(appSource, /async function flushPendingCloudWrites\(\)/);
+  assert.match(appSource, /async function uploadCloudEnvelope\(/);
+  assert.match(appSource, /cloudEnvelopeRevision\(remote\.value \|\| ""\) > pendingRevision/);
+  assert.match(appSource, /return "superseded"/);
+  assert.match(appSource, /if \(localStorage\.getItem\(`\$\{CLOUD_PENDING_PREFIX\}\$\{key\}`\)\) return null/);
+  assert.match(appSource, /if \(localStorage\.getItem\(`\$\{CLOUD_PENDING_PREFIX\}\$\{key\}`\) === envelope\)/);
+  assert.match(carPlaySource, /let revision = max\(Int64\(Date\(\)\.timeIntervalSince1970 \* 1000\), priorRevision \+ 1\)/);
+  assert.match(cloudSyncBridgeSource, /FileManager\.default\.ubiquityIdentityToken != nil/);
+  assert.match(cloudSyncBridgeSource, /guard store\.string\(forKey: key\) == value/);
+  assert.match(carPlaySource, /iCloud isn't available, so I couldn't safely save/);
 });

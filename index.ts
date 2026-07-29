@@ -228,7 +228,7 @@ app.get("/health", async (_req, res) => {
     ok: true,
     app: "Taki AI server",
     mode: "planner-first-modular-v3",
-    version: "2026-07-29-verified-handoffs-v7",
+    version: "2026-07-29-personal-sync-contract-v8",
     durableStorage: isDurable(),
     aiProvider: ACTIVE_AI_PROVIDER,
     models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL },
