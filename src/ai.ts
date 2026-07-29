@@ -168,6 +168,15 @@ export function modelForRequest(args: any): string {
 
 function prepareGeminiRequest(args: any, selectedModel: string): any {
   let config = { ...(args?.config || {}) };
+  // Provider-adapter-only controls must not leak into Gemini's config schema.
+  const {
+    forceWebSearch: _forceWebSearch,
+    force_web_search: _forceWebSearchSnake,
+    webSearchContextSize: _webSearchContextSize,
+    web_search_context_size: _webSearchContextSizeSnake,
+    ...providerSafeConfig
+  } = config;
+  config = providerSafeConfig;
   // Current 3.5 Lite and 3.6 models choose their own sampling settings. Avoid
   // sending legacy tuning fields that newer endpoints may reject.
   if (/gemini-3\.(?:5-flash-lite|6-flash)/i.test(selectedModel)) {

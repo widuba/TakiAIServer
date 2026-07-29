@@ -28,6 +28,20 @@ test("Gemini-shaped text, JSON, search, reasoning, and limits map to Responses",
   assert.deepEqual(request.tools, [{ type: "web_search", search_context_size: "medium" }]);
 });
 
+test("time-sensitive requests can require higher-context Responses web search", () => {
+  const request = buildOpenAIRequest({
+    contents: "What are some good movies to watch this summer?",
+    config: {
+      tools: [{ googleSearch: {} }],
+      forceWebSearch: true,
+      webSearchContextSize: "high"
+    }
+  }, "gpt-5.4-mini");
+
+  assert.deepEqual(request.tools, [{ type: "web_search", search_context_size: "high" }]);
+  assert.equal(request.tool_choice, "required");
+});
+
 test("image and document inputs map to multimodal Responses content", () => {
   const request = buildOpenAIRequest({
     contents: [

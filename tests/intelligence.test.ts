@@ -8,7 +8,7 @@ import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
 import { finalizeResponse, resolveCalendarUpdateDates, validateAction } from "../src/validators.js";
 import { briefForVoice, progressiveVoiceBundles, VOICE_MAX_CHARS } from "../src/util.js";
-import { formatMathNumber, parseMusicCommand, parsePackageTracking, responseStyleForTakiModel, youtubeVideoInputURL } from "../src/tools.js";
+import { formatMathNumber, looksLikeCurrentRecommendationQuestion, looksLikeSubjectiveRecommendationQuestion, parseMusicCommand, parsePackageTracking, responseStyleForTakiModel, youtubeVideoInputURL } from "../src/tools.js";
 import { usageLimitsFor } from "../src/credits.js";
 import { subscriptionMergeDecision } from "../src/iap.js";
 import { billableAudioDurationMs, normalizeSpeechKeyterms, normalizeTextForSpeech, shouldAskForVoiceRepeat, speechCharacterCount, splitTextForProgressiveSpeech, stabilityForVariability, STT_MODEL, TTS_MODEL, VOICE_REPEAT_PROMPT } from "../src/voice.js";
@@ -56,6 +56,16 @@ test("conversation state keeps a recency digest and removes a duplicate current 
   assert.match(state.conversationFocusText, /How many steps did I walk yesterday/);
   assert.match(state.conversationFocusText, /4,200 steps yesterday/);
   assert.doesNotMatch(state.fullTranscriptText, /What about Friday/);
+});
+
+test("current subjective recommendations are recognized without treating all opinions as live facts", () => {
+  assert.equal(looksLikeSubjectiveRecommendationQuestion("What are some good movies I should watch this summer?"), true);
+  assert.equal(looksLikeCurrentRecommendationQuestion("What are some good movies I should watch this summer?"), true);
+  assert.equal(looksLikeCurrentRecommendationQuestion("Recommend some shows streaming right now"), true);
+  assert.equal(looksLikeSubjectiveRecommendationQuestion("What are three good classic comedies?"), true);
+  assert.equal(looksLikeCurrentRecommendationQuestion("What are three good classic comedies?"), false);
+  assert.equal(looksLikeCurrentRecommendationQuestion("What should I add to my calendar this summer?"), false);
+  assert.equal(looksLikeCurrentRecommendationQuestion("What are good restaurants near me right now?"), false);
 });
 
 test("context preserves more than the old forty-turn window while staying bounded", () => {

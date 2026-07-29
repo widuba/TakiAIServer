@@ -2127,6 +2127,35 @@ export function looksLikeFreshFactQuestion(message: string) {
   return false;
 }
 
+// Recommendations are intentionally subjective: "good", "best", and "what
+// should I watch" ask Taki to exercise judgment, not prove a single objective
+// answer. Keep this separate from strict fact detection so recommendation
+// prompts can combine current evidence with a useful editorial point of view.
+export function looksLikeSubjectiveRecommendationQuestion(message: string) {
+  const m = message.toLowerCase();
+  const asksForJudgment =
+    /\b(recommend(?:ation|ations)?|suggest(?:ion|ions)?|good|great|best|top|favorite|favourite|worth (?:watching|reading|playing|trying|visiting|seeing)|must[- ](?:see|watch|read|play|try))\b/.test(m)
+    || /\bwhat (?:movie|film|show|series|book|game|album|song|podcast)s? (?:should|would) i\b/.test(m)
+    || /\bwhat should i (?:watch|see|read|play|listen to|try)\b/.test(m)
+    || /\bwhat are some\b/.test(m) && /\bi should (?:watch|see|read|play|listen to|try)\b/.test(m);
+  const recommendationSubject =
+    /\b(movies?|films?|cinema|comed(?:y|ies)|dramas?|thrillers?|horror|romance|sci[- ]?fi|action|animation|shows?|tv|series|documentar(?:y|ies)|books?|novels?|games?|video games?|albums?|songs?|music|podcasts?|restaurants?|places? to (?:eat|visit|go)|vacations?|trips?|destinations?|activities|things to do)\b/.test(m);
+  return asksForJudgment && recommendationSubject;
+}
+
+// A subjective recommendation becomes a live-research request when its answer
+// depends on what is newly released, currently available, or relevant to the
+// present season. "This summer" was the important missing case that previously
+// fell through to a memory-only answer.
+export function looksLikeCurrentRecommendationQuestion(message: string) {
+  if (!looksLikeSubjectiveRecommendationQuestion(message)) return false;
+  const m = message.toLowerCase();
+  // Location-dependent recommendations need the device/planner path so Taki
+  // can use the user's actual position instead of guessing from a timezone.
+  if (/\b(near me|nearby|around me|in my area|close to me)\b/.test(m)) return false;
+  return /\b(current(?:ly)?|right now|now|today|tonight|this (?:week|weekend|month|year|spring|summer|fall|autumn|winter)|in theaters?|at the cinema|streaming now|new(?:ly)?|newest|latest|recent(?:ly)?|upcoming|just (?:released|came out)|out now|20\d\d)\b/.test(m);
+}
+
 // Clearly LIVE / changeable questions (current scores, standings, prices,
 // open-now status). These must hit grounded research on the accurate model, not
 // stale model memory. Kept tight to avoid hijacking ordinary chat.
@@ -2209,9 +2238,16 @@ export function looksLikeSubstantiveQuestion(message: string): boolean {
 
 export async function getStrictWebAnswer(
   message: string,
-  opts: { allowPrediction?: boolean; persona?: UserPersona; timeZone?: string; voiceMode?: boolean } = {}
+  opts: {
+    allowPrediction?: boolean;
+    allowRecommendation?: boolean;
+    persona?: UserPersona;
+    timeZone?: string;
+    voiceMode?: boolean;
+  } = {}
 ): Promise<AssistantResponse> {
   const allowPrediction = Boolean(opts.allowPrediction);
+  const allowRecommendation = Boolean(opts.allowRecommendation);
   const persona = personaPromptBlock(opts.persona);
   const selectedModel = activeTakiModelInfo();
   const responseStyle = responseStyleForTakiModel(selectedModel.key);
@@ -2265,15 +2301,54 @@ User question:
 ${message}
 `;
 
+  const recommendationPrompt = `${GUARDRAILS}
+You are Taki AI, a decisive, well-informed personal recommender with live web search.
+
+The user is asking for a SUBJECTIVE recommendation. There is no single provably
+correct answer, and that is not a reason to say "I don't know" or "I can't verify it."
+Research what is genuinely current, then make a clear editorial judgment.
+
+Current local date and time: ${nowInTimeZone(tz || "UTC")}.
+${persona}
+Rules:${tzRule}
+- Search the live web before answering. Resolve phrases such as "this summer" using
+  the current date above; do not silently answer with last year's releases.
+- For movies and shows, distinguish titles already available from upcoming releases.
+  Use current release/streaming information plus credible critical or audience
+  reception, but make your own useful shortlist rather than merely reporting scores.
+- Match the user's quantity: plural wording such as "some" deserves several varied
+  choices; a request for one pick deserves one confident pick.
+- Give a brief, concrete reason each choice fits. If the user gave no taste
+  preferences, choose a diverse, broadly appealing set instead of refusing or
+  forcing a clarifying question.
+- It is okay to say "my pick" or "I'd start with..." and to acknowledge taste.
+  Do not present preferences as objective facts.
+- Do not recommend an older title as a current-season release. An older title may
+  appear only when the user clearly asks for catalog/classic options.
+- Response depth for ${selectedModel.name}: ${depthDirective}
+- Lead with the recommendations. No JSON and no generic preamble.${opts.voiceMode ? "\n- Plain spoken text only; keep it natural when read aloud." : "\n- Plain text only; compact numbered lists are allowed when useful."}
+
+User question:
+${message}
+`;
+
   try {
     // Voice mode uses flash (faster + cheaper) for live/web answers too; grounding
     // stays on since these questions genuinely need current data.
     const response: any = await withTimeout(
       generateContent({
         model: opts.voiceMode ? MAIN_MODEL : RESEARCH_MODEL,
-        contents: allowPrediction ? predictionPrompt : factPrompt,
+        contents: allowPrediction
+          ? predictionPrompt
+          : allowRecommendation
+            ? recommendationPrompt
+            : factPrompt,
         config: {
           tools: [{ googleSearch: {} }],
+          forceWebSearch: true,
+          webSearchContextSize: allowRecommendation && selectedModel.key === "taki_2_1_reasoning"
+            ? "high"
+            : "medium",
           ...(opts.voiceMode ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
           maxOutputTokens: opts.voiceMode
             ? responseStyle.voiceMaxOutputTokens
@@ -2296,6 +2371,16 @@ ${message}
       return { spokenText: answer, action: null, sources };
     }
 
+    if (allowRecommendation) {
+      if (!answer || !grounded || !sources.length) {
+        return {
+          spokenText: "I couldn't refresh current recommendations from the web just now. Try that again in a moment.",
+          action: null
+        };
+      }
+      return { spokenText: answer, action: null, sources };
+    }
+
     if (!answer || !grounded || !sources.length) return { spokenText: "I can't verify that from linkable sources right now.", action: null };
 
     if (/\bprobably|i think|i believe|would be|should be|based on previous|expected around\b/i.test(answer)) {
@@ -2310,7 +2395,9 @@ ${message}
     return {
       spokenText: allowPrediction
         ? "I couldn't find any predictions or odds for that right now."
-        : "I can't verify that right now.",
+        : allowRecommendation
+          ? "I couldn't refresh current recommendations from the web just now. Try that again in a moment."
+          : "I can't verify that right now.",
       action: null
     };
   }
@@ -2750,6 +2837,10 @@ How to answer:
 - Include background, caveats, alternatives, or lists when the selected model depth or the user's request makes them useful; never add filler.
 - Be accurate and complete enough to fully satisfy the question.
 - For anything recent, time-sensitive, or that you're unsure of, USE web search and rely on the results — never guess at current facts or make things up. If you can't find it, say so plainly.
+- When the user asks for an opinion, recommendation, favorite, or "good/best"
+  choices, make a concrete judgment and explain it briefly. Subjectivity is not
+  missing information: do not answer "I don't know" merely because tastes differ.
+  If their preferences are unspecified, offer a sensible varied shortlist.
 - If the question depends on private, visual, physical, or personal information that is not in the conversation, an attachment, device data, or a supported tool, say "I don't have enough information to know that." Briefly say what the user could share to make it answerable. Never call an unanswerable question a service outage.
 - Resolve "it", "that", "there", names, dates, and elliptical follow-ups from RECENT CONVERSATION FOCUS and the conversation history. If more than one interpretation remains plausible, ask one precise question instead of choosing.
 - Never say Taki cannot perform a listed shipping capability. Explain the exact permission, account, supported-device, or confirmation requirement when one applies. Never claim an unlisted capability.
@@ -2778,7 +2869,9 @@ ${memoryText}
   // tool selection. Swift intentionally skips grounding for maximum speed (its
   // UI already explains the freshness tradeoff); Balanced and Reasoning ground
   // current facts while keeping timeless answers on a single model request.
-  const isLive = looksLikeLiveInfoQuestion(state.message) || looksLikeFreshFactQuestion(state.message);
+  const isLive = looksLikeLiveInfoQuestion(state.message)
+    || looksLikeFreshFactQuestion(state.message)
+    || looksLikeCurrentRecommendationQuestion(state.message);
   // A short question is "easy" only if it's genuinely conversational/subjective.
   // Consequential, objective decisions (purchases, products, money) escalate to
   // the informational model even when phrased briefly.
@@ -2786,7 +2879,11 @@ ${memoryText}
   const allowSearch = isLive && selectedModel.key !== "taki_2_0_swift";
   const primaryModel = isLive && !state.voiceMode ? RESEARCH_MODEL : isEasy ? FAST_MODEL : MAIN_MODEL;
   const primaryConfig: any = {
-    ...(allowSearch ? { tools: [{ googleSearch: {} }] } : {}),
+    ...(allowSearch ? {
+      tools: [{ googleSearch: {} }],
+      forceWebSearch: true,
+      webSearchContextSize: selectedModel.key === "taki_2_1_reasoning" ? "high" : "medium"
+    } : {}),
     thinkingConfig: isEasy || state.voiceMode ? { thinkingLevel: "MINIMAL" } : { thinkingLevel: "LOW" },
     maxOutputTokens: state.voiceMode
       ? responseStyle.voiceMaxOutputTokens

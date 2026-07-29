@@ -39,6 +39,7 @@ import {
   looksLikeLotteryQuestion,
   looksLikeFreshFactQuestion,
   looksLikeLiveInfoQuestion,
+  looksLikeCurrentRecommendationQuestion,
   looksLikePredictionQuestion,
   looksLikeLeaveTimeQuestion,
   looksLikeCountdownRequest,
@@ -1659,6 +1660,19 @@ export async function planAssistantResponse(
 
   if (!isActionCommand && (looksLikeFreshFactQuestion(state.message) || looksLikeLiveInfoQuestion(state.message))) {
     const res = await getStrictWebAnswer(state.message, { persona: state.userProfile, timeZone: state.timeZone, voiceMode: state.voiceMode });
+    return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
+  }
+
+  // Current recommendations combine live release/availability information with
+  // an explicitly subjective judgment. They must not go through the hard-fact
+  // verifier, which can mistake "good" for something unknowable.
+  if (!isActionCommand && looksLikeCurrentRecommendationQuestion(state.message)) {
+    const res = await getStrictWebAnswer(state.message, {
+      allowRecommendation: true,
+      persona: state.userProfile,
+      timeZone: state.timeZone,
+      voiceMode: state.voiceMode
+    });
     return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
   }
 

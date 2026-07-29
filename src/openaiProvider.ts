@@ -139,7 +139,17 @@ export function buildOpenAIRequest(args: any, selectedModel: string, stream = fa
     request.text = { format: { type: "json_object" } };
   }
   if (requestsWebSearch(config)) {
-    request.tools = [{ type: "web_search", search_context_size: "medium" }];
+    const requestedContext = String(config?.webSearchContextSize || config?.web_search_context_size || "").toLowerCase();
+    const searchContextSize = requestedContext === "low" || requestedContext === "high"
+      ? requestedContext
+      : "medium";
+    request.tools = [{ type: "web_search", search_context_size: searchContextSize }];
+    // Responses defaults tool_choice to "auto", which can skip a search even
+    // when Taki has already classified the request as time-sensitive. Current
+    // facts and recommendations need a real search, not model-memory roulette.
+    if (config?.forceWebSearch || config?.force_web_search) {
+      request.tool_choice = "required";
+    }
   }
   return request;
 }
