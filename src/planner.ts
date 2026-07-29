@@ -1848,6 +1848,7 @@ export async function planAssistantResponse(
     case "web_search": {
       const res = await getStrictWebAnswer(plan.webQuery || state.message, {
         allowPrediction: looksLikePredictionQuestion(state.message),
+        allowRecommendation: looksLikeCurrentRecommendationQuestion(state.message),
         persona: state.userProfile,
         timeZone: state.timeZone,
         voiceMode: state.voiceMode

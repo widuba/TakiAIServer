@@ -2334,7 +2334,16 @@ ${message}
 
   try {
     // Voice mode uses flash (faster + cheaper) for live/web answers too; grounding
-    // stays on since these questions genuinely need current data.
+    // stays on since these questions genuinely need current data. A bounded
+    // per-model deadline gives the provider router enough time to try its second
+    // lightweight model instead of letting one slow search consume the entire
+    // request budget.
+    const attemptTimeoutMs = opts.voiceMode ? 9_000 : allowRecommendation ? 14_000 : 11_000;
+    const overallTimeoutMs = opts.voiceMode
+      ? Math.max(RESEARCH_TIMEOUT_MS, 20_000)
+      : allowRecommendation
+        ? Math.max(RESEARCH_TIMEOUT_MS, 30_000)
+        : Math.max(RESEARCH_TIMEOUT_MS, 24_000);
     const response: any = await withTimeout(
       generateContent({
         model: opts.voiceMode ? MAIN_MODEL : RESEARCH_MODEL,
@@ -2346,9 +2355,11 @@ ${message}
         config: {
           tools: [{ googleSearch: {} }],
           forceWebSearch: true,
-          webSearchContextSize: allowRecommendation && selectedModel.key === "taki_2_1_reasoning"
-            ? "high"
-            : "medium",
+          // High-context search was regularly exhausting the full 20-second
+          // request window for broad recommendations. Medium still returns
+          // several current sources and leaves time to make the editorial pick.
+          webSearchContextSize: "medium",
+          providerAttemptTimeoutMs: attemptTimeoutMs,
           ...(opts.voiceMode ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
           maxOutputTokens: opts.voiceMode
             ? responseStyle.voiceMaxOutputTokens
@@ -2356,7 +2367,7 @@ ${message}
           ...safetyConfig(opts.persona?.teen)
         }
       } as any),
-      RESEARCH_TIMEOUT_MS,
+      overallTimeoutMs,
       "Web answer"
     );
 

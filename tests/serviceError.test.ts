@@ -15,6 +15,7 @@ test("quota / billing errors classify as a fast ai_quota ServiceError", () => {
 
 test("auth and outage errors classify; ordinary failures do not", () => {
   assert.equal(classifyGeminiError({ status: 403, message: "API key invalid" })?.kind, "ai_auth");
+  assert.equal(classifyGeminiError({ status: 408, message: "provider attempt timed out" })?.kind, "ai_unavailable");
   assert.equal(classifyGeminiError({ status: 503, message: "model is overloaded" })?.kind, "ai_unavailable");
   assert.equal(classifyGeminiError({ status: 500, message: "internal error" })?.kind, "ai_unavailable");
 

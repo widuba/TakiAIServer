@@ -76,6 +76,12 @@ export function classifyAIError(error: unknown): ServiceError | null {
   if (status === 401 || status === 403 || /api[_ ]?key|permission denied|unauthenticated|unauthorized|\b401\b|\b403\b/.test(message)) {
     return new ServiceError("ai_auth", AI_UNAVAILABLE_SPOKEN, Number.isFinite(status) ? status : undefined);
   }
+  // A provider-attempt deadline is different from an outer tool timeout. The
+  // router should immediately try its alternate model, and if every candidate
+  // times out the route should return a typed, speakable service response.
+  if (status === 408) {
+    return new ServiceError("ai_unavailable", AI_UNAVAILABLE_SPOKEN, 408);
+  }
   const explicitProviderOutage =
     /\b(?:service|server|backend|model)(?:\s+is)?\s+(?:temporarily\s+)?unavailable\b/.test(message)
     || /\b(?:model|server|service)\s+(?:is\s+)?overloaded\b/.test(message)

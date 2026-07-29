@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildOpenAIRequest,
+  generateOpenAIContent,
   generateOpenAIContentStream,
   normalizeOpenAIResponse,
+  OpenAIHTTPError,
   UnsupportedOpenAIInputError
 } from "../src/openaiProvider.js";
 
@@ -136,4 +138,22 @@ test("Taki can explicitly raise Mini reasoning without switching to a flagship m
 
   assert.equal(request.model, "gpt-5.4-mini");
   assert.equal(request.reasoning.effort, "medium");
+});
+
+test("a bounded provider attempt aborts a stuck OpenAI request", async () => {
+  const fetchImpl = async (_input: any, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+    init?.signal?.addEventListener("abort", () => {
+      reject(new DOMException("aborted", "AbortError"));
+    }, { once: true });
+  });
+
+  await assert.rejects(
+    generateOpenAIContent(
+      { contents: "Hello", config: { providerAttemptTimeoutMs: 25 } },
+      "gpt-5.4-mini",
+      "test-key",
+      fetchImpl as typeof fetch
+    ),
+    (error: unknown) => error instanceof OpenAIHTTPError && error.status === 408
+  );
 });

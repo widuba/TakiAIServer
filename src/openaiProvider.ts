@@ -255,22 +255,56 @@ function endpoint(): string {
   return `${base}/responses`;
 }
 
+function requestTimeout(args: any): {
+  signal?: AbortSignal;
+  didTimeOut: () => boolean;
+  cancel: () => void;
+} {
+  const requested = Number(args?.config?.providerAttemptTimeoutMs ?? args?.config?.provider_attempt_timeout_ms);
+  if (!Number.isFinite(requested) || requested <= 0) {
+    return { didTimeOut: () => false, cancel: () => {} };
+  }
+  const controller = new AbortController();
+  const timeoutMs = Math.max(25, Math.min(45_000, Math.floor(requested)));
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  return {
+    signal: controller.signal,
+    didTimeOut: () => timedOut,
+    cancel: () => clearTimeout(timer)
+  };
+}
+
 export async function generateOpenAIContent(
   args: any,
   selectedModel: string,
   apiKey: string,
   fetchImpl: FetchLike = fetch
 ): Promise<any> {
-  const response = await fetchImpl(endpoint(), {
-    method: "POST",
-    headers: requestHeaders(apiKey),
-    body: JSON.stringify(buildOpenAIRequest(args, selectedModel, false))
-  });
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new OpenAIHTTPError(response.status, apiErrorMessage(response.status, body), body);
+  const timeout = requestTimeout(args);
+  try {
+    const response = await fetchImpl(endpoint(), {
+      method: "POST",
+      headers: requestHeaders(apiKey),
+      body: JSON.stringify(buildOpenAIRequest(args, selectedModel, false)),
+      signal: timeout.signal
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new OpenAIHTTPError(response.status, apiErrorMessage(response.status, body), body);
+    }
+    return normalizeOpenAIResponse(await response.json());
+  } catch (error) {
+    if (timeout.didTimeOut()) {
+      throw new OpenAIHTTPError(408, `OpenAI model ${selectedModel} timed out.`);
+    }
+    throw error;
+  } finally {
+    timeout.cancel();
   }
-  return normalizeOpenAIResponse(await response.json());
 }
 
 async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<any> {
@@ -310,34 +344,45 @@ export async function* generateOpenAIContentStream(
   apiKey: string,
   fetchImpl: FetchLike = fetch
 ): AsyncGenerator<any> {
-  const response = await fetchImpl(endpoint(), {
-    method: "POST",
-    headers: { ...requestHeaders(apiKey), Accept: "text/event-stream" },
-    body: JSON.stringify(buildOpenAIRequest(args, selectedModel, true))
-  });
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new OpenAIHTTPError(response.status, apiErrorMessage(response.status, body), body);
-  }
-  if (!response.body) throw new OpenAIHTTPError(502, "OpenAI returned an empty response stream.");
+  const timeout = requestTimeout(args);
+  try {
+    const response = await fetchImpl(endpoint(), {
+      method: "POST",
+      headers: { ...requestHeaders(apiKey), Accept: "text/event-stream" },
+      body: JSON.stringify(buildOpenAIRequest(args, selectedModel, true)),
+      signal: timeout.signal
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new OpenAIHTTPError(response.status, apiErrorMessage(response.status, body), body);
+    }
+    if (!response.body) throw new OpenAIHTTPError(502, "OpenAI returned an empty response stream.");
 
-  for await (const event of sseEvents(response.body)) {
-    if (event?.type === "response.output_text.delta" && typeof event.delta === "string") {
-      yield { text: event.delta, provider: "openai" };
-      continue;
+    for await (const event of sseEvents(response.body)) {
+      if (event?.type === "response.output_text.delta" && typeof event.delta === "string") {
+        yield { text: event.delta, provider: "openai" };
+        continue;
+      }
+      if (event?.type === "response.completed" && event.response) {
+        const normalized = normalizeOpenAIResponse(event.response);
+        // The full text must not be emitted again after incremental deltas.
+        yield { ...normalized, text: "", _streamCompleted: true };
+        continue;
+      }
+      if (event?.type === "response.failed" || event?.type === "error") {
+        const error = event?.response?.error || event?.error || event;
+        throw new OpenAIHTTPError(
+          Number(error?.status || error?.code) || 502,
+          String(error?.message || "OpenAI response stream failed.")
+        );
+      }
     }
-    if (event?.type === "response.completed" && event.response) {
-      const normalized = normalizeOpenAIResponse(event.response);
-      // The full text must not be emitted again after incremental deltas.
-      yield { ...normalized, text: "", _streamCompleted: true };
-      continue;
+  } catch (error) {
+    if (timeout.didTimeOut()) {
+      throw new OpenAIHTTPError(408, `OpenAI model ${selectedModel} timed out.`);
     }
-    if (event?.type === "response.failed" || event?.type === "error") {
-      const error = event?.response?.error || event?.error || event;
-      throw new OpenAIHTTPError(
-        Number(error?.status || error?.code) || 502,
-        String(error?.message || "OpenAI response stream failed.")
-      );
-    }
+    throw error;
+  } finally {
+    timeout.cancel();
   }
 }

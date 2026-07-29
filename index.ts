@@ -44,6 +44,7 @@ import { isKnownIdentity, markWebAuthenticated } from "./src/identity.js";
 import { googleWebClientId, isGoogleWebAuthConfigured, verifyGoogleIdToken } from "./src/webauth.js";
 import { isProductKnowledgeQuestion, productAnswerFor } from "./src/productKnowledge.js";
 import { readSyncedChats, syncChats } from "./src/chatSync.js";
+import { TurnReplayCache } from "./src/turnReplay.js";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
 // Render. (The purchase-simulating grant endpoint was removed when real
@@ -52,6 +53,7 @@ const ADMIN_SECRET = (process.env.ADMIN_SECRET || "").trim();
 
 type PendingVoiceSynthesis = { deviceId: string; included: boolean; expiresAt: number };
 const pendingVoiceSyntheses = new Map<string, PendingVoiceSynthesis>();
+const assistantTurnReplay = new TurnReplayCache<any>();
 const FULL_RESET_PHRASE = "DELETE EVERY TAKI ACCOUNT AND ALL DATA";
 const fullResetPreviews = new Map<string, { expiresAt: number; fingerprint: string }>();
 let fullResetInProgress = false;
@@ -220,7 +222,7 @@ app.get("/health", async (_req, res) => {
     ok: true,
     app: "Taki AI server",
     mode: "planner-first-modular-v3",
-    version: "2026-07-28-openai-light-v1",
+    version: "2026-07-29-conversation-recovery-v1",
     durableStorage: isDurable(),
     aiProvider: ACTIVE_AI_PROVIDER,
     models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL },
@@ -2709,15 +2711,18 @@ app.post("/api/assistant", async (req, res) => {
   }
 
   try {
-    const result = await withTakiModel(takiModel, () => runAssistant(
-      state,
-      deviceId,
-      voiceMode,
-      false,
-      false,
-      0,
-      meteringRequestId
-    ));
+    const replayKey = `${deviceId}:${meteringRequestId}`;
+    const result = await assistantTurnReplay.run(replayKey, () =>
+      withTakiModel(takiModel, () => runAssistant(
+        state,
+        deviceId,
+        voiceMode,
+        false,
+        false,
+        0,
+        meteringRequestId
+      ))
+    );
     if (result?.usageBlocked) { res.status(402).json(result); return; }
     res.json(result);
   } catch (error) {
