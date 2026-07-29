@@ -726,6 +726,11 @@ test("learned user memories are bounded and included across chat prompts", () =>
   assert.match(prompt, /allergic to dairy/);
 });
 
+test("pirate persona is available only when Pirate Marshal is selected", () => {
+  assert.equal(parseUserPersona({ personality: "pirate" }).personality, "friendly");
+  assert.equal(parseUserPersona({ personality: "pirate" }, false, true).personality, "pirate");
+});
+
 test("grounded sources survive response finalization", () => {
   const sources = [{ title: "Example source", url: "https://example.com/current" }];
   const response = finalizeResponse({

@@ -13,6 +13,7 @@ const ELEVEN_KEY = process.env.ELEVENLABS_API_KEY || "";
 const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM"; // "Rachel"
 export const STT_MODEL = "scribe_v2";
 export const TTS_MODEL = "eleven_flash_v2_5";
+export const PIRATE_MARSHAL_VOICE_ID = "PPzYpIqttlTYA83688JI";
 
 export function isVoiceConfigured(): boolean {
   return !!ELEVEN_KEY;

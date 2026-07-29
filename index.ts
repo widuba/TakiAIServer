@@ -32,7 +32,7 @@ import { purgeAppleAccount } from "./src/accountDeletion.js";
 import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, linkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG, promptExtractionMessageForMode } from "./src/safety.js";
 import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, noteInteraction, noteChannelCost, noteSession, noteEngagementPreferences, noteBillingEvent, userForIdentity, identitiesForIp, allUsers, deleteUser, type UserRecord } from "./src/users.js";
 import { TIERS } from "./src/credits.js";
-import { billableAudioDurationMs, transcribe, synthesize, splitTextForProgressiveSpeech, listVoices, isVoiceConfigured, speechCharacterCount, shouldAskForVoiceRepeat, VOICE_REPEAT_PROMPT } from "./src/voice.js";
+import { billableAudioDurationMs, transcribe, synthesize, splitTextForProgressiveSpeech, listVoices, isVoiceConfigured, PIRATE_MARSHAL_VOICE_ID, speechCharacterCount, shouldAskForVoiceRepeat, VOICE_REPEAT_PROMPT } from "./src/voice.js";
 import { emailProviderConfigured, createOAuthState, buildAuthUrl, completeOAuth, loadConnection, disconnectEmail, moveEmailConnection, sendEmail, saveDraft, searchConnectedEmail, type EmailProvider } from "./src/email.js";
 import { extractDurableMemories } from "./src/userMemory.js";
 import { createChatTitle } from "./src/chatTitle.js";
@@ -2693,7 +2693,7 @@ app.post("/api/assistant", async (req, res) => {
 // returned action; only the extra STT/TTS is voice-specific.
 app.post("/api/voice", async (req, res) => {
   const audioBase64 = typeof req.body?.audioBase64 === "string" ? req.body.audioBase64 : "";
-  if (audioBase64.length > 3_000_000) { res.status(413).json({ error: "voice recording too large" }); return; }
+  if (audioBase64.length > 8_000_000) { res.status(413).json({ error: "voice recording too large" }); return; }
   const deviceTranscript = typeof req.body?.transcript === "string" ? req.body.transcript.trim().slice(0, 4000) : "";
   const prefersDeviceSpeech = req.body?.deviceSpeech === true;
   const progressiveVoice = req.body?.progressiveVoice === true;
@@ -2745,7 +2745,15 @@ app.post("/api/voice", async (req, res) => {
     ? Math.max(0, Math.min(1, req.body.voiceVariability))
     : 0.5;
   const styleProfiles = parseIncomingStyleProfiles(req.body?.styleProfiles);
-  const userProfile = parseUserPersona(req.body?.profile, req.body?.addressUser);
+  const userProfile = parseUserPersona(
+    req.body?.profile,
+    req.body?.addressUser,
+    voiceId === PIRATE_MARSHAL_VOICE_ID
+  );
+  if (voiceId === PIRATE_MARSHAL_VOICE_ID) {
+    userProfile.personality = "pirate";
+    userProfile.intensity = 10;
+  }
   const takiModel = normalizeTakiModel(req.body?.profile?.model);
   void captureRequestDeviceInfo(req, userProfile.name).catch((error) => console.error("device info capture:", error));
   if (!audioBase64 && !deviceTranscript) { res.status(400).json({ error: "audioBase64 or transcript required" }); return; }

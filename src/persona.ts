@@ -192,7 +192,7 @@ export function personaPromptBlock(p?: UserPersona | null): string {
 }
 
 // Coerce an arbitrary request body field into a clean persona object.
-export function parseUserPersona(raw: any, addressUser?: any): UserPersona {
+export function parseUserPersona(raw: any, addressUser?: any, allowPirate = false): UserPersona {
   if (!raw || typeof raw !== "object") {
     return { addressUser: Boolean(addressUser) };
   }
@@ -205,7 +205,9 @@ export function parseUserPersona(raw: any, addressUser?: any): UserPersona {
     rules: Array.isArray(raw.rules)
       ? raw.rules.map((rule: unknown) => String(rule).trim().slice(0, 180)).filter(Boolean).slice(0, 20)
       : [],
-    personality: typeof raw.personality === "string" ? raw.personality.slice(0, 40) : null,
+    personality: typeof raw.personality === "string"
+      ? (raw.personality.toLowerCase() === "pirate" && !allowPirate ? "friendly" : raw.personality.slice(0, 40))
+      : null,
     intensity: typeof raw.personaIntensity === "number" ? raw.personaIntensity : null,
     responseLength: typeof raw.responseLength === "string" ? raw.responseLength.slice(0, 20) : null,
     emoji: typeof raw.emoji === "string" ? raw.emoji.slice(0, 10) : null,
