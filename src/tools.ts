@@ -2117,14 +2117,38 @@ export function looksLikePredictionQuestion(message: string) {
 export function looksLikeFreshFactQuestion(message: string) {
   const m = message.toLowerCase();
 
-  const recency = /\b(latest|newest|most recent|current(?:ly)?|right now|nowadays|these days|so far|this year|20\d\d|just (?:released|announced|came out)|recently (?:released|announced|launched))\b/.test(m);
+  const recency = /\b(latest|newest|most recent|current(?:ly)?|right now|today|tonight|nowadays|these days|so far|this (?:week|month|year)|20\d\d|just (?:released|announced|came out|changed)|recently (?:released|announced|launched|changed|updated))\b/.test(m);
   const release = /\b(release[sd]?|releasing|announce[sd]?|came out|come out|coming out|available now|out now|launch(?:e[sd])?)\b/.test(m);
   const product = /\b(chip|processor|silicon|cpu|gpu|graphics card|iphone|ipad|mac|macbook|imac|phone|laptop|tablet|smartwatch|watch|model|version|console|car|ev|product|device|software|os|update)\b/.test(m);
   const superlative = /\b(best|fastest|newest|latest|top|most powerful|most advanced|highest[- ]end|flagship)\b/.test(m);
   const brand = /\b(apple|google|samsung|nvidia|amd|intel|microsoft|sony|tesla|openai|anthropic|android|iphone|playstation|xbox|pixel|galaxy)\b/.test(m);
+  const asksForInformation = /\b(who|what|when|where|why|how|which|is|are|was|were|does|do|did|can|could|should|tell me|show me|update me|catch me up|give me)\b/.test(m);
+
+  // Facts can change without the user saying "current." Officeholders, company
+  // leaders, laws, public guidance, travel requirements, recalls, deadlines,
+  // schedules, and developing news must never be answered from model memory.
+  const mutableOfficeholder =
+    /\bwho(?:'s| is| are)\s+(?:the\s+)?(?:current\s+)?(?:president|prime minister|premier|governor|mayor|senator|representative|secretary|attorney general|chief justice|pope|ceo|cfo|cto|chair(?:man|woman|person)?|commissioner|coach|manager|leader|head)\b/.test(m)
+    || /\b(?:current|new|incoming|acting)\s+(?:president|prime minister|premier|governor|mayor|senator|representative|secretary|attorney general|chief justice|pope|ceo|cfo|cto|chair(?:man|woman|person)?|commissioner|coach|manager|leader|head)\b/.test(m);
+  const developingNews =
+    /\b(latest news|breaking news|headlines?|news (?:on|about)|what(?:'s| is) happening|what happened (?:today|yesterday|this week)|update me on|catch me up on|developments? (?:in|on))\b/.test(m);
+  const mutableLawOrRates =
+    /\b(law|legal|illegal|regulation|policy|court ruling|executive order|tax(?:es)?|tax deadline|interest rate|mortgage rate)\b/.test(m)
+    && asksForInformation;
+  const mutableTravel =
+    /\b(visa|passport|entry requirements?|travel advisory|travel requirements?)\b/.test(m)
+    && /\b(need|required?|requirements?|valid|validity|renew|expir|travel|enter|visit|allowed|can i|should i)\b/.test(m);
+  const mutableGuidanceOrSafety =
+    /\b(medical guidance|health guidance|recommendations?|guidelines?|dosage|drug interaction|recall|safety notice)\b/.test(m)
+    && asksForInformation;
+  const mutableAvailability =
+    /\b(schedule|opening hours|hours today|availability|available (?:today|now|this week)|sold out|tickets?|deadline|release date|airdate|premiere date|shipping date|service status|outage)\b/.test(m)
+    && asksForInformation;
 
   if (superlative && (product || brand)) return true;
   if ((recency || release) && (product || brand)) return true;
+  if (recency && asksForInformation) return true;
+  if (mutableOfficeholder || developingNews || mutableLawOrRates || mutableTravel || mutableGuidanceOrSafety || mutableAvailability) return true;
   return false;
 }
 
@@ -2933,9 +2957,8 @@ ${memoryText}
 
   // Three speed tiers. Search is offered only for a genuinely current question;
   // attaching it to every substantive prompt made even timeless answers wait on
-  // tool selection. Swift intentionally skips grounding for maximum speed (its
-  // UI already explains the freshness tradeoff); Balanced and Reasoning ground
-  // current facts while keeping timeless answers on a single model request.
+  // tool selection. Every tier grounds time-sensitive facts: Swift earns its
+  // speed through a smaller response budget, not by guessing from stale memory.
   const isLive = looksLikeLiveInfoQuestion(state.message)
     || looksLikeFreshFactQuestion(state.message)
     || looksLikeCurrentRecommendationQuestion(state.message);
@@ -2943,7 +2966,7 @@ ${memoryText}
   // Consequential, objective decisions (purchases, products, money) escalate to
   // the informational model even when phrased briefly.
   const isEasy = !isLive && looksLikeEasyQuestion(state.message) && !looksLikeSubstantiveQuestion(state.message);
-  const allowSearch = isLive && selectedModel.key !== "taki_2_0_swift";
+  const allowSearch = isLive;
   const primaryModel = isLive && !state.voiceMode ? RESEARCH_MODEL : isEasy ? FAST_MODEL : MAIN_MODEL;
   const primaryConfig: any = {
     ...(allowSearch ? {

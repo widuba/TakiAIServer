@@ -7,6 +7,9 @@ const root = resolve(process.cwd(), "..");
 const serverEntry = readFileSync(resolve(root, "server/index.ts"), "utf8");
 const serverTypes = readFileSync(resolve(root, "server/src/types.ts"), "utf8");
 const appSource = readFileSync(resolve(root, "app/src/App.tsx"), "utf8");
+const appProfileSource = readFileSync(resolve(root, "app/src/userProfile.ts"), "utf8");
+const nativeUiSource = readFileSync(resolve(root, "app/ios/App/App/NativeTakiUI.swift"), "utf8");
+const sharedContentBridgeSource = readFileSync(resolve(root, "app/ios/App/App/SharedContentBridge.swift"), "utf8");
 const carPlaySource = readFileSync(resolve(root, "app/ios/App/App/CarPlaySceneDelegate.swift"), "utf8");
 
 function quotedValues(source: string): Set<string> {
@@ -86,4 +89,20 @@ test("removed inbox connections cannot re-enter the planner or Apple clients", (
   assert.doesNotMatch(shippingContract, /\bemail_connect\b|\bemailAuthUrl\b/);
   assert.doesNotMatch(shippingContract, /Settings\s*→\s*Email/);
   assert.doesNotMatch(serverEntry, /\/api\/email\/(?:connect|callback|status|search|send|disconnect)/);
+});
+
+test("retired Personal Rules and clipboard-import surfaces stay removed", () => {
+  const retiredSurfaces = [appSource, appProfileSource, nativeUiSource, sharedContentBridgeSource].join("\n");
+  assert.doesNotMatch(retiredSurfaces, /\bTakiRulesView\b|Personal Rules|sharedReaderPaste|readClipboard/);
+  assert.doesNotMatch(appProfileSource, /^\s*rules:\s/m);
+});
+
+test("typed request failures remain visible and truthful inside the conversation", () => {
+  assert.match(appSource, /function conversationalRequestFailure\(/);
+  assert.match(appSource, /I kept your request in this chat/);
+  assert.match(
+    appSource,
+    /appendMessageToChat\(chatIdForRequest, makeChatMessage\("assistant", failure\)\)/
+  );
+  assert.match(appSource, /I won't pretend it did/);
 });

@@ -8,7 +8,7 @@ import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
 import { cleanAssistantText, finalizeResponse, resolveCalendarUpdateDates, sanitizeSources, validateAction } from "../src/validators.js";
 import { briefForVoice, progressiveVoiceBundles, VOICE_MAX_CHARS } from "../src/util.js";
-import { formatMathNumber, looksLikeCurrentRecommendationQuestion, looksLikeLiveInfoQuestion, looksLikeSubjectiveRecommendationQuestion, parseMusicCommand, parsePackageTracking, responseStyleForTakiModel, youtubeVideoInputURL } from "../src/tools.js";
+import { formatMathNumber, looksLikeCurrentRecommendationQuestion, looksLikeFreshFactQuestion, looksLikeLiveInfoQuestion, looksLikeSubjectiveRecommendationQuestion, parseMusicCommand, parsePackageTracking, responseStyleForTakiModel, youtubeVideoInputURL } from "../src/tools.js";
 import { usageLimitsFor } from "../src/credits.js";
 import { subscriptionMergeDecision } from "../src/iap.js";
 import { billableAudioDurationMs, normalizeSpeechKeyterms, normalizeTextForSpeech, shouldAskForVoiceRepeat, speechCharacterCount, splitTextForProgressiveSpeech, stabilityForVariability, STT_MODEL, TTS_MODEL, VOICE_REPEAT_PROMPT } from "../src/voice.js";
@@ -69,6 +69,33 @@ test("current subjective recommendations are recognized without treating all opi
   assert.equal(looksLikeCurrentRecommendationQuestion("What are three good classic comedies?"), false);
   assert.equal(looksLikeCurrentRecommendationQuestion("What should I add to my calendar this summer?"), false);
   assert.equal(looksLikeCurrentRecommendationQuestion("What are good restaurants near me right now?"), false);
+});
+
+test("changeable public facts always route to current research", () => {
+  const currentQuestions = [
+    "Who is the president of France?",
+    "Who is the CEO of OpenAI?",
+    "Is it legal to turn left on red in Georgia?",
+    "What are the current CDC recommendations?",
+    "What are the entry requirements for Japan?",
+    "Was there a recall on this model?",
+    "Catch me up on the election this week.",
+    "When is the tax deadline?",
+    "Are tickets available today?"
+  ];
+  for (const question of currentQuestions) {
+    assert.equal(looksLikeFreshFactQuestion(question), true, question);
+  }
+
+  const timelessQuestions = [
+    "What does a president do?",
+    "Why is the sky blue?",
+    "Explain how passports work.",
+    "What is a CPU?"
+  ];
+  for (const question of timelessQuestions) {
+    assert.equal(looksLikeFreshFactQuestion(question), false, question);
+  }
 });
 
 test("context preserves more than the old forty-turn window while staying bounded", () => {
@@ -851,10 +878,17 @@ test("song-identification requests are detected without hijacking playback", () 
   assert.equal(isIdentifySongRequest("what are the lyrics to Yesterday"), false);
 });
 
-test("personal rules are bounded and clearly labeled in the persona prompt", () => {
-  const persona = parseUserPersona({ rules: ["Never schedule before 9 AM."] });
-  assert.deepEqual(persona.rules, ["Never schedule before 9 AM."]);
-  assert.match(personaPromptBlock(persona), /USER RULES/);
+test("current user statements outrank saved profile facts and retired personal rules stay retired", () => {
+  const persona = parseUserPersona({
+    about: "The user lives in Atlanta.",
+    memories: ["The user works nights."],
+    rules: ["Never schedule before 9 AM."]
+  });
+  const prompt = personaPromptBlock(persona);
+  assert.match(prompt, /current message and explicit corrections outrank/i);
+  assert.match(prompt, /may become outdated/i);
+  assert.doesNotMatch(prompt, /USER RULES|Never schedule before 9 AM/);
+  assert.equal("rules" in persona, false);
 });
 
 test("voice fallback always fits without an ellipsis", () => {
