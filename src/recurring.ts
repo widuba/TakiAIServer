@@ -12,7 +12,6 @@ export interface Recurring {
   minute?: number;
   weekdays?: number[];      // iOS weekday: 1=Sun … 7=Sat
   intervalMinutes?: number;
-  isBriefing?: boolean;
   descr: string;            // human-readable, for the confirmation line
 }
 
@@ -66,7 +65,9 @@ function extractTitle(message: string): string {
 export function looksLikeRecurring(message: string): boolean {
   const m = message.toLowerCase();
   if (!/\b(every|each|daily)\b/.test(m)) return false;
-  // Must be a reminder/briefing intent, not "every time I…" chatter.
+  // Must be a reminder intent, not "every time I…" chatter. "Brief me" is
+  // treated as an ordinary user-controlled reminder; the retired automatic
+  // Daily Briefing surface must never silently come back.
   const intent = /\b(remind|reminder|nudge|ping|prompt me|tell me to|brief|briefing|check in|take my|drink|stretch|stand up|water|meds|medicine|pills)\b/.test(m);
   const timing = /\bevery\s+(\d+\s*(hours?|hrs?|minutes?|mins?)|hour|half\s*hour|other\s+\w+|day|morning|afternoon|night|evening|weekday|weekend|week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/.test(m)
     || /\b(daily|each (day|morning|night))\b/.test(m);
@@ -77,10 +78,11 @@ export function parseRecurring(message: string): Recurring | null {
   if (!looksLikeRecurring(message)) return null;
   const m = message.toLowerCase();
   let title = extractTitle(message);
-  // A bare "brief me" / "briefing" is the daily briefing, not a text reminder.
-  const isBriefing = /^(brief( me)?|briefing|my briefing|the (rundown|briefing)|my day|rundown)$/i.test(title) || (!title && /\b(brief|briefing|rundown|my day|schedule and weather)\b/.test(m));
-  if (isBriefing) title = "";
-  const finalTitle = title || (isBriefing ? "Morning briefing" : "Reminder");
+  if (/^(brief( me)?|briefing|my briefing|the (rundown|briefing)|my day|rundown)$/i.test(title)
+      || (!title && /\b(brief|briefing|rundown|my day|schedule and weather)\b/.test(m))) {
+    title = "Review my day";
+  }
+  const finalTitle = title || "Reminder";
 
   // Interval: "every N hours/minutes", "every hour", "every half hour".
   let intervalMinutes = 0;
@@ -91,7 +93,7 @@ export function parseRecurring(message: string): Recurring | null {
   if (intervalMinutes >= 1) {
     intervalMinutes = Math.max(1, intervalMinutes);
     const descr = intervalMinutes % 60 === 0 ? `every ${intervalMinutes / 60} hour${intervalMinutes === 60 ? "" : "s"}` : `every ${intervalMinutes} minutes`;
-    return { title: finalTitle, kind: "interval", intervalMinutes, isBriefing, descr };
+    return { title: finalTitle, kind: "interval", intervalMinutes, descr };
   }
 
   const tod = parseTimeOfDay(m);
@@ -103,10 +105,10 @@ export function parseRecurring(message: string): Recurring | null {
     const label = weekdays.length === 5 && weekdays.join() === "2,3,4,5,6" ? "every weekday"
       : weekdays.length === 2 && weekdays.join() === "1,7" ? "every weekend"
       : "every " + weekdays.map((w) => DAY_NAMES[w]).join(", ");
-    return { title: finalTitle, kind: "weekly", weekdays, hour, minute, isBriefing, descr: `${label} at ${fmtTime(hour, minute)}` };
+    return { title: finalTitle, kind: "weekly", weekdays, hour, minute, descr: `${label} at ${fmtTime(hour, minute)}` };
   }
   if (tod || /\b(every day|each day|daily|every morning|every night|every evening|every afternoon)\b/.test(m)) {
-    return { title: finalTitle, kind: "daily", hour, minute, isBriefing, descr: `every day at ${fmtTime(hour, minute)}` };
+    return { title: finalTitle, kind: "daily", hour, minute, descr: `every day at ${fmtTime(hour, minute)}` };
   }
   return null;
 }

@@ -8,8 +8,12 @@ const serverEntry = readFileSync(resolve(root, "server/index.ts"), "utf8");
 const serverTypes = readFileSync(resolve(root, "server/src/types.ts"), "utf8");
 const appSource = readFileSync(resolve(root, "app/src/App.tsx"), "utf8");
 const appProfileSource = readFileSync(resolve(root, "app/src/userProfile.ts"), "utf8");
+const appStyles = readFileSync(resolve(root, "app/src/App.css"), "utf8");
+const onboardingSource = readFileSync(resolve(root, "app/src/Onboarding.tsx"), "utf8");
 const nativeUiSource = readFileSync(resolve(root, "app/ios/App/App/NativeTakiUI.swift"), "utf8");
 const sharedContentBridgeSource = readFileSync(resolve(root, "app/ios/App/App/SharedContentBridge.swift"), "utf8");
+const contactsBridgeSource = readFileSync(resolve(root, "app/ios/App/App/ContactsBridge.swift"), "utf8");
+const deviceBridgeSource = readFileSync(resolve(root, "app/ios/App/App/DeviceBridge.swift"), "utf8");
 const carPlaySource = readFileSync(resolve(root, "app/ios/App/App/CarPlaySceneDelegate.swift"), "utf8");
 
 function quotedValues(source: string): Set<string> {
@@ -105,4 +109,47 @@ test("typed request failures remain visible and truthful inside the conversation
     /appendMessageToChat\(chatIdForRequest, makeChatMessage\("assistant", failure\)\)/
   );
   assert.match(appSource, /I won't pretend it did/);
+});
+
+test("retired Clock, Daily Briefing, and Active Alerts surfaces cannot reappear", () => {
+  const shippingUi = [appSource, appProfileSource, appStyles, onboardingSource, nativeUiSource].join("\n");
+  assert.doesNotMatch(
+    shippingUi,
+    /ClockTab|TakiClockView|Daily briefing|morning briefing|morningBriefing|TakiBriefingView|Active alerts|TakiAlertsView|clock-toggle/
+  );
+  assert.doesNotMatch(serverTypes, /recurIsBriefing/);
+});
+
+test("external action failures override optimistic server confirmations", () => {
+  for (const fallback of [
+    "I couldn't set up that location automation.",
+    "I couldn't set up that scheduled message.",
+    "I couldn't set up that recurring reminder.",
+    "I couldn't set up that cooking reminder.",
+    "I couldn't set up that alert.",
+    "I couldn't cancel those alerts.",
+    "I couldn't save that to Health.",
+    "I couldn't reach your home accessories.",
+    "I couldn't control Apple Music.",
+    "I couldn't start that Live Activity."
+  ]) {
+    assert.match(appSource, new RegExp(`throw e instanceof Error \\? e : new Error\\(${JSON.stringify(fallback).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`));
+  }
+});
+
+test("phone calls use a verified native handoff", () => {
+  assert.match(contactsBridgeSource, /CAPPluginMethod\(name: "callPhone"/);
+  assert.match(contactsBridgeSource, /UIApplication\.shared\.canOpenURL\(url\)/);
+  assert.match(contactsBridgeSource, /if opened \{ call\.resolve\(\["opened": true\]\) \}/);
+  assert.match(appSource, /await ContactsBridge\.callPhone\(\{ phone \}\)/);
+  assert.match(appSource, /if \(!result\.opened\) throw new Error\("Phone did not open\."\)/);
+});
+
+test("maps and service handoffs are verified before success is shown", () => {
+  assert.match(deviceBridgeSource, /UIApplication\.shared\.open\(url, options: \[:\]\) \{ opened in/);
+  assert.match(deviceBridgeSource, /\["https", "http", "uber", "lyft"\]\.contains\(scheme\)/);
+  assert.match(appSource, /async function openMapsDirections/);
+  assert.match(appSource, /await openExternalURL\(url\)/);
+  assert.match(appSource, /if \(!\/\^\(uber\|lyft\):\/i\.test\(url\)\) throw error/);
+  assert.match(appSource, /await openExternalURL\(buildServiceUrl\(action\)\)/);
 });

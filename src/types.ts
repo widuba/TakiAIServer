@@ -217,7 +217,6 @@ export type AssistantAction = {
   recurMinute: number | null;
   recurWeekdays: number[] | null;    // 1=Sun … 7=Sat
   recurIntervalMinutes: number | null;
-  recurIsBriefing: boolean | null;
 };
 
 export type DeviceLocation = {
@@ -585,7 +584,6 @@ export function blankAction(type: AssistantActionType): AssistantAction {
     recurHour: null,
     recurMinute: null,
     recurWeekdays: null,
-    recurIntervalMinutes: null,
-    recurIsBriefing: null
+    recurIntervalMinutes: null
   };
 }

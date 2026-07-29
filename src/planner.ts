@@ -1499,10 +1499,7 @@ export async function planAssistantResponse(
       action.recurMinute = rec.minute ?? null;
       action.recurWeekdays = rec.weekdays ?? null;
       action.recurIntervalMinutes = rec.intervalMinutes ?? null;
-      action.recurIsBriefing = !!rec.isBriefing;
-      const line = rec.isBriefing
-        ? `Done — I'll send you your briefing ${rec.descr}.`
-        : `Done — I'll remind you to ${rec.title.replace(/^to\s+/i, "")} ${rec.descr}.`;
+      const line = `Done — I'll remind you to ${rec.title.replace(/^to\s+/i, "")} ${rec.descr}.`;
       return actionPlan(line, action, { lastIntent: "recurring_reminder" });
     }
   }

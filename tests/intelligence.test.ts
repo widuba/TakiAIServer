@@ -12,6 +12,7 @@ import { formatMathNumber, looksLikeCurrentRecommendationQuestion, looksLikeFres
 import { usageLimitsFor } from "../src/credits.js";
 import { subscriptionMergeDecision } from "../src/iap.js";
 import { billableAudioDurationMs, normalizeSpeechKeyterms, normalizeTextForSpeech, shouldAskForVoiceRepeat, speechCharacterCount, splitTextForProgressiveSpeech, stabilityForVariability, STT_MODEL, TTS_MODEL, VOICE_REPEAT_PROMPT } from "../src/voice.js";
+import { parseRecurring } from "../src/recurring.js";
 import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
@@ -889,6 +890,15 @@ test("current user statements outrank saved profile facts and retired personal r
   assert.match(prompt, /may become outdated/i);
   assert.doesNotMatch(prompt, /USER RULES|Never schedule before 9 AM/);
   assert.equal("rules" in persona, false);
+});
+
+test("retired Daily Briefing requests become ordinary explicit reminders", () => {
+  const reminder = parseRecurring("Brief me every weekday at 7 AM");
+  assert.ok(reminder);
+  assert.equal(reminder.title, "Review my day");
+  assert.equal(reminder.kind, "weekly");
+  assert.deepEqual(reminder.weekdays, [2, 3, 4, 5, 6]);
+  assert.equal("isBriefing" in reminder, false);
 });
 
 test("voice fallback always fits without an ellipsis", () => {
