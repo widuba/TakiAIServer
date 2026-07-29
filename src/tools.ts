@@ -2353,6 +2353,8 @@ for current titles, scores, release dates, and streaming availability.
 - Prefer well-reviewed choices and explain the appeal in your own words.
 - Include both theaters and streaming only when the evidence supports those labels.
 - Never infer a streaming service or release status that the evidence does not state.
+- A title belongs to a streaming service only when it appears inside that service's
+  labeled section. Never assign a service from a nearby highlights or popularity list.
 - Do not copy critics' prose. Paraphrase it briefly.
 
 CURRENT EDITORIAL EVIDENCE:

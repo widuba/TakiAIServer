@@ -29,10 +29,14 @@ test("parses streaming platform headings and listings without navigation noise",
   const lines = parseRottenTomatoesStreamingPage(`
     <div class="content-body">
       <p>This month, streaming services add many titles.</p>
+      <h2>HIGHLIGHTS</h2>
+      <p>Another Service Movie</p>
       <h2>NETFLIX</h2>
       <p><strong>July 3</strong></p>
       <p>Fresh Movie</p>
       <p>Apple TV | Disney+ | Netflix</p>
+      <h2>RELATED NEWS</h2>
+      <p>Unrelated Movie</p>
     </div>
   `, "Netflix");
   assert.deepEqual(lines, ["Platform: Netflix", "NETFLIX", "July 3", "Fresh Movie"]);

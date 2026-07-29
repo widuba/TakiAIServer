@@ -99,14 +99,21 @@ export function parseRottenTomatoesStreamingPage(html: string, platform: string,
   const body = root.querySelector(".content-body");
   if (!body) return [];
   const lines: string[] = [];
+  const platformHeading = platform.replace(/\s+/g, " ").trim().toLowerCase();
+  let insidePlatformSection = false;
   for (const node of body.querySelectorAll("h2, p")) {
     const line = cleanText(node.text, 260);
-    if (!line
-      || /^apple tv \| disney\+/i.test(line)
-      || /^this month, streaming services/i.test(line)
-      || /^check out the highlights/i.test(line)) {
-      continue;
+    if (node.tagName === "H2") {
+      if (line.toLowerCase() === platformHeading) {
+        insidePlatformSection = true;
+        lines.push(line);
+        continue;
+      }
+      if (insidePlatformSection) break;
     }
+    // Each paginated article repeats a cross-service HIGHLIGHTS block before
+    // its own platform heading. Do not attribute those titles to this service.
+    if (!insidePlatformSection || !line || /^apple tv \| disney\+/i.test(line)) continue;
     lines.push(line);
     if (lines.length >= limit) break;
   }
@@ -173,4 +180,3 @@ export async function getCurrentMovieRecommendationEvidence(
     sources: sources.slice(0, 8)
   };
 }
-
