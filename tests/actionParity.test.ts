@@ -16,6 +16,7 @@ const sharedContentBridgeSource = readFileSync(resolve(root, "app/ios/App/App/Sh
 const contactsBridgeSource = readFileSync(resolve(root, "app/ios/App/App/ContactsBridge.swift"), "utf8");
 const deviceBridgeSource = readFileSync(resolve(root, "app/ios/App/App/DeviceBridge.swift"), "utf8");
 const cloudSyncBridgeSource = readFileSync(resolve(root, "app/ios/App/App/CloudSyncBridge.swift"), "utf8");
+const permissionsBridgeSource = readFileSync(resolve(root, "app/ios/App/App/PermissionsBridge.swift"), "utf8");
 const carPlaySource = readFileSync(resolve(root, "app/ios/App/App/CarPlaySceneDelegate.swift"), "utf8");
 
 function quotedValues(source: string): Set<string> {
@@ -144,6 +145,24 @@ test("external action failures override optimistic server confirmations", () => 
     "I couldn't start that Live Activity."
   ]) {
     assert.match(appSource, new RegExp(`throw e instanceof Error \\? e : new Error\\(${JSON.stringify(fallback).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`));
+  }
+});
+
+test("multi-action execution reports partial success on phone, voice, and CarPlay", () => {
+  assert.match(appSource, /executeActionBatch\(requestedActions/);
+  assert.match(appSource, /executionReceiptText\(multiActions, batch/);
+  assert.match(appSource, /executionReceiptText\(pending\.actions, batch/);
+  assert.match(carPlaySource, /var successes:\s*\[\(VoiceAction, String\)\]/);
+  assert.ok(carPlaySource.includes("I completed \\(successes.count) of \\(actions.count) actions"));
+  assert.doesNotMatch(carPlaySource, /for action in actions \{\s*results\.append\(try await execute\(action\)\)/s);
+});
+
+test("permission recovery opens a verified Settings destination and queues every CarPlay handoff", () => {
+  assert.match(permissionsBridgeSource, /UIApplication\.shared\.open\(url, options: \[:\]\) \{ opened in/);
+  assert.match(permissionsBridgeSource, /if opened \{ call\.resolve\(\["ok": true\]\) \}/);
+  assert.doesNotMatch(appSource, /PermissionsBridge\.openSettings\(\); \} catch \{ \/\* not on device \*\/ \}\s*appendMessageToChat\([^\n]+"Done\."/);
+  for (const kind of ["Calendar", "Reminders", "Contacts", "Apple Music", "Health", "Photos", "Notifications"]) {
+    assert.match(carPlaySource, new RegExp(`queuePhonePermission\\("${kind.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"\\)`));
   }
 });
 
