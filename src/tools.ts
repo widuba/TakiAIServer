@@ -6,6 +6,7 @@ import type { UserPersona } from "./persona.js";
 import type { TakiModelKey } from "./ai.js";
 import { isoFromYmdTime, addMinutesToIsoLocal, addDaysToYmd, ymdInTimeZone, extractJsonObject, briefForVoice, progressiveVoiceBundles } from "./util.js";
 import { extractFlightCode, hasExplicitFinanceCue, hasProductPriceCue } from "./entityClassifier.js";
+import { getCurrentMovieRecommendationEvidence } from "./currentRecommendations.js";
 
 function isValidTimeZone(tz: string): boolean {
   try {
@@ -2338,6 +2339,52 @@ Rules:${tzRule}
 User question:
 ${message}
 `;
+
+  if (allowRecommendation) {
+    try {
+      const currentEvidence = await getCurrentMovieRecommendationEvidence(message);
+      if (currentEvidence) {
+        const evidencePrompt = `${recommendationPrompt}
+
+You have already been given fresh editorial evidence below, fetched directly from
+the linked publisher pages. Do not run another web search. Use only this evidence
+for current titles, scores, release dates, and streaming availability.
+- Make a confident, selective recommendation; do not dump every title.
+- Prefer well-reviewed choices and explain the appeal in your own words.
+- Include both theaters and streaming only when the evidence supports those labels.
+- Never infer a streaming service or release status that the evidence does not state.
+- Do not copy critics' prose. Paraphrase it briefly.
+
+CURRENT EDITORIAL EVIDENCE:
+${currentEvidence.evidence}
+`;
+        const directResponse: any = await withTimeout(
+          generateContent({
+            model: MAIN_MODEL,
+            contents: evidencePrompt,
+            config: {
+              providerAttemptTimeoutMs: opts.voiceMode ? 6_500 : 8_500,
+              thinkingConfig: { thinkingBudget: 0 },
+              maxOutputTokens: opts.voiceMode
+                ? responseStyle.voiceMaxOutputTokens
+                : responseStyle.textMaxOutputTokens,
+              ...safetyConfig(opts.persona?.teen)
+            }
+          } as any),
+          opts.voiceMode ? 11_000 : 14_000,
+          "Current recommendation synthesis"
+        );
+        const directAnswer = String(directResponse?.text || "").trim();
+        if (directAnswer) {
+          return { spokenText: directAnswer, action: null, sources: currentEvidence.sources };
+        }
+      }
+    } catch (error) {
+      // The normal grounded provider path below remains available if a direct
+      // editorial source changes markup, goes offline, or synthesis times out.
+      console.error("Fast current recommendation error:", error);
+    }
+  }
 
   try {
     // Voice mode uses flash (faster + cheaper) for live/web answers too; grounding
