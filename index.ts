@@ -43,6 +43,7 @@ import { bypassResetGeneration, hasCurrentResetGeneration, RESET_EPOCH_HEADER } 
 import { isKnownIdentity, markWebAuthenticated } from "./src/identity.js";
 import { googleWebClientId, isGoogleWebAuthConfigured, verifyGoogleIdToken } from "./src/webauth.js";
 import { isProductKnowledgeQuestion, productAnswerFor } from "./src/productKnowledge.js";
+import { readSyncedChats, syncChats } from "./src/chatSync.js";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
 // Render. (The purchase-simulating grant endpoint was removed when real
@@ -1018,6 +1019,26 @@ app.get("/api/credits", async (req, res) => {
     else if (acct.status === "suspended") { access = "suspended"; accessMessage = SUSPENDED_MSG; }
   } catch (e) { console.error("credits access check:", e); }
   res.json({ ...(await creditSummary(deviceId)), tiers: tierCatalog(), access, accessMessage });
+});
+
+// Account-backed conversation sync for iPhone, iPad, CarPlay, web, and tvOS.
+// Only text, source links, and chat metadata are retained; photos, files, and
+// device-only attachment previews never leave the originating device.
+app.get("/api/chats", async (req, res) => {
+  const identity = await requireCreditIdentity(req.query?.deviceId, res);
+  if (!identity) return;
+  res.json(await readSyncedChats(identity));
+});
+
+app.post("/api/chats/sync", async (req, res) => {
+  const identity = await requireCreditIdentity(req.body?.deviceId, res);
+  if (!identity) return;
+  const chats = Array.isArray(req.body?.chats) ? req.body.chats : [];
+  const activeChatId = typeof req.body?.activeChatId === "string" ? req.body.activeChatId : undefined;
+  const deletedChatIds = Array.isArray(req.body?.deletedChatIds)
+    ? req.body.deletedChatIds.map((value: unknown) => String(value))
+    : [];
+  res.json(await syncChats(identity, chats, activeChatId, deletedChatIds));
 });
 
 // Fast, non-AI affordability check. The app calls this immediately before text,

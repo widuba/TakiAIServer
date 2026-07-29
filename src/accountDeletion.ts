@@ -64,6 +64,7 @@ export async function purgeAppleAccount(sub: string): Promise<{ identities: stri
       storeDelete(`credits:${plain}`),
       storeDelete(`email:conn:${plain}`),
       storeDelete(`routines:${identity}`),
+      storeDelete(`chatsync:${safety}`),
       storeDelete(`push:token:${plain}`),
       storeDelete(`nudges:manifest:${plain}`),
       storeDelete(`nudges:sent:${plain}`),

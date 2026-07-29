@@ -91,7 +91,7 @@ export function productAnswerFor(message: string, context: ProductAnswerContext 
   const timeZone = context.timeZone || "UTC";
 
   if (/^(?:who|what) are you\??$|^what is taki(?: ai)?\??$|^tell me about (?:yourself|taki(?: ai)?)\??$|^are you chatgpt\??$/.test(m)) {
-    return "I'm Taki AI, a daily-life assistant built for iPhone and CarPlay. I can answer questions and, with permission, work with communication, calendars, reminders, maps, music, Health, HomeKit, photos, and other supported device features.";
+    return "I'm Taki AI, a daily-life assistant for iPhone, iPad, CarPlay, and Apple TV. I can answer and continue synced conversations on every supported screen. On iPhone and CarPlay, I can also work with supported communication, calendars, reminders, maps, music, Health, HomeKit, photos, and other device features when the platform and permissions allow it.";
   }
 
   if (/\b(?:taki )?models?\b|\bwhat (?:model|version) are you\b|\b(?:swift|reasoning) model\b/.test(m)) {
@@ -188,8 +188,8 @@ export function productKnowledgePromptBlock(account?: CreditSummary | null, time
   const plans = paidPlanSummary();
   const accountLine = accountSummaryLine(account, timeZone);
   return `TAKI PRODUCT, PRICING, AND ENTITLEMENT FACTS (authoritative; never guess or contradict these):
-- Taki AI is a daily-life assistant for iPhone and CarPlay. It is not ChatGPT.
-- The Model button lives directly in text chat and voice mode, not Settings. It expands a Faster-to-Smarter control with three immediate positions: Taki 2.0 Swift (fastest, fewest credits, higher chance of inaccurate or outdated information), Taki 2.1 (balanced and the default), and Taki 2.1 Reasoning (slowest, most credits, most likely to be accurate, thorough, and up to date). No model is guaranteed to be correct. The choice syncs between iPhone, iPad, and CarPlay. Device actions use a separate reliable structured planner regardless of the answer model.
+- Taki AI is a daily-life assistant for iPhone, iPad, CarPlay, and Apple TV. It is not ChatGPT. Apple TV supports account-backed conversation sync, text/dictation input, model selection, and spoken answers; it does not claim to perform phone-only device actions.
+- The Model button lives directly in text chat and voice mode, not Settings. It expands a Faster-to-Smarter control with three immediate positions: Taki 2.0 Swift (fastest, fewest credits, higher chance of inaccurate or outdated information), Taki 2.1 (balanced and the default), and Taki 2.1 Reasoning (slowest, most credits, most likely to be accurate, thorough, and up to date). No model is guaranteed to be correct. The choice is available across iPhone, iPad, CarPlay, and Apple TV. Device actions use a separate reliable structured planner regardless of the answer model.
 - Free is $0 and refreshes to ${count(FREE_STARTER_CREDITS)} AI Credits monthly with 0 Voice Credits.
 - ${plans}
 - AI Credits pay variable AI/search usage; one credit represents $0.001 of provider list-price usage. Each image/file has a 40-AI-Credit processing floor.
