@@ -185,7 +185,8 @@ export type AssistantAction = {
   automationTrigger: string | null; // "arrive" | "leave"
   automationPlace: string | null;
   automationAction: string | null;
-  // memory_save: a long-term fact to append to the user's profile.
+  // memory_save: mutate durable profile memory. `save` is the legacy default.
+  memoryOperation: "save" | "forget" | "clear" | null;
   memoryFact: string | null;
   // share_content: native iOS share sheet. Calendar shares resolve the event on
   // device; researched/current answers carry ready-to-share text.
@@ -571,6 +572,7 @@ export function blankAction(type: AssistantActionType): AssistantAction {
     automationTrigger: null,
     automationPlace: null,
     automationAction: null,
+    memoryOperation: null,
     memoryFact: null,
     shareKind: null,
     shareText: null,

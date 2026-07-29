@@ -1067,6 +1067,35 @@ export function parseRememberCommand(message: string): string | null {
   return fact;
 }
 
+// Explicit user control over long-term memory. Conservative phrasing prevents
+// ordinary uses of “forget” (for example “I forgot my keys”) from deleting data.
+export function parseForgetMemoryCommand(
+  message: string
+): { operation: "forget" | "clear"; fact: string | null } | null {
+  const clean = message.trim().replace(/[.?!]+$/, "");
+  if (!clean) return null;
+
+  if (/^(?:please\s+)?(?:forget|clear|erase|delete|remove)\s+(?:(?:all|everything)\s+)?(?:(?:of\s+)?(?:your|taki(?:'s)?)\s+)?(?:saved\s+)?(?:memory|memories|what you (?:know|remember))(?:\s+about me)?$/i.test(clean)
+      || /^(?:please\s+)?forget\s+(?:everything|all)\s+(?:you\s+)?(?:know|remember)(?:\s+about me)?$/i.test(clean)) {
+    return { operation: "clear", fact: null };
+  }
+
+  const patterns = [
+    /^(?:please\s+)?(?:forget|erase)\s+(?:that\s+)?(.+)$/i,
+    /^(?:please\s+)?delete\s+(?:the\s+)?(?:saved\s+)?memory\s+(?:that\s+)?(.+)$/i,
+    /^(?:please\s+)?remove\s+(.+?)\s+from\s+(?:your\s+memory|what\s+you\s+remember|taki(?:'s)?\s+memory)$/i,
+    /^(?:please\s+)?(?:don'?t|do\s+not)\s+remember\s+(.+?)(?:\s+anymore|\s+going\s+forward)$/i,
+    /^(?:please\s+)?stop\s+remembering\s+(.+)$/i
+  ];
+  for (const pattern of patterns) {
+    const match = clean.match(pattern);
+    const fact = match?.[1]?.trim().replace(/^(?:that\s+)/i, "");
+    if (!fact || fact.length < 2 || /^(?:it|that|this|everything|all)$/i.test(fact) || /^to\s+/i.test(fact)) continue;
+    return { operation: "forget", fact: fact.slice(0, 180) };
+  }
+  return null;
+}
+
 // "Remind me to text Mom happy birthday at 9am" → a draft-and-send-later: at the
 // given time the device fires a notification with the message pre-written;
 // tapping it opens the Messages composer pre-filled (via the same pending-command

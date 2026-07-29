@@ -103,6 +103,14 @@ test("retired Personal Rules and clipboard-import surfaces stay removed", () => 
   assert.doesNotMatch(appProfileSource, /^\s*rules:\s/m);
 });
 
+test("explicit memory actions use the structured correction-safe store on phone and CarPlay", () => {
+  assert.match(serverTypes, /memoryOperation:\s*"save"\s*\|\s*"forget"\s*\|\s*"clear"/);
+  assert.match(appSource, /applyMemoryOperation\(userProfileRef\.current, operation, fact/);
+  assert.doesNotMatch(appSource, /saveMemoryFromAction/);
+  assert.match(carPlaySource, /profile\["memories"\]\s*=\s*memories/);
+  assert.doesNotMatch(carPlaySource, /profile\["about"\]\s*=\s*current\.isEmpty\s*\?\s*fact/);
+});
+
 test("typed request failures remain visible and truthful inside the conversation", () => {
   assert.match(appSource, /function conversationalRequestFailure\(/);
   assert.match(appSource, /I kept your request in this chat/);

@@ -161,7 +161,13 @@ export function validateAction(action: AssistantAction | null): string | null {
     return "Should I turn the flashlight on or off?";
   }
 
-  if (action.type === "memory_save" && !action.memoryFact?.trim()) return "What would you like me to remember?";
+  if (action.type === "memory_save") {
+    const operation = action.memoryOperation || "save";
+    if (!new Set(["save", "forget", "clear"]).has(operation)) return "I couldn't understand that memory request.";
+    if (operation !== "clear" && !action.memoryFact?.trim()) {
+      return operation === "forget" ? "What would you like me to forget?" : "What would you like me to remember?";
+    }
+  }
 
   if (action.type === "share_content") {
     if (action.shareKind === "calendar" || action.shareKind === "calendar_list") return null;

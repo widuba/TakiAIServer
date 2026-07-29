@@ -67,6 +67,7 @@ import {
   parseAlertCancel,
   looksLikeFlightQuestion,
   parsePackageTracking,
+  parseForgetMemoryCommand,
   parseRememberCommand,
   parseSceneCommand,
   parseHomeCommand,
@@ -937,12 +938,28 @@ export async function planAssistantResponse(
     }
   }
 
-  // "Remember I'm vegetarian" -> store a long-term fact (device appends it to the
-  // user's profile, which is injected into every future prompt + iCloud-synced).
+  // Explicit memory control is deterministic so a user can always remove or
+  // clear saved personal information without relying on model interpretation.
+  {
+    const command = parseForgetMemoryCommand(state.message);
+    if (command) {
+      const action = blankAction("memory_save");
+      action.memoryOperation = command.operation;
+      action.memoryFact = command.fact;
+      return actionPlan(
+        command.operation === "clear" ? "I'll clear what I remember about you." : "I'll remove that from what I remember.",
+        action,
+        { lastIntent: "memory_save" }
+      );
+    }
+  }
+
+  // "Remember I'm vegetarian" -> store a structured, iCloud-synced fact.
   {
     const fact = parseRememberCommand(state.message);
     if (fact) {
       const action = blankAction("memory_save");
+      action.memoryOperation = "save";
       action.memoryFact = fact;
       return actionPlan(`Got it — I'll remember that.`, action, { lastIntent: "memory_save" });
     }
