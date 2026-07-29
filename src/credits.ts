@@ -721,7 +721,10 @@ export function inAppCreditsForProduct(productId: string, tier: Tier): number | 
   if (!pack) return null;
   const baseCredits = Math.max(1, Math.round(pack.priceCents / (TOPUP_CENTS_PER_CREDIT * IN_APP_RATE_MULTIPLIER)));
   const discount = Math.max(0, Math.min(0.9, TIERS[tier]?.extraCreditDiscount || 0));
-  return Math.floor(baseCredits / (1 - discount));
+  // Discounts are delivered as bonus credits, but awkward totals such as 833
+  // look accidental in pricing. Round the final grant to the nearest 50 while
+  // keeping the signed product and server-side tier authoritative.
+  return Math.max(50, Math.round((baseCredits / (1 - discount)) / 50) * 50);
 }
 
 export async function grantForConsumableTransaction(
