@@ -90,16 +90,6 @@ import { parseListCommand } from "./lists.js";
 import { looksLikeConversion, computeConversion, currencyConversionSource } from "./conversions.js";
 import { parseExpense, parseHabit } from "./tracking.js";
 import {
-  detectEmailRequest,
-  answerEmail,
-  emailConnected,
-  emailProviderConfigured,
-  anyEmailProviderConfigured,
-  createOAuthState,
-  buildAuthUrl,
-  type EmailProvider
-} from "./email.js";
-import {
   parseRoutineDefinition,
   parseRoutineManagement,
   matchRoutine,
@@ -1232,47 +1222,29 @@ export async function planAssistantResponse(
     return actionPlan(`Searching your connected sources for ${personalSearchQuery}…`, action, { lastIntent: "personal_search" });
   }
 
-  // Email — connect an inbox, or read/search/summarize it. Gated on a provider
-  // being configured (env), so it's inert until the user sets up OAuth.
-  if (anyEmailProviderConfigured()) {
+  // Taki intentionally has no third-party inbox connection. Apple does not give
+  // apps unrestricted access to the Mail or Messages databases; the supported,
+  // private workflow is Share → Taki AI (or copy the content into Taki), where
+  // the user explicitly chooses what Taki may read.
+  {
     const em = state.message.toLowerCase();
     const wantsConnect =
-      /\b(connect|link|set ?up|hook up|sign ?in to|log ?in to)\b[^.?!]*\b(e-?mail|inbox|gmail|google|outlook|microsoft|hotmail)\b/.test(em) ||
-      /\b(connect|link|add)\s+(my\s+)?(gmail|outlook|email|inbox)\b/.test(em);
+      /\b(connect|link|set ?up|hook up|sign ?in to|log ?in to)\b[^.?!]*\b(e-?mail|inbox|gmail|outlook|hotmail|apple mail)\b/.test(em) ||
+      /\b(connect|link|add)\s+(my\s+)?(gmail|outlook|email|inbox|apple mail)\b/.test(em);
     if (wantsConnect) {
-      if (!state.deviceId) {
-        return answerPlan("I can't connect email on this version — update the app first.", { lastIntent: "answer_only" });
-      }
-      let provider: EmailProvider | null =
-        /\b(gmail|google)\b/.test(em) ? "gmail" : /\b(outlook|microsoft|hotmail|office ?365)\b/.test(em) ? "outlook" : null;
-      if (!provider) {
-        // No provider named: pick the only configured one, else ask.
-        const g = emailProviderConfigured("gmail"), o = emailProviderConfigured("outlook");
-        if (g && !o) provider = "gmail";
-        else if (o && !g) provider = "outlook";
-        else return answerPlan("Sure — Gmail or Outlook?", { lastIntent: "answer_only" });
-      }
-      if (!emailProviderConfigured(provider)) {
-        return answerPlan(`${provider === "gmail" ? "Gmail" : "Outlook"} isn't available yet. You can connect from Settings → Email.`, { lastIntent: "answer_only" });
-      }
-      const oauthState = await createOAuthState(state.deviceId, provider);
-      const url = buildAuthUrl(provider, oauthState);
-      if (!url) return answerPlan("Email connections aren't set up yet.", { lastIntent: "answer_only" });
-      const action = blankAction("email_connect");
-      action.emailAuthUrl = url;
-      return actionPlan(`Opening ${provider === "gmail" ? "Gmail" : "Outlook"} sign-in…`, action, { lastIntent: "email_connect" });
+      return answerPlan(
+        "Taki doesn't connect to an entire inbox. To keep your mail private, open the email in Apple Mail, tap Share, and choose Taki AI. I can then summarize it, pull out dates and tasks, or draft a reply.",
+        { lastIntent: "answer_only" }
+      );
     }
-
-    const emailReq = detectEmailRequest(state.message);
-    if (emailReq) {
-      if (!state.deviceId || !(await emailConnected(state.deviceId))) {
-        return answerPlan("You haven't connected an email account yet — go to Settings → Email to link Gmail or Outlook.", { lastIntent: "answer_only" });
-      }
-      const res = await answerEmail(state, emailReq.kind, emailReq.query);
-      if (!res.connected) {
-        return answerPlan("You haven't connected an email account yet — go to Settings → Email to link Gmail or Outlook.", { lastIntent: "answer_only" });
-      }
-      return answerPlan(res.answer, { lastIntent: "answer_only" });
+    const wantsInboxRead =
+      /\b(read|check|show|find|search|summari[sz]e|scan|look (?:at|through)|catch me up on)\b[^.?!]*\b(e-?mails?|mail|inbox|messages?)\b/.test(em) ||
+      /\b(latest|recent|new|unread|important)\s+(e-?mails?|mail|inbox messages?)\b/.test(em);
+    if (wantsInboxRead) {
+      return answerPlan(
+        "Apple doesn't let Taki silently read your Mail or Messages. Open the message, tap Share, and choose Taki AI; I can privately summarize it, identify urgent details and dates, or help you reply.",
+        { lastIntent: "answer_only" }
+      );
     }
   }
 

@@ -7,7 +7,6 @@ const EXTERNAL_PATHS = new Set([
   "/api/credits/checkout",
   "/api/plans/checkout",
   "/api/stripe/webhook",
-  "/api/email/callback",
   "/api/iap/notifications",
   "/api/engagement/click"
 ]);

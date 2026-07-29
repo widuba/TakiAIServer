@@ -141,6 +141,19 @@ test("product self-knowledge is broad without hijacking ordinary plans and price
   assert.match(productAnswerFor("What Taki model am I using?") || "", /You're using Taki 2\.1/);
 });
 
+test("inbox requests use the private Apple share workflow instead of removed connections", async () => {
+  const connect = await planAssistantResponse(stateFor("Connect my Gmail account"));
+  assert.equal(connect.action, null);
+  assert.match(connect.spokenText, /Apple Mail/i);
+  assert.match(connect.spokenText, /Share/i);
+  assert.doesNotMatch(connect.spokenText, /Settings\s*→\s*Email/i);
+
+  const read = await planAssistantResponse(stateFor("Read my latest emails"));
+  assert.equal(read.action, null);
+  assert.match(read.spokenText, /doesn't let Taki silently read/i);
+  assert.match(read.spokenText, /choose Taki AI/i);
+});
+
 test("low-confidence executable model plans are clarified instead of executed", () => {
   const action = blankAction("maps_directions");
   action.mapsDestination = "the restaurant";

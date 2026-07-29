@@ -179,7 +179,6 @@ function actionOpensAppOrSystemSheet(action: AssistantAction | null): boolean {
     "open_app",
     "maps_search",
     "maps_directions",
-    "email_connect",
     "service_handoff",
     "share_content",
     "file_export",

@@ -33,7 +33,6 @@ import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestR
 import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, noteInteraction, noteChannelCost, noteSession, noteEngagementPreferences, noteBillingEvent, userForIdentity, identitiesForIp, allUsers, deleteUser, type UserRecord } from "./src/users.js";
 import { TIERS } from "./src/credits.js";
 import { billableAudioDurationMs, transcribe, synthesize, splitTextForProgressiveSpeech, listVoices, isVoiceConfigured, PIRATE_MARSHAL_VOICE_ID, speechCharacterCount, shouldAskForVoiceRepeat, VOICE_REPEAT_PROMPT } from "./src/voice.js";
-import { emailProviderConfigured, createOAuthState, buildAuthUrl, completeOAuth, loadConnection, disconnectEmail, moveEmailConnection, sendEmail, saveDraft, searchConnectedEmail, type EmailProvider } from "./src/email.js";
 import { extractDurableMemories } from "./src/userMemory.js";
 import { createChatTitle } from "./src/chatTitle.js";
 import { engagementSummary, isEngagementEmailConfigured, recordEngagementOpen, recordEngagementSession, recommendedEngagement, sendPersonalizedEngagement, shouldSendAutomatic, type EngagementChannel } from "./src/engagement.js";
@@ -75,6 +74,13 @@ function isAdminAuthorized(value: unknown): boolean {
   const supplied = Buffer.from(value);
   const expected = Buffer.from(ADMIN_SECRET);
   return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+}
+
+async function purgeLegacyInboxConnection(identity: string): Promise<void> {
+  if (!identity) return;
+  const safeIdentity = identity.replace(/[^a-zA-Z0-9_-]/g, "_");
+  await storeDelete(`email:conn:${safeIdentity}`);
+  if (safeIdentity !== identity) await storeDelete(`email:conn:${identity}`);
 }
 
 function createVoiceSynthesisToken(deviceId: string, included: boolean): string {
@@ -222,7 +228,7 @@ app.get("/health", async (_req, res) => {
     ok: true,
     app: "Taki AI server",
     mode: "planner-first-modular-v3",
-    version: "2026-07-29-trustworthy-conversation-v4",
+    version: "2026-07-29-apple-action-parity-v5",
     durableStorage: isDurable(),
     aiProvider: ACTIVE_AI_PROVIDER,
     models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL },
@@ -1543,105 +1549,6 @@ app.post("/api/stripe/webhook", async (req, res) => {
   res.json({ received: true });
 });
 
-/* ---- Email inbox integration (Gmail + Outlook OAuth) -------------------- */
-// Start the OAuth flow for a provider: returns the consent URL the app opens in
-// the system browser. State carries the device identity so the callback can
-// store the connection against it.
-app.get("/api/email/connect", async (req, res) => {
-  const provider = String(req.query.provider || "").toLowerCase() as EmailProvider;
-  const deviceId = typeof req.query.deviceId === "string" ? req.query.deviceId.trim() : "";
-  if (provider !== "gmail" && provider !== "outlook") { res.status(400).json({ error: "provider must be gmail or outlook" }); return; }
-  if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
-  if (!(await requireCreditIdentity(deviceId, res))) return;
-  if (!emailProviderConfigured(provider)) { res.status(503).json({ error: `${provider} isn't configured yet` }); return; }
-  const state = await createOAuthState(deviceId, provider);
-  const url = buildAuthUrl(provider, state);
-  if (!url) { res.status(503).json({ error: "could not build auth URL" }); return; }
-  res.json({ url });
-});
-
-// OAuth redirect target (must match the provider's registered redirect URI).
-// Exchanges the code, stores the connection, then bounces the browser back to
-// the app via the takiai:// deep link.
-app.get("/api/email/callback", async (req, res) => {
-  const code = typeof req.query.code === "string" ? req.query.code : "";
-  const state = typeof req.query.state === "string" ? req.query.state : "";
-  const err = typeof req.query.error === "string" ? req.query.error : "";
-  const escapeHTML = (value: string) => value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char] || char);
-  const page = (title: string, body: string) => `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHTML(title)}</title><style>body{box-sizing:border-box;margin:0;background:#1c1c1e;color:#f5f5f7;font:16px/1.6 -apple-system,system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;text-align:center;padding:24px}a{display:inline-block;margin-top:20px;padding:13px 22px;border-radius:12px;background:#f5f5f7;color:#171719;text-decoration:none;font-weight:700}h1{font-size:22px;margin:0 0 8px}p{color:#c7c7cc;max-width:340px}</style></head><body><div><h1>${escapeHTML(title)}</h1><p>${escapeHTML(body)}</p><a href="takiai://email-connected">Return to Taki AI</a></div><script>setTimeout(function(){location.href="takiai://email-connected"},900)</script></body></html>`;
-  if (err || !code || !state) {
-    res.status(400).send(page("Couldn't connect", "The sign-in was cancelled or failed. You can try again from Settings → Email."));
-    return;
-  }
-  try {
-    const done = await completeOAuth(code, state);
-    if (!done) { res.status(400).send(page("Couldn't connect", "That sign-in link expired or was invalid. Please try again from the app.")); return; }
-    res.send(page("Email connected 🎉", `${done.email || "Your account"} is now linked to Taki AI. You can head back to the app.`));
-  } catch (e) {
-    console.error("email callback:", e);
-    res.status(500).send(page("Something went wrong", "Please try connecting again from Settings → Email."));
-  }
-});
-
-// Whether this device has a connected inbox (for Settings + polling after OAuth).
-app.get("/api/email/status", async (req, res) => {
-  const deviceId = typeof req.query.deviceId === "string" ? req.query.deviceId.trim() : "";
-  if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
-  if (!(await requireCreditIdentity(deviceId, res))) return;
-  const conn = await loadConnection(deviceId);
-  res.json({
-    connected: !!(conn && conn.refreshToken),
-    provider: conn?.provider || null,
-    email: conn?.email || "",
-    gmailAvailable: emailProviderConfigured("gmail"),
-    outlookAvailable: emailProviderConfigured("outlook")
-  });
-});
-
-app.get("/api/email/search", async (req, res) => {
-  const deviceId = typeof req.query.deviceId === "string" ? req.query.deviceId.trim() : "";
-  const query = typeof req.query.q === "string" ? req.query.q.trim() : "";
-  if (!deviceId || !query) { res.status(400).json({ error: "deviceId and q required" }); return; }
-  if (!(await requireCreditIdentity(deviceId, res))) return;
-  try {
-    res.json(await searchConnectedEmail(deviceId, query, 5));
-  } catch (error) {
-    console.error("email search:", error);
-    res.status(502).json({ connected: true, messages: [], error: "email search unavailable" });
-  }
-});
-
-app.post("/api/email/disconnect", async (req, res) => {
-  const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
-  if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
-  if (!(await requireCreditIdentity(deviceId, res))) return;
-  await disconnectEmail(deviceId);
-  res.json({ connected: false });
-});
-
-// Send an email from the connected account (device already resolved the address
-// and the user confirmed). Body: {deviceId, to, subject, body}.
-app.post("/api/email/send", async (req, res) => {
-  const b = req.body || {};
-  const deviceId = typeof b.deviceId === "string" ? b.deviceId.trim() : "";
-  const to = typeof b.to === "string" ? b.to.trim() : "";
-  const subject = typeof b.subject === "string" ? b.subject.slice(0, 300) : "";
-  const body = typeof b.body === "string" ? b.body.slice(0, 20000) : "";
-  if (!deviceId || !to || !body) { res.status(400).json({ ok: false, error: "deviceId, to, and body are required" }); return; }
-  if (!(await requireCreditIdentity(deviceId, res))) return;
-  const gate = await safetyGate(deviceId, `${subject}\n${body}`, req);
-  if (gate) { res.status(403).json({ ok: false, error: "blocked" }); return; }
-  const asDraft = b.draft === true;
-  const r = asDraft
-    ? await saveDraft(deviceId, to, subject || "(no subject)", body)
-    : await sendEmail(deviceId, to, subject || "(no subject)", body);
-  if (!r.ok && (r.error === "not_connected" || r.error === "auth")) {
-    res.status(409).json({ ok: false, error: "reconnect", message: "Reconnect your email in Settings to enable sending." });
-    return;
-  }
-  res.json(r);
-});
-
 // The dev grant stub that simulated purchases was REMOVED once real StoreKit
 // IAP shipped — subscriptions now grant exclusively through /api/iap/verify
 // (cryptographically verified transactions), so there is no secret-guarded
@@ -1847,7 +1754,10 @@ app.post("/api/account/apple", async (req, res) => {
     }
 
     await mergeCredits(deviceId, ledgerIdentity, { subscriptionMode, secondaryTransactionId });
-    await moveEmailConnection(deviceId, ledgerIdentity);
+    // Inbox connections were removed from Taki. Purge any legacy OAuth token
+    // that may still be attached to either pre-sign-in or Apple identities.
+    await purgeLegacyInboxConnection(deviceId);
+    await purgeLegacyInboxConnection(ledgerIdentity);
     await rebindCreditTransactions(deviceId, ledgerIdentity);
     for (const transactionId of deviceTransactions) {
       const role = transactionId === primary ? "primary" : "secondary";

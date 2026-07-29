@@ -52,7 +52,6 @@ export type AssistantActionType =
   | "photos_show"
   | "photos_search"
   | "day_plan"
-  | "email_connect"
   | "service_handoff"
   | "list_action"
   | "expense_action"
@@ -141,8 +140,6 @@ export type AssistantAction = {
   // photos_search: content to look for on-device (e.g. "dog", "beach", "food").
   photoQuery: string | null;
   personalSearchQuery: string | null;
-  // email_connect: the provider OAuth URL the device opens in the system browser.
-  emailAuthUrl: string | null;
   // service_handoff: Taki fills in the details, the device deep-links into the
   // real app (Uber/DoorDash/OpenTable/…) pre-filled; the user confirms + pays
   // there. service = "uber"|"lyft"|"doordash"|"ubereats"|"grubhub"|"opentable"|
@@ -545,7 +542,6 @@ export function blankAction(type: AssistantActionType): AssistantAction {
     photoDays: null,
     photoQuery: null,
     personalSearchQuery: null,
-    emailAuthUrl: null,
     service: null,
     serviceKind: null,
     serviceLabel: null,
