@@ -6,7 +6,7 @@ import { auditPlannerOutput } from "../src/plannerAudit.js";
 import { calendarDirectionsQuery, fastVoiceReply, looksLikePlainVoiceKnowledgeQuestion, planAssistantResponse, planShareRequest } from "../src/planner.js";
 import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
-import { finalizeResponse, resolveCalendarUpdateDates, validateAction } from "../src/validators.js";
+import { cleanAssistantText, finalizeResponse, resolveCalendarUpdateDates, sanitizeSources, validateAction } from "../src/validators.js";
 import { briefForVoice, progressiveVoiceBundles, VOICE_MAX_CHARS } from "../src/util.js";
 import { formatMathNumber, looksLikeCurrentRecommendationQuestion, looksLikeLiveInfoQuestion, looksLikeSubjectiveRecommendationQuestion, parseMusicCommand, parsePackageTracking, responseStyleForTakiModel, youtubeVideoInputURL } from "../src/tools.js";
 import { usageLimitsFor } from "../src/credits.js";
@@ -754,6 +754,49 @@ test("grounded sources survive response finalization", () => {
     needsExecution: false
   }, stateFor("what is current?"));
   assert.deepEqual(response.sources, sources);
+});
+
+test("plain-text clients never receive raw model markdown", () => {
+  assert.equal(
+    cleanAssistantText("## Picks\n- **The Odyssey** — *best on a big screen*.\n- `Enola Holmes 3`"),
+    "Picks\n• The Odyssey — best on a big screen.\n• Enola Holmes 3"
+  );
+  const response = finalizeResponse({
+    spokenText: "**Direct answer:** Use `Settings`.\n\n\n- Then retry.",
+    action: null,
+    sources: [],
+    memoryPatch: { pendingClarification: null },
+    needsExecution: false
+  }, stateFor("what should I do?"));
+  assert.equal(response.spokenText, "Direct answer: Use Settings.\n\n• Then retry.");
+  assert.equal(response.memory?.lastAnswer, response.spokenText);
+});
+
+test("source cleanup rejects unsafe URLs and deduplicates linkable evidence", () => {
+  assert.deepEqual(sanitizeSources([
+    { title: "**Example**", url: "https://example.com/current#section" },
+    { title: "Duplicate", url: "https://example.com/current" },
+    { title: "Unsafe", url: "javascript:alert(1)" },
+    { title: "", url: "https://www.apple.com/" }
+  ]), [
+    { title: "Example", url: "https://example.com/current" },
+    { title: "apple.com", url: "https://www.apple.com/" }
+  ]);
+});
+
+test("default relationship prompt is warm without dependency or canned intimacy", () => {
+  const prompt = personaPromptBlock(parseUserPersona({ personality: "friendly", personaIntensity: 8 }));
+  assert.match(prompt, /Facts outrank personality/);
+  assert.match(prompt, /Do not guilt the user into continuing/);
+  assert.match(prompt, /never manufacture excitement/);
+  assert.doesNotMatch(prompt, /beaming best friend/i);
+});
+
+test("retired personalities cannot survive stale client profiles", () => {
+  for (const personality of ["chill", "formal", "sarcastic", "witty", "motivational"]) {
+    assert.equal(parseUserPersona({ personality }).personality, "friendly");
+    assert.match(personaPromptBlock(parseUserPersona({ personality })), /warm, perceptive friend/);
+  }
 });
 
 test("live currency conversions expose the exact rate endpoint", () => {

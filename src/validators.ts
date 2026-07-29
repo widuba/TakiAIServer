@@ -3,6 +3,7 @@ import type {
   AssistantMemory,
   AssistantPlan,
   AssistantResponse,
+  AssistantSource,
   ConversationState,
   EventMemory
 } from "./types.js";
@@ -321,10 +322,62 @@ function stripFalsePromises(spokenText: string): string {
     .replace(/\bI (?:added|created|set|sent|texted|emailed|called|opened|scheduled)[^.?!]*\.?/gi, "")
     .replace(/\bYour (?:alarm|timer|reminder|event) (?:is|has been) (?:set|created|scheduled)[^.?!]*\.?/gi, "")
     .replace(/\bThe (?:message|text|email) (?:was|has been) sent[^.?!]*\.?/gi, "")
-    .replace(/\s+/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .replace(/[ \t]*\n[ \t]*/g, "\n")
     .trim();
   if (/^(?:done|all set|handled|completed)[.!]*$/i.test(text)) return "";
   return text;
+}
+
+/**
+ * The native app renders assistant copy with SwiftUI Text, not a Markdown
+ * renderer. Normalize model formatting centrally so every surface receives
+ * clean text while preserving useful paragraphs, lists, and code contents.
+ */
+export function cleanAssistantText(value: string): string {
+  return String(value || "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/```[a-z0-9_+-]*\s*\n?/gi, "")
+    .replace(/```/g, "")
+    .replace(/^[ \t]{0,3}#{1,6}[ \t]+/gm, "")
+    .replace(/^[ \t]*>[ \t]?/gm, "")
+    .replace(/^[ \t]*[-*+][ \t]+/gm, "• ")
+    .replace(/\*\*([^*\n]+)\*\*/g, "$1")
+    .replace(/__([^_\n]+)__/g, "$1")
+    .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "$1")
+    .replace(/`([^`\n]+)`/g, "$1")
+    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, "$1 ($2)")
+    .replace(/【\s*\d+(?:\s*[-–,]\s*\d+)*\s*】/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+export function sanitizeSources(values?: AssistantSource[]): AssistantSource[] {
+  const sources: AssistantSource[] = [];
+  const seen = new Set<string>();
+  for (const value of Array.isArray(values) ? values : []) {
+    const rawUrl = String(value?.url || "").trim();
+    let url: URL;
+    try {
+      url = new URL(rawUrl);
+    } catch {
+      continue;
+    }
+    if (url.protocol !== "https:" && url.protocol !== "http:") continue;
+    url.hash = "";
+    const key = url.toString();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const fallbackTitle = url.hostname.replace(/^www\./i, "") || "Web source";
+    const title = cleanAssistantText(String(value?.title || fallbackTitle))
+      .replace(/\s+/g, " ")
+      .slice(0, 140)
+      || fallbackTitle;
+    sources.push({ title, url: key });
+    if (sources.length >= 8) break;
+  }
+  return sources;
 }
 
 /* ============================================================================
@@ -343,7 +396,7 @@ export function finalizeResponse(plan: AssistantPlan, state: ConversationState):
       const lastEvt = plan.memoryPatch.lastMentionedEvent || null;
       const spoken = good.some(actionOpensAppOrSystemSheet)
         ? "Done."
-        : plan.spokenText || `Added ${good.length} events to your calendar.`;
+        : cleanAssistantText(plan.spokenText || `Added ${good.length} events to your calendar.`);
       const memory: AssistantMemory = {
         ...state.priorMemory,
         lastTopic: state.message,
@@ -359,7 +412,7 @@ export function finalizeResponse(plan: AssistantPlan, state: ConversationState):
         spokenText: spoken,
         action: good[0],
         actions: good,
-        sources: plan.sources,
+        sources: sanitizeSources(plan.sources),
         comparison: plan.comparison,
         memory,
         followUpEvent: eventMemoryToFollowUp(lastEvt),
@@ -409,6 +462,7 @@ export function finalizeResponse(plan: AssistantPlan, state: ConversationState):
   if (actionOpensAppOrSystemSheet(action)) spokenText = "Done.";
 
   if (!spokenText.trim()) spokenText = action ? "Okay." : "Done.";
+  spokenText = cleanAssistantText(spokenText);
 
   // ---- Build structured wire memory --------------------------------------
   const newEvent: EventMemory | null = memoryPatch.lastMentionedEvent || null;
@@ -463,7 +517,7 @@ export function finalizeResponse(plan: AssistantPlan, state: ConversationState):
   return {
     spokenText,
     action: finalAction,
-    sources: plan.sources,
+    sources: sanitizeSources(plan.sources),
     comparison: plan.comparison,
     memory,
     followUpEvent: eventMemoryToFollowUp(lastEvent),
