@@ -69,6 +69,7 @@ export type AssistantActionType =
   | "file_export"
   | "flashlight_control"
   | "device_status"
+  | "action_history"
   | "undo_last"
   | "calendar_forward";
 

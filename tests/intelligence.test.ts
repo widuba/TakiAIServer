@@ -190,6 +190,15 @@ test("undo is a model-free executable action rather than a guessed name-based de
   assert.match(capabilityAnswerFor("Are you able to undo actions?") || "", /most recent calendar event, reminder, or contact Taki created/i);
 });
 
+test("verified recent activity is model-free and does not depend on provider availability", async () => {
+  for (const message of ["What did you just do?", "Did that work?", "Show me recent activity", "What have you done on my iPhone?"]) {
+    const result = await planAssistantResponse(stateFor(message));
+    assert.equal(result.action?.type, "action_history", message);
+    assert.equal(result.needsExecution, true, message);
+  }
+  assert.match(capabilityAnswerFor("Are you able to show recent actions?") || "", /verified seven-day activity history/i);
+});
+
 test("Taki knows its authoritative plans, credit rules, and live account", async () => {
   const pricing = productAnswerFor("How much does Taki cost?") || "";
   assert.match(pricing, /Plus is \$9\.99/);

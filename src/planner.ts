@@ -338,6 +338,10 @@ export function directCorePhoneAction(state: ConversationState, message = state.
     return actionPlan("I'll undo the last supported item I created.", blankAction("undo_last"), { lastIntent: "undo_last" });
   }
 
+  if (/^(?:what did you just do|what have you (?:just )?done(?: on my (?:phone|iphone))?|did that (?:work|complete|succeed)|what happened with that|show(?: me)? (?:your )?(?:recent activity|recent actions|action history))$/i.test(text)) {
+    return actionPlan("I'll check the actions that actually completed on your devices.", blankAction("action_history"), { lastIntent: "action_history" });
+  }
+
   const call = text.match(/^(?:call|phone|ring)\s+(.+)$/i);
   if (call) {
     const recipient = cleanDirectValue(call[1]);

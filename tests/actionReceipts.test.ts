@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  actionReceiptLabel,
   executionReceiptText,
   isPermissionFailureMessage,
   type ReceiptAction
 } from "../../app/src/actionReceipt.js";
+
+test("recent activity has a clear receipt label", () => {
+  assert.equal(actionReceiptLabel({ type: "action_history" }), "recent activity check");
+});
 
 test("partial phone action success names both completed and failed work", () => {
   const calendar: ReceiptAction = { type: "calendar_create", title: "Dentist" };
@@ -57,4 +62,3 @@ test("permission recovery recognizes real denial wording without classifying ord
   assert.equal(isPermissionFailureMessage("The calendar service is temporarily unavailable."), false);
   assert.equal(isPermissionFailureMessage("I couldn't find that reminder."), false);
 });
-

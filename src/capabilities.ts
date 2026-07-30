@@ -22,9 +22,9 @@ export const CAPABILITIES: Capability[] = [
   },
   {
     id: "calendar-reminders",
-    summary: "create, find, update, remove, and forward calendar events; create, search, complete, reschedule, edit, or delete reminders; and safely undo the most recent calendar event, reminder, or contact Taki created",
-    examples: "add dinner Friday at 7, move the meeting, remind me when I get home, mark my grocery reminder complete, undo that",
-    questionPatterns: [/\b(calendar|events?|appointments?|reminders?|undo|revert)\b/i]
+    summary: "create, find, update, remove, and forward calendar events; create, search, complete, reschedule, edit, or delete reminders; safely undo the most recent calendar event, reminder, or contact Taki created; and show a verified seven-day activity history",
+    examples: "add dinner Friday at 7, move the meeting, remind me when I get home, undo that, what did you just do",
+    questionPatterns: [/\b(calendar|events?|appointments?|reminders?|undo|revert|activity history|recent actions?)\b/i]
   },
   {
     id: "navigation-weather",
@@ -94,7 +94,7 @@ function isGenericCapabilityQuestion(message: string): boolean {
 export function capabilityAnswerFor(message: string): string | null {
   if (!isGenericCapabilityQuestion(message)) return null;
   if (/^(what (?:all )?can you do|what are your capabilities|what can taki do|show me what you can do)/i.test(message.trim())) {
-    return "I can handle communication, calendars and reminders, maps and weather, HealthKit, photos, music and HomeKit, alarms and timers, lists and routines, live information and tracking, cooking, supported service handoffs, and safe undo for the most recent event, reminder, or contact I created.";
+    return "I can handle communication, calendars and reminders, maps and weather, HealthKit, photos, music and HomeKit, alarms and timers, lists and routines, live information and tracking, cooking, supported service handoffs, safe undo for the most recent event, reminder, or contact I created, and a private verified history of recent phone and CarPlay actions.";
   }
 
   const matches = CAPABILITIES.filter((cap) => cap.questionPatterns.some((pattern) => pattern.test(message)));

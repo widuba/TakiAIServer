@@ -202,6 +202,21 @@ test("undo uses exact expiring native identifiers on iPhone, iPad, and CarPlay",
   assert.match(appSource, /const verifiedReply = executionReceiptText\(requestedActions, batch, correctedText\)/);
 });
 
+test("verified action history is private, bounded, shared with CarPlay, and preserves undo", () => {
+  assert.match(deviceBridgeSource, /takiVerifiedActionHistoryV1/);
+  assert.match(deviceBridgeSource, /maximumRecords = 30/);
+  assert.match(deviceBridgeSource, /maximumAge: TimeInterval = 7 \* 24 \* 60 \* 60/);
+  assert.match(deviceBridgeSource, /UserDefaults\(suiteName: kAppGroupID\)/);
+  assert.match(deviceBridgeSource, /func recordActionOutcome/);
+  assert.match(appSource, /async function executeRecordedAction/);
+  assert.match(appSource, /DeviceBridge\.recordActionOutcome/);
+  assert.match(appSource, /action\.type !== "undo_last" && action\.type !== "action_history"/);
+  assert.match(carPlaySource, /TakiActionHistoryStore\.append/);
+  assert.match(carPlaySource, /case "action_history": return TakiActionHistoryStore\.spokenSummary\(\)/);
+  assert.match(nativeUiSource, /struct TakiRecentActivityView/);
+  assert.match(nativeUiSource, /Label\("Recent Activity", systemImage: "checkmark\.shield"\)/);
+});
+
 test("phone calls use a verified native handoff", () => {
   assert.match(contactsBridgeSource, /CAPPluginMethod\(name: "callPhone"/);
   assert.match(contactsBridgeSource, /UIApplication\.shared\.canOpenURL\(url\)/);
