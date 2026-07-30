@@ -289,6 +289,283 @@ function clarifyPlan(question: string, pending: PendingClarification): Assistant
   };
 }
 
+function cleanDirectValue(value: string): string {
+  return String(value || "")
+    .trim()
+    .replace(/^[\s,:;"“”']+|[\s,:;"“”'?.!]+$/g, "")
+    .replace(/\s+(?:for me|please)$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function directCommandText(message: string): string {
+  return message
+    .trim()
+    .replace(/[.!?]+$/g, "")
+    .replace(/^(?:hey\s+taki\s*[,—-]?\s*)/i, "")
+    .replace(/^(?:can|could|would|will)\s+you\s+(?:please\s+)?/i, "")
+    .replace(/^please\s+/i, "")
+    .trim();
+}
+
+function directPending(
+  state: ConversationState,
+  intent: AssistantAction["type"],
+  question: string,
+  draftAction: Partial<AssistantAction>,
+  missing: string[]
+): AssistantPlan {
+  return clarifyPlan(question, {
+    intent,
+    missing,
+    draftAction: { ...draftAction, type: intent },
+    question,
+    createdAt: state.nowIso
+  });
+}
+
+/**
+ * Conservative, model-free routing for the commands people most need to work
+ * every time. This intentionally accepts only explicit command shapes. Free-form
+ * or ambiguous language still goes to the contextual planner; clear commands do
+ * not become unavailable merely because an AI provider is slow or down.
+ */
+export function directCorePhoneAction(state: ConversationState, message = state.message): AssistantPlan | null {
+  const text = directCommandText(message);
+  if (!text) return null;
+
+  const call = text.match(/^(?:call|phone|ring)\s+(.+)$/i);
+  if (call) {
+    const recipient = cleanDirectValue(call[1]);
+    if (!recipient || /^(?:someone|somebody|a person)$/i.test(recipient)) {
+      return directPending(state, "call_phone", "Who do you want me to call?", {}, ["recipient"]);
+    }
+    const action = blankAction("call_phone");
+    const phone = recipient.match(/(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}/)?.[0] || "";
+    if (phone) action.recipientPhone = phone;
+    else { action.recipientName = recipient; action.contactQuery = recipient; }
+    return actionPlan(phone ? "Placing the call." : `Calling ${recipient}.`, action, {
+      lastMentionedContact: phone ? undefined : { name: recipient, source: "chat", confidence: 1 },
+      lastIntent: "call_phone"
+    });
+  }
+
+  const clearBodyStart = "(?:I(?:'m|'ll|'ve|'d)?|we(?:'re|'ll|'ve|'d)?|you(?:'re|'ll|'ve|'d)?|can|could|please|don'?t|do not|let'?s?|meet|bring|pick|grab|get|be|thanks|thank you|happy|sorry|yes|no)";
+  const explicitMessage =
+    text.match(/^(?:text|message)\s+(.+?)\s+(?:and\s+)?(?:say|saying|that|and tell (?:him|her|them)(?: that)?)\s+(.+)$/i) ||
+    text.match(/^(?:text|message)\s+(.+?)\s*[:,]\s*(.+)$/i) ||
+    text.match(new RegExp(`^(?:tell|ask)\\s+([^\\s,:]+)\\s+(${clearBodyStart}\\b.+)$`, "i")) ||
+    text.match(new RegExp(`^(?:text|message)\\s+([^\\s,:]+)\\s+(${clearBodyStart}\\b.+)$`, "i"));
+  if (explicitMessage) {
+    const recipient = cleanDirectValue(explicitMessage[1]);
+    const rawBody = cleanDirectValue(explicitMessage[2]);
+    // "Text Chris about the next game" needs live research, not a literal
+    // draft containing the words "about the next game".
+    const needsResearch = /^(?:about|when|where|what|which|whether)\b/i.test(rawBody)
+      && /\b(?:next|latest|current|today|tomorrow|score|price|weather|game|event|release|schedule)\b/i.test(rawBody);
+    if (recipient && rawBody && !needsResearch && !/^(?:me|myself|you|taki)$/i.test(recipient)) {
+      const action = blankAction("compose_message");
+      action.recipientName = recipient;
+      action.contactQuery = recipient;
+      action.body = normalizeMessageBodyForRecipient(rawBody);
+      return actionPlan(`Opening a text draft to ${recipient}.`, action, {
+        lastMentionedContact: { name: recipient, source: "chat", confidence: 1 },
+        lastIntent: "compose_message"
+      });
+    }
+  }
+
+  const messageOnlyRecipient = text.match(/^(?:text|message)\s+([^\s,:]+)$/i);
+  if (messageOnlyRecipient) {
+    const recipient = cleanDirectValue(messageOnlyRecipient[1]);
+    if (recipient && !/^(?:someone|somebody|a person)$/i.test(recipient)) {
+      return directPending(
+        state,
+        "compose_message",
+        `What do you want to say to ${recipient}?`,
+        { recipientName: recipient, contactQuery: recipient },
+        ["body"]
+      );
+    }
+  }
+
+  const emailOnlyRecipient = text.match(/^(?:email|e-mail|mail)\s+([^\s,:]+)$/i);
+  if (emailOnlyRecipient) {
+    const recipient = cleanDirectValue(emailOnlyRecipient[1]);
+    if (recipient) {
+      const explicitAddress = recipient.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || "";
+      return directPending(
+        state,
+        "compose_email",
+        `What should the email to ${recipient} say?`,
+        explicitAddress
+          ? { emailAddress: explicitAddress, recipientName: explicitAddress }
+          : { recipientName: recipient, contactQuery: recipient },
+        ["body"]
+      );
+    }
+  }
+
+  const explicitEmail =
+    text.match(/^(?:email|e-mail|mail)\s+(.+?)\s+(?:and\s+)?(?:say|saying|that)\s+(.+)$/i) ||
+    text.match(/^(?:email|e-mail|mail)\s+(.+?)\s*[:,]\s*(.+)$/i);
+  if (explicitEmail) {
+    const recipient = cleanDirectValue(explicitEmail[1]);
+    const body = normalizeMessageBodyForRecipient(cleanDirectValue(explicitEmail[2]));
+    if (recipient && body) {
+      const address = recipient.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || "";
+      const action = blankAction("compose_email");
+      action.recipientName = recipient;
+      action.contactQuery = address ? null : recipient;
+      action.emailAddress = address || null;
+      action.emailSubject = "Quick note";
+      action.body = body;
+      return actionPlan(`Opening an email draft to ${recipient}.`, action, {
+        lastMentionedContact: { name: recipient, email: address || undefined, source: "chat", confidence: 1 },
+        lastIntent: "compose_email"
+      });
+    }
+  }
+
+  const calendarRead = /^(?:what(?:'s| is) (?:on|in)|show me|check|read)\s+(?:what(?:'s| is) (?:on|in)\s+)?(?:my\s+)?(?:calendar|schedule)(.*)$/i.exec(text);
+  if (calendarRead) {
+    const action = blankAction("calendar_search");
+    action.calendarQuery = "";
+    action.daysAhead = 7;
+    const requestedYmd = resolveRelativeYmd(calendarRead[1] || text, state.timeZone);
+    if (requestedYmd) {
+      action.startDate = isoFromYmdTime(requestedYmd, 0, 0, state.timeZone);
+      action.endDate = isoFromYmdTime(addDaysToYmd(requestedYmd, 1), 0, 0, state.timeZone);
+    }
+    return actionPlan("I'll check your calendar.", action, { lastIntent: "calendar_search" });
+  }
+
+  const calendarShape = /^(?:add|create|schedule|put)\b/i.test(text)
+    && (/\b(?:calendar|event|appointment|meeting)\b/i.test(text) || /^schedule\b/i.test(text));
+  if (calendarShape) {
+    const ymd = resolveRelativeYmd(text, state.timeZone);
+    const time = resolveTimeFromMessage(text);
+    if (ymd && time) {
+      const action = buildCalendarCreateAction(text, { type: "calendar_create" }, null, state.timeZone);
+      if (action) return actionPlan("I'll add that to your calendar.", action, { lastIntent: "calendar_create" });
+    }
+  }
+
+  const reminderRead = /^(?:what(?:'s| is) (?:on|in)|show me|check|read)\s+(?:my\s+)?reminders?(?:\s+(?:for|about)\s+(.+))?$/i.exec(text);
+  if (reminderRead) {
+    const action = blankAction("reminder_search");
+    action.reminderQuery = cleanDirectValue(reminderRead[1] || "");
+    return actionPlan("I'll check your reminders.", action, { lastIntent: "reminder_search" });
+  }
+
+  const reminderShape = /^(?:remind me(?:\s+to)?|(?:add|create|set|make)\s+(?:a\s+)?reminder(?:\s+to)?)\s+(.+)$/i.exec(text);
+  if (reminderShape) {
+    const title = titleCaseTask(extractReminderTitle(text));
+    if (title && title !== "Reminder") {
+      const action = blankAction("reminder_create");
+      action.title = title;
+      const ymd = resolveRelativeYmd(text, state.timeZone);
+      const time = resolveTimeFromMessage(text);
+      action.dueDate = ymd ? isoFromYmdTime(ymd, time?.hour ?? 9, time?.minute ?? 0, state.timeZone) : null;
+      return actionPlan(`I'll remind you to ${title.charAt(0).toLowerCase()}${title.slice(1)}.`, action, { lastIntent: "reminder_create" });
+    }
+  }
+
+  const directions =
+    text.match(/^(?:(?:get|give me|show me)\s+)?(?:(?:driving|walking|cycling|transit)\s+)?(?:directions|navigation)\s+(?:to|for)\s+(.+)$/i) ||
+    text.match(/^(?:navigate|take me|drive|walk|route me|go)\s+(?:me\s+)?to\s+(.+)$/i);
+  if (directions) {
+    let destination = cleanDirectValue(directions[1]);
+    if (/\b(?:calendar|schedule|event|appointment|meeting)\b/i.test(destination)) return null;
+    if (/^(?:there|it|that place)$/i.test(destination)) {
+      destination = cleanDirectValue(state.priorPlace?.address || state.priorPlace?.query || state.priorPlace?.label || "");
+    }
+    if (destination) {
+      const action = blankAction("maps_directions");
+      action.mapsDestination = destination;
+      return actionPlan(`Opening directions to ${destination}.`, action, {
+        lastMentionedPlace: { label: destination, query: destination, source: "chat", confidence: 1 },
+        lastIntent: "maps_directions"
+      });
+    }
+    return directPending(state, "maps_directions", "Where do you want directions to?", {}, ["destination"]);
+  }
+
+  const mapSearch = text.match(/^(?:find|search for|show me)\s+(.+?)\s+(?:in|on|with)\s+(?:apple\s+)?maps$/i);
+  if (mapSearch) {
+    const query = cleanDirectValue(mapSearch[1]);
+    if (query) {
+      const action = blankAction("maps_search");
+      action.mapsQuery = query;
+      return actionPlan(`Searching Maps for ${query}.`, action, {
+        lastMentionedPlace: { label: query, query, source: "chat", confidence: 1 },
+        lastIntent: "maps_search"
+      });
+    }
+  }
+
+  const open = text.match(/^(?:open|launch)\s+(?:the\s+)?(.+?)(?:\s+app)?$/i);
+  if (open) {
+    const appName = cleanDirectValue(open[1]);
+    const urls = appUrlForName(appName);
+    if (urls) {
+      const action = blankAction("open_app");
+      action.appName = appName;
+      action.appUrl = urls.appUrl;
+      action.fallbackUrl = urls.fallbackUrl;
+      return actionPlan(`Opening ${appName}.`, action, { lastIntent: "open_app" });
+    }
+  }
+
+  return null;
+}
+
+function tryCompletePendingCoreAction(state: ConversationState): AssistantPlan | null {
+  const pending = state.pendingClarification;
+  const reply = state.message.trim();
+  if (!pending || !reply) return null;
+  // A clearly new command must win over stale clarification state.
+  if (/^(?:please\s+)?(?:call|phone|text|message|email|remind|add|create|schedule|directions|navigate|open|launch)\b/i.test(reply)) {
+    return null;
+  }
+
+  const draft = pending.draftAction || {};
+  if (pending.intent === "compose_message" && draft.recipientName && !draft.body) {
+    const action = blankAction("compose_message");
+    action.recipientName = String(draft.recipientName);
+    action.contactQuery = String(draft.contactQuery || draft.recipientName);
+    action.body = normalizeMessageBodyForRecipient(reply);
+    return actionPlan(`Opening a text draft to ${action.recipientName}.`, action, {
+      lastMentionedContact: { name: action.recipientName, source: "chat", confidence: 1 },
+      lastIntent: "compose_message"
+    });
+  }
+  if (pending.intent === "compose_email" && (draft.recipientName || draft.emailAddress) && !draft.body) {
+    const action = blankAction("compose_email");
+    action.recipientName = String(draft.recipientName || draft.emailAddress);
+    action.contactQuery = draft.contactQuery ? String(draft.contactQuery) : null;
+    action.emailAddress = draft.emailAddress ? String(draft.emailAddress) : null;
+    action.emailSubject = String(draft.emailSubject || "Quick note");
+    action.body = normalizeMessageBodyForRecipient(reply);
+    return actionPlan(`Opening an email draft to ${action.recipientName}.`, action, {
+      lastMentionedContact: { name: action.recipientName, email: action.emailAddress || undefined, source: "chat", confidence: 1 },
+      lastIntent: "compose_email"
+    });
+  }
+
+  const prefixes: Partial<Record<string, string>> = {
+    compose_message: "text ",
+    compose_email: "email ",
+    call_phone: "call ",
+    reminder_create: "remind me to ",
+    calendar_create: "schedule ",
+    maps_directions: "directions to ",
+    open_app: "open "
+  };
+  const prefix = prefixes[pending.intent];
+  return prefix ? directCorePhoneAction(state, `${prefix}${reply}`) : null;
+}
+
 /* ---- The Gemini planner ------------------------------------------------- */
 
 export async function runPlannerModel(state: ConversationState): Promise<PlannerModelOutput> {
@@ -878,6 +1155,12 @@ export async function planAssistantResponse(
   if (everyday) {
     return actionPlan(everyday.spokenText, everyday.action, { lastIntent: everyday.lastIntent });
   }
+
+  const directCoreAction = directCorePhoneAction(state);
+  if (directCoreAction) return directCoreAction;
+
+  const pendingCoreAction = tryCompletePendingCoreAction(state);
+  if (pendingCoreAction) return pendingCoreAction;
 
   const capabilityAnswer = capabilityAnswerFor(state.message);
   if (capabilityAnswer) {

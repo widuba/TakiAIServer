@@ -166,6 +166,20 @@ test("permission recovery opens a verified Settings destination and queues every
   }
 });
 
+test("phone and CarPlay distinguish answer timeout, capacity, configuration, and voice failures", () => {
+  for (const kind of ["ai_timeout", "ai_quota", "ai_auth", "voice_unavailable"]) {
+    assert.match(appSource, new RegExp(`serviceError === "${kind}"`));
+    assert.match(carPlaySource, new RegExp(`serviceError == "${kind}"`));
+  }
+  assert.match(appSource, /stopped waiting instead of leaving you stuck/);
+  assert.match(carPlaySource, /stopped waiting instead of leaving you stuck/);
+});
+
+test("executable action confirmations do not require a second model call", () => {
+  assert.doesNotMatch(serverEntry, /response\.spokenText = await styleInCharacter\(response\.spokenText/);
+  assert.doesNotMatch(serverEntry, /response\.spokenText && \(response\.action \|\| response\.memory\?\.pendingClarification\)/);
+});
+
 test("phone calls use a verified native handoff", () => {
   assert.match(contactsBridgeSource, /CAPPluginMethod\(name: "callPhone"/);
   assert.match(contactsBridgeSource, /UIApplication\.shared\.canOpenURL\(url\)/);

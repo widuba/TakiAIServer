@@ -1,12 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { classifyGeminiError, ServiceError, AI_UNAVAILABLE_SPOKEN, fallbackModelCandidates, normalizeTakiModel, takiModelInfo, withTakiModel, activeTakiModelInfo, modelForRequest, PLANNER_MODEL } from "../src/ai.js";
+import {
+  classifyGeminiError,
+  ServiceError,
+  AI_AUTH_SPOKEN,
+  AI_QUOTA_SPOKEN,
+  AI_TIMEOUT_SPOKEN,
+  AI_UNAVAILABLE_SPOKEN,
+  ProviderCircuitBreaker,
+  fallbackModelCandidates,
+  normalizeTakiModel,
+  takiModelInfo,
+  withTakiModel,
+  activeTakiModelInfo,
+  modelForRequest,
+  PLANNER_MODEL
+} from "../src/ai.js";
 
 test("quota / billing errors classify as a fast ai_quota ServiceError", () => {
   const depleted = classifyGeminiError({ status: 429, message: "Your prepayment credits are depleted." });
   assert.ok(depleted instanceof ServiceError);
   assert.equal(depleted?.kind, "ai_quota");
-  assert.equal(depleted?.spoken, AI_UNAVAILABLE_SPOKEN);
+  assert.equal(depleted?.spoken, AI_QUOTA_SPOKEN);
 
   // Same when the status only shows up in the message text.
   assert.equal(classifyGeminiError({ message: "429 RESOURCE_EXHAUSTED" })?.kind, "ai_quota");
@@ -14,9 +29,14 @@ test("quota / billing errors classify as a fast ai_quota ServiceError", () => {
 });
 
 test("auth and outage errors classify; ordinary failures do not", () => {
-  assert.equal(classifyGeminiError({ status: 403, message: "API key invalid" })?.kind, "ai_auth");
-  assert.equal(classifyGeminiError({ status: 408, message: "provider attempt timed out" })?.kind, "ai_unavailable");
+  const auth = classifyGeminiError({ status: 403, message: "API key invalid" });
+  assert.equal(auth?.kind, "ai_auth");
+  assert.equal(auth?.spoken, AI_AUTH_SPOKEN);
+  const timeout = classifyGeminiError({ status: 408, message: "provider attempt timed out" });
+  assert.equal(timeout?.kind, "ai_timeout");
+  assert.equal(timeout?.spoken, AI_TIMEOUT_SPOKEN);
   assert.equal(classifyGeminiError({ status: 503, message: "model is overloaded" })?.kind, "ai_unavailable");
+  assert.equal(classifyGeminiError({ status: 503, message: "model is overloaded" })?.spoken, AI_UNAVAILABLE_SPOKEN);
   assert.equal(classifyGeminiError({ status: 500, message: "internal error" })?.kind, "ai_unavailable");
 
   // Not a vendor outage — these are retryable/normal and must return null so the
@@ -26,6 +46,23 @@ test("auth and outage errors classify; ordinary failures do not", () => {
   assert.equal(classifyGeminiError({ status: 400, message: "bad request" }), null);
   assert.equal(classifyGeminiError(new Error("That information is unavailable to this assistant")), null);
   assert.equal(classifyGeminiError(new Error("Calendar data unavailable")), null);
+});
+
+test("a degraded model moves behind a healthy fallback during a bounded cooldown", () => {
+  const circuit = new ProviderCircuitBreaker();
+  const primary = { provider: "openai" as const, model: "gpt-5.4-mini" };
+  const fallback = { provider: "openai" as const, model: "gpt-5.4-nano" };
+  const start = 1_000_000;
+
+  circuit.recordFailure(primary, new ServiceError("ai_timeout", AI_TIMEOUT_SPOKEN, 408), start);
+  assert.deepEqual(circuit.order([primary, fallback], start + 1), [fallback, primary]);
+  // A successful recovery immediately restores the configured preference.
+  circuit.recordSuccess(primary);
+  assert.deepEqual(circuit.order([primary, fallback], start + 2), [primary, fallback]);
+
+  circuit.recordFailure(primary, new ServiceError("ai_quota", AI_QUOTA_SPOKEN, 429), start);
+  assert.deepEqual(circuit.order([primary, fallback], start + 29_999), [fallback, primary]);
+  assert.deepEqual(circuit.order([primary, fallback], start + 30_001), [primary, fallback]);
 });
 
 test("an existing ServiceError passes through unchanged", () => {

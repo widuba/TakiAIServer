@@ -41,10 +41,13 @@ const rawGenerateContentStream = ai?.models.generateContentStream.bind(ai.models
 
 // What Taki says out loud when a vendor is the problem, not the question. Kept
 // vague on purpose — end users shouldn't hear "billing" or "quota".
-export const AI_UNAVAILABLE_SPOKEN = "I couldn't reach Taki's answer service just now. Your question wasn't the problem — please try again.";
+export const AI_UNAVAILABLE_SPOKEN = "Taki's answer system didn't respond just now. I couldn't finish that request, but your question wasn't the problem — please try again.";
+export const AI_TIMEOUT_SPOKEN = "That answer took too long, so I stopped waiting instead of leaving you stuck. I couldn't finish the request — please try again.";
+export const AI_QUOTA_SPOKEN = "Taki's answer capacity is busy right now. I couldn't finish that request — please try again in a minute.";
+export const AI_AUTH_SPOKEN = "Taki's answer system needs attention right now. I couldn't finish that request — please try again later.";
 export const VOICE_UNAVAILABLE_SPOKEN = "I couldn't generate spoken audio just now. Please try voice again.";
 
-export type ServiceErrorKind = "ai_quota" | "ai_auth" | "ai_unavailable" | "voice_unavailable" | "server";
+export type ServiceErrorKind = "ai_quota" | "ai_auth" | "ai_timeout" | "ai_unavailable" | "voice_unavailable" | "server";
 
 // A vendor/infra failure (OpenAI, Gemini, or ElevenLabs) rather than a bad answer. Thrown
 // so callers can bail out IMMEDIATELY with a spoken message instead of retrying
@@ -71,16 +74,16 @@ export function classifyAIError(error: unknown): ServiceError | null {
   const status = Number(any?.status ?? any?.code ?? any?.response?.status ?? NaN);
   const message = String(any?.message ?? any ?? "").toLowerCase();
   if (status === 402 || status === 429 || /resource_exhausted|\bquota\b|prepay|rate.?limit|too many requests|\b402\b|\b429\b/.test(message)) {
-    return new ServiceError("ai_quota", AI_UNAVAILABLE_SPOKEN, Number.isFinite(status) ? status : 429);
+    return new ServiceError("ai_quota", AI_QUOTA_SPOKEN, Number.isFinite(status) ? status : 429);
   }
   if (status === 401 || status === 403 || /api[_ ]?key|permission denied|unauthenticated|unauthorized|\b401\b|\b403\b/.test(message)) {
-    return new ServiceError("ai_auth", AI_UNAVAILABLE_SPOKEN, Number.isFinite(status) ? status : undefined);
+    return new ServiceError("ai_auth", AI_AUTH_SPOKEN, Number.isFinite(status) ? status : undefined);
   }
   // A provider-attempt deadline is different from an outer tool timeout. The
   // router should immediately try its alternate model, and if every candidate
   // times out the route should return a typed, speakable service response.
   if (status === 408) {
-    return new ServiceError("ai_unavailable", AI_UNAVAILABLE_SPOKEN, 408);
+    return new ServiceError("ai_timeout", AI_TIMEOUT_SPOKEN, 408);
   }
   const explicitProviderOutage =
     /\b(?:service|server|backend|model)(?:\s+is)?\s+(?:temporarily\s+)?unavailable\b/.test(message)
@@ -215,7 +218,60 @@ function prepareOpenAIRequest(args: any, selectedModel: string): any {
   };
 }
 
-type ProviderCandidate = { provider: AIProvider; model: string };
+export type ProviderCandidate = { provider: AIProvider; model: string };
+
+function providerCandidateKey(candidate: ProviderCandidate): string {
+  return `${candidate.provider}:${candidate.model}`;
+}
+
+function providerFailureCooldownMs(error: unknown): number {
+  const serviceError = classifyAIError(error);
+  switch (serviceError?.kind) {
+    case "ai_auth": return 5 * 60_000;
+    case "ai_quota": return 30_000;
+    case "ai_timeout": return 15_000;
+    case "ai_unavailable": return 20_000;
+    default: return 0;
+  }
+}
+
+/**
+ * A tiny in-process circuit breaker keeps a sick model from adding the same
+ * timeout to every turn. Healthy alternates move to the front during a short,
+ * bounded cooldown; a cooling candidate remains last-resort rather than being
+ * permanently disabled.
+ */
+export class ProviderCircuitBreaker {
+  private readonly openUntil = new Map<string, number>();
+
+  order(candidates: ProviderCandidate[], now = Date.now()): ProviderCandidate[] {
+    return candidates
+      .map((candidate, index) => ({ candidate, index, until: this.openUntil.get(providerCandidateKey(candidate)) || 0 }))
+      .sort((a, b) => {
+        const aCooling = a.until > now ? 1 : 0;
+        const bCooling = b.until > now ? 1 : 0;
+        if (aCooling !== bCooling) return aCooling - bCooling;
+        if (aCooling && a.until !== b.until) return a.until - b.until;
+        return a.index - b.index;
+      })
+      .map((entry) => entry.candidate);
+  }
+
+  recordFailure(candidate: ProviderCandidate, error: unknown, now = Date.now()): void {
+    const cooldown = providerFailureCooldownMs(error);
+    if (cooldown > 0) this.openUntil.set(providerCandidateKey(candidate), now + cooldown);
+  }
+
+  recordSuccess(candidate: ProviderCandidate): void {
+    this.openUntil.delete(providerCandidateKey(candidate));
+  }
+
+  reset(): void {
+    this.openUntil.clear();
+  }
+}
+
+const providerCircuit = new ProviderCircuitBreaker();
 
 function geminiFallbackFor(openAIModel: string): string {
   const id = String(openAIModel || "").toLowerCase();
@@ -241,11 +297,12 @@ function canTryNextProvider(error: unknown, serviceError: ServiceError | null): 
   if (error instanceof UnsupportedOpenAIInputError || error instanceof OpenAIHTTPError) return true;
   return serviceError?.kind === "ai_quota"
     || serviceError?.kind === "ai_auth"
+    || serviceError?.kind === "ai_timeout"
     || serviceError?.kind === "ai_unavailable";
 }
 
 export async function generateContent(args: any): Promise<any> {
-  const candidates = providerCandidates(modelForRequest(args));
+  const candidates = providerCircuit.order(providerCandidates(modelForRequest(args)));
   let lastError: unknown;
   for (let index = 0; index < candidates.length; index += 1) {
     const candidate = candidates[index];
@@ -256,11 +313,13 @@ export async function generateContent(args: any): Promise<any> {
       const response = candidate.provider === "openai"
         ? await generateOpenAIContent(request, candidate.model, openAIApiKey)
         : await rawGenerateContent!(request);
+      providerCircuit.recordSuccess(candidate);
       if (candidate.provider === "openai") recordOpenAICall(request, response);
       else recordGeminiCall(request, response);
       return response;
     } catch (error) {
       const serviceError = classifyAIError(error);
+      providerCircuit.recordFailure(candidate, serviceError ?? error);
       lastError = serviceError ?? error;
       const canFailOver = candidate.provider === "openai" || canTryNextProvider(error, serviceError);
       if (!canFailOver || index === candidates.length - 1) throw lastError;
@@ -275,7 +334,7 @@ export async function generateContent(args: any): Promise<any> {
 // so a user can never hear the beginning of one model's answer and the ending
 // of another model's answer.
 export async function* generateContentStream(args: any): AsyncGenerator<any> {
-  const candidates = providerCandidates(modelForRequest(args));
+  const candidates = providerCircuit.order(providerCandidates(modelForRequest(args)));
   let lastError: unknown;
   for (let index = 0; index < candidates.length; index += 1) {
     const candidate = candidates[index];
@@ -294,12 +353,14 @@ export async function* generateContentStream(args: any): AsyncGenerator<any> {
         yield response;
       }
       if (lastResponse) {
+        providerCircuit.recordSuccess(candidate);
         if (candidate.provider === "openai") recordOpenAICall(request, lastResponse);
         else recordGeminiCall(request, lastResponse);
       }
       return;
     } catch (error) {
       const serviceError = classifyAIError(error);
+      providerCircuit.recordFailure(candidate, serviceError ?? error);
       lastError = serviceError ?? error;
       const canFailOver = !emitted && (candidate.provider === "openai" || canTryNextProvider(error, serviceError));
       if (!canFailOver || index === candidates.length - 1) throw lastError;

@@ -3,7 +3,7 @@ import test from "node:test";
 import { capabilityAnswerFor } from "../src/capabilities.js";
 import { buildConversationState } from "../src/context.js";
 import { auditPlannerOutput } from "../src/plannerAudit.js";
-import { calendarDirectionsQuery, fastVoiceReply, looksLikePlainVoiceKnowledgeQuestion, planAssistantResponse, planShareRequest } from "../src/planner.js";
+import { calendarDirectionsQuery, directCorePhoneAction, fastVoiceReply, looksLikePlainVoiceKnowledgeQuestion, planAssistantResponse, planShareRequest } from "../src/planner.js";
 import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
 import { cleanAssistantText, finalizeResponse, resolveCalendarUpdateDates, sanitizeSources, validateAction } from "../src/validators.js";
@@ -115,6 +115,70 @@ test("capability questions use the shipping contract but concrete commands keep 
   assert.match(capabilityAnswerFor("What can Taki do?") || "", /HealthKit/);
   assert.equal(capabilityAnswerFor("Can you call Mom?"), null);
   assert.equal(capabilityAnswerFor("Can you set an alarm for 7?"), null);
+});
+
+test("clear core phone commands route without depending on an AI provider", async () => {
+  const call = await planAssistantResponse(stateFor("Can you call Mom?"));
+  assert.equal(call.action?.type, "call_phone");
+  assert.equal(call.action?.contactQuery, "Mom");
+
+  const text = await planAssistantResponse(stateFor("Text Mom that I'm running late"));
+  assert.equal(text.action?.type, "compose_message");
+  assert.equal(text.action?.contactQuery, "Mom");
+  assert.equal(text.action?.body, "I'm running late.");
+
+  const email = await planAssistantResponse(stateFor("Email alex@example.com saying I can meet at noon"));
+  assert.equal(email.action?.type, "compose_email");
+  assert.equal(email.action?.emailAddress, "alex@example.com");
+  assert.equal(email.action?.body, "I can meet at noon.");
+
+  const reminder = await planAssistantResponse(stateFor("Remind me to renew DMV tags tomorrow at 9 AM"));
+  assert.equal(reminder.action?.type, "reminder_create");
+  assert.equal(reminder.action?.title, "Renew DMV tags");
+  assert.ok(reminder.action?.dueDate);
+
+  const calendar = await planAssistantResponse(stateFor("Schedule dentist appointment tomorrow at 3 PM on my calendar"));
+  assert.equal(calendar.action?.type, "calendar_create");
+  assert.ok(calendar.action?.title);
+  assert.ok(calendar.action?.startDate);
+  assert.ok(calendar.action?.endDate);
+
+  const directions = await planAssistantResponse(stateFor("Get directions to Amicalola Falls"));
+  assert.equal(directions.action?.type, "maps_directions");
+  assert.equal(directions.action?.mapsDestination, "Amicalola Falls");
+
+  const open = await planAssistantResponse(stateFor("Open Spotify"));
+  assert.equal(open.action?.type, "open_app");
+  assert.equal(open.action?.appUrl, "spotify://");
+
+  const calendarRead = await planAssistantResponse(stateFor("What's on my calendar tomorrow?"));
+  assert.equal(calendarRead.action?.type, "calendar_search");
+  assert.ok(calendarRead.action?.startDate);
+  assert.ok(calendarRead.action?.endDate);
+
+  const reminderRead = await planAssistantResponse(stateFor("Show me my reminders"));
+  assert.equal(reminderRead.action?.type, "reminder_search");
+});
+
+test("model-free message clarification completes on the next turn without guessing", async () => {
+  const first = await planAssistantResponse(stateFor("Text Mom"));
+  assert.equal(first.action, null);
+  assert.equal(first.memoryPatch.pendingClarification?.intent, "compose_message");
+  assert.match(first.spokenText, /What do you want to say to Mom/);
+
+  const followUpState = buildConversationState(
+    "I'll be there in ten minutes",
+    JSON.stringify({ memory: { pendingClarification: first.memoryPatch.pendingClarification } }),
+    undefined,
+    "America/New_York"
+  );
+  const second = await planAssistantResponse(followUpState);
+  assert.equal(second.action?.type, "compose_message");
+  assert.equal(second.action?.contactQuery, "Mom");
+  assert.equal(second.action?.body, "I'll be there in ten minutes.");
+
+  assert.equal(directCorePhoneAction(stateFor("Text Chris about the next Braves game")), null);
+  assert.equal(directCorePhoneAction(stateFor("Take me to my next calendar meeting")), null);
 });
 
 test("Taki knows its authoritative plans, credit rules, and live account", async () => {

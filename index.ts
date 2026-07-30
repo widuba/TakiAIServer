@@ -228,7 +228,7 @@ app.get("/health", async (_req, res) => {
     ok: true,
     app: "Taki AI server",
     mode: "planner-first-modular-v3",
-    version: "2026-07-29-action-receipts-v10",
+    version: "2026-07-29-resilient-core-actions-v11",
     durableStorage: isDurable(),
     aiProvider: ACTIVE_AI_PROVIDER,
     models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL },
@@ -2516,10 +2516,10 @@ async function runAssistant(
   const measured = await measureUsage(async () => {
     const plan = await withTimeout(planAssistantResponse(state, onStableVoiceText), 45000, "Assistant plan");
     const response = finalizeResponse(plan, state);
-    // Voice action confirmations already come from the capability-aware planner.
-    if (!voiceMode && response.spokenText && (response.action || response.memory?.pendingClarification)) {
-      response.spokenText = await styleInCharacter(response.spokenText, state.userProfile, voiceMode);
-    }
+    // Action confirmations and clarification prompts already come from the
+    // capability-aware planner. Keep them model-independent so calls, texts,
+    // calendar work, and the follow-up questions they need stay instant even
+    // during a provider outage.
     if (voiceMode && response.spokenText) {
       response.spokenText = await fitVoiceResponse(response.spokenText, state.userProfile);
     }
