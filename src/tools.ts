@@ -1,4 +1,4 @@
-import { generateContent, generateContentStream, activeTakiModelInfo, FAST_MODEL, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, LIST_RESEARCH_TIMEOUT_MS, TIME_ZONE, safetyConfig, ServiceError } from "./ai.js";
+import { generateContent, generateContentStream, activeTakiModelInfo, withTakiModel, FAST_MODEL, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, LIST_RESEARCH_TIMEOUT_MS, TIME_ZONE, safetyConfig, ServiceError } from "./ai.js";
 import { personaPromptBlock, characterDirective, GUARDRAILS } from "./persona.js";
 import { capabilityPromptBlock } from "./capabilities.js";
 import { productKnowledgePromptBlock } from "./productKnowledge.js";
@@ -2159,7 +2159,7 @@ export function looksLikeFreshFactQuestion(message: string) {
     return false;
   }
 
-  const recency = /\b(latest|newest|most recent|current(?:ly)?|right now|today|tonight|nowadays|these days|so far|this (?:week|month|year)|20\d\d|just (?:released|announced|came out|changed)|recently (?:released|announced|launched|changed|updated))\b/.test(m);
+  const recency = /\b(latest|newest|most recent|current(?:ly)?|right now|today|tonight|yesterday|nowadays|these days|so far|this (?:week|month|year)|20\d\d|just (?:released|announced|came out|changed)|recently (?:released|announced|launched|changed|updated))\b/.test(m);
   const release = /\b(release[sd]?|releasing|announce[sd]?|came out|come out|coming out|available now|out now|launch(?:e[sd])?)\b/.test(m);
   const product = /\b(chip|processor|silicon|cpu|gpu|graphics card|iphone|ipad|mac|macbook|imac|phone|laptop|tablet|smartwatch|watch|model|version|console|car|ev|product|device|software|os|update)\b/.test(m);
   const superlative = /\b(best|fastest|newest|latest|top|most powerful|most advanced|highest[- ]end|flagship)\b/.test(m);
@@ -3015,6 +3015,7 @@ How to answer:
   choices, make a concrete judgment and explain it briefly. Subjectivity is not
   missing information: do not answer "I don't know" merely because tastes differ.
   If their preferences are unspecified, offer a sensible varied shortlist.
+- In recommendations, treat the user's stated dislikes, sensitivities, budget, and other dealbreakers as hard filters. Do not recommend an option that substantially conflicts with them merely because it matches one positive preference.
 - If the question depends on private, visual, physical, or personal information that is not in the conversation, an attachment, device data, or a supported tool, say "I don't have enough information to know that." Briefly say what the user could share to make it answerable. Never call an unanswerable question a service outage.
 - Resolve "it", "that", "there", names, dates, and elliptical follow-ups from RECENT CONVERSATION FOCUS and the conversation history. If more than one interpretation remains plausible, ask one precise question instead of choosing.
 - Never say Taki cannot perform a listed shipping capability. Explain the exact permission, account, supported-device, or confirmation requirement when one applies. Never claim an unlisted capability.
@@ -3114,10 +3115,10 @@ ${memoryText}
       // count-constrained case; ordinary replies keep the single-call fast path.
       if (!state.voiceMode && !allowSearch && !responseSatisfiesExplicitFormat(state.message, text)) {
         try {
-          const repair: any = await withTimeout(
+          const repair: any = await withTakiModel("taki_2_1", () => withTimeout(
             generateContent({
-              model: primaryModel,
-              contents: `${GUARDRAILS}\nCorrect the draft so it follows the user's explicit formatting and count constraints exactly. Preserve its meaning. Return only the corrected answer in plain text.\n\nUser request:\n${state.message}\n\nDraft:\n${text}`,
+              model: MAIN_MODEL,
+              contents: `${GUARDRAILS}\nCorrect the draft so it follows the user's explicit formatting and count constraints exactly. Count every word in every item before responding. Preserve the meaning. Return only the corrected answer in plain text.\n\nUser request:\n${state.message}\n\nDraft:\n${text}`,
               config: {
                 thinkingConfig: { thinkingLevel: "LOW" },
                 maxOutputTokens: responseStyle.textMaxOutputTokens,
@@ -3126,7 +3127,7 @@ ${memoryText}
             } as any),
             8000,
             "Format correction"
-          );
+          ));
           const corrected = stripMarkdown(String(repair.text || "").trim());
           if (corrected && responseSatisfiesExplicitFormat(state.message, corrected)) text = corrected;
         } catch {

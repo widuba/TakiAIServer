@@ -81,6 +81,7 @@ test("changeable public facts always route to current research", () => {
     "What are the current CDC recommendations?",
     "What are the entry requirements for Japan?",
     "Was there a recall on this model?",
+    "Why did NASA supposedly announce this yesterday?",
     "Catch me up on the election this week.",
     "When is the tax deadline?",
     "Are tickets available today?"
