@@ -19,6 +19,7 @@ const remindersBridgeSource = readFileSync(resolve(root, "app/ios/App/App/Remind
 const deviceBridgeSource = readFileSync(resolve(root, "app/ios/App/App/DeviceBridge.swift"), "utf8");
 const cloudSyncBridgeSource = readFileSync(resolve(root, "app/ios/App/App/CloudSyncBridge.swift"), "utf8");
 const permissionsBridgeSource = readFileSync(resolve(root, "app/ios/App/App/PermissionsBridge.swift"), "utf8");
+const voiceBridgeSource = readFileSync(resolve(root, "app/ios/App/App/VoiceBridge.swift"), "utf8");
 const carPlaySource = readFileSync(resolve(root, "app/ios/App/App/CarPlaySceneDelegate.swift"), "utf8");
 
 function quotedValues(source: string): Set<string> {
@@ -215,6 +216,18 @@ test("verified action history is private, bounded, shared with CarPlay, and pres
   assert.match(carPlaySource, /case "action_history": return TakiActionHistoryStore\.spokenSummary\(\)/);
   assert.match(nativeUiSource, /struct TakiRecentActivityView/);
   assert.match(nativeUiSource, /Label\("Recent Activity", systemImage: "checkmark\.shield"\)/);
+});
+
+test("explicit core commands bypass provider availability on iPhone voice, text, and CarPlay", () => {
+  assert.match(appSource, /localCoreActionFor\(message\)/);
+  assert.match(appSource, /localCoreActionFor\(deviceTranscript\)/);
+  assert.match(appSource, /localFallback: true/);
+  assert.match(appSource, /VoiceBridge\.speak\(/);
+  assert.match(carPlaySource, /if let response = Self\.localCoreResponse\(text\)/);
+  assert.match(carPlaySource, /runs before networking/);
+  assert.match(voiceBridgeSource, /func speak\(_ call: CAPPluginCall\)/);
+  assert.match(voiceBridgeSource, /AVSpeechSynthesizerDelegate/);
+  assert.match(voiceBridgeSource, /speechSynthesizer\.stopSpeaking/);
 });
 
 test("phone calls use a verified native handoff", () => {

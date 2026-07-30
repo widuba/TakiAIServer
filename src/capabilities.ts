@@ -34,7 +34,7 @@ export const CAPABILITIES: Capability[] = [
   },
   {
     id: "device",
-    summary: "open supported apps, control alarms, timers, stopwatches, Apple Music, HomeKit devices, and the iPhone flashlight, report battery status, and identify a song by listening",
+    summary: "open supported apps, control alarms, timers, stopwatches, Apple Music, HomeKit devices, and the iPhone flashlight, report battery status, and identify a song by listening; explicit calls, drafts, Maps requests, basic checks, undo, and activity queries also route on-device without waiting for an AI provider",
     examples: "open Spotify, alarm at 7, play jazz, turn on the flashlight, check my battery, what song is this",
     questionPatterns: [/\b(open apps?|alarms?|timers?|stopwatches?|music|songs?|shazam|homekit|lights?|locks?|thermostat|flashlight|torch|battery|charging)\b/i]
   },
