@@ -334,6 +334,10 @@ export function directCorePhoneAction(state: ConversationState, message = state.
   const text = directCommandText(message);
   if (!text) return null;
 
+  if (/^(?:undo|undo that|undo the last (?:thing|action)|take that back|revert that|cancel what you just did)$/i.test(text)) {
+    return actionPlan("I'll undo the last supported item I created.", blankAction("undo_last"), { lastIntent: "undo_last" });
+  }
+
   const call = text.match(/^(?:call|phone|ring)\s+(.+)$/i);
   if (call) {
     const recipient = cleanDirectValue(call[1]);

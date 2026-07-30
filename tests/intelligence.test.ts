@@ -181,6 +181,15 @@ test("model-free message clarification completes on the next turn without guessi
   assert.equal(directCorePhoneAction(stateFor("Take me to my next calendar meeting")), null);
 });
 
+test("undo is a model-free executable action rather than a guessed name-based deletion", async () => {
+  for (const message of ["Undo", "Undo that", "Take that back", "Cancel what you just did"]) {
+    const result = await planAssistantResponse(stateFor(message));
+    assert.equal(result.action?.type, "undo_last", message);
+    assert.equal(result.needsExecution, true, message);
+  }
+  assert.match(capabilityAnswerFor("Are you able to undo actions?") || "", /most recent calendar event, reminder, or contact Taki created/i);
+});
+
 test("Taki knows its authoritative plans, credit rules, and live account", async () => {
   const pricing = productAnswerFor("How much does Taki cost?") || "";
   assert.match(pricing, /Plus is \$9\.99/);

@@ -14,6 +14,8 @@ const routineStoreSource = readFileSync(resolve(root, "app/src/routineStore.ts")
 const nativeUiSource = readFileSync(resolve(root, "app/ios/App/App/NativeTakiUI.swift"), "utf8");
 const sharedContentBridgeSource = readFileSync(resolve(root, "app/ios/App/App/SharedContentBridge.swift"), "utf8");
 const contactsBridgeSource = readFileSync(resolve(root, "app/ios/App/App/ContactsBridge.swift"), "utf8");
+const calendarBridgeSource = readFileSync(resolve(root, "app/ios/App/App/CalendarBridge.swift"), "utf8");
+const remindersBridgeSource = readFileSync(resolve(root, "app/ios/App/App/RemindersBridge.swift"), "utf8");
 const deviceBridgeSource = readFileSync(resolve(root, "app/ios/App/App/DeviceBridge.swift"), "utf8");
 const cloudSyncBridgeSource = readFileSync(resolve(root, "app/ios/App/App/CloudSyncBridge.swift"), "utf8");
 const permissionsBridgeSource = readFileSync(resolve(root, "app/ios/App/App/PermissionsBridge.swift"), "utf8");
@@ -178,6 +180,26 @@ test("phone and CarPlay distinguish answer timeout, capacity, configuration, and
 test("executable action confirmations do not require a second model call", () => {
   assert.doesNotMatch(serverEntry, /response\.spokenText = await styleInCharacter\(response\.spokenText/);
   assert.doesNotMatch(serverEntry, /response\.spokenText && \(response\.action \|\| response\.memory\?\.pendingClarification\)/);
+});
+
+test("undo uses exact expiring native identifiers on iPhone, iPad, and CarPlay", () => {
+  const iphoneUndo = appSource.match(/async function undoLastCreatedItem[\s\S]*?\n}\n\nasync function executeAction/)?.[0] || "";
+  assert.match(calendarBridgeSource, /"identifier": event\.eventIdentifier/);
+  assert.match(calendarBridgeSource, /func deleteEventByIdentifier/);
+  assert.match(remindersBridgeSource, /"identifier": reminder\.calendarItemIdentifier/);
+  assert.match(remindersBridgeSource, /func deleteReminderByIdentifier/);
+  assert.match(contactsBridgeSource, /"identifier": contact\.identifier/);
+  assert.match(contactsBridgeSource, /func deleteContactByIdentifier/);
+  assert.match(appSource, /UNDO_RECEIPT_MAX_AGE_MS = 30 \* 60 \* 1000/);
+  assert.match(appSource, /CalendarBridge\.deleteEventByIdentifier\(\{ identifier: receipt\.identifier \}\)/);
+  assert.match(appSource, /RemindersBridge\.deleteReminderByIdentifier\(\{ identifier: receipt\.identifier \}\)/);
+  assert.match(appSource, /ContactsBridge\.deleteContactByIdentifier\(\{ identifier: receipt\.identifier \}\)/);
+  assert.match(carPlaySource, /undoReceiptMaxAge: TimeInterval = 30 \* 60/);
+  assert.match(carPlaySource, /eventStore\.event\(withIdentifier: receipt\.identifier\)/);
+  assert.match(carPlaySource, /eventStore\.calendarItem\(withIdentifier: receipt\.identifier\)/);
+  assert.ok(iphoneUndo, "the bounded iPhone undo function should be present");
+  assert.doesNotMatch(iphoneUndo, /(?:searchEvents|searchReminders|searchByName)/);
+  assert.match(appSource, /const verifiedReply = executionReceiptText\(requestedActions, batch, correctedText\)/);
 });
 
 test("phone calls use a verified native handoff", () => {
