@@ -115,7 +115,7 @@ export const TAKI_MODELS = [
   {
     key: "taki_2_0_swift",
     name: "Taki 2.0 Swift",
-    detail: "Fastest and lowest-credit option, with a higher chance of inaccurate or outdated information",
+    detail: "Usually fastest and lowest-credit across everyday questions; still uses research and reliable action planning when the request requires them",
     providerModel: takiAnswerModel("taki_2_0_swift")
   },
   {
@@ -127,7 +127,7 @@ export const TAKI_MODELS = [
   {
     key: "taki_2_1_reasoning",
     name: "Taki 2.1 Reasoning",
-    detail: "Smartest and highest-credit option, with the strongest chance of accurate and up-to-date answers",
+    detail: "Usually the most thorough and highest-credit option; actual speed and cost also depend on research and tools used",
     providerModel: takiAnswerModel("taki_2_1_reasoning")
   }
 ] as const;
@@ -166,11 +166,11 @@ export function fallbackModelCandidates(primary: string): string[] {
 export function modelForRequest(args: any): string {
   const selected = modelSelectionStorage.getStore();
   if (!selected) return String(args?.model || MAIN_MODEL);
-  // Swift genuinely uses the lowest-latency model for planning too. The planner
-  // audit and final validators still reject invented or unsafe action details.
-  // Balanced and Reasoning keep the more dependable dedicated action planner.
+  // Model choice controls answer depth, latency, and the usual token price. It
+  // must never remove capabilities: every tier uses the dependable structured
+  // planner for actions/extraction, including web-researched calendar events.
   if (args?.config?.responseMimeType === "application/json") {
-    return selected === "taki_2_0_swift" ? takiModelInfo(selected).providerModel : PLANNER_MODEL;
+    return PLANNER_MODEL;
   }
   return takiModelInfo(selected).providerModel;
 }

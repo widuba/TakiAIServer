@@ -81,7 +81,7 @@ test("Taki model selection is validated, scoped, and has a bounded fallback", as
   });
   await withTakiModel("taki_2_0_swift", async () => {
     assert.equal(modelForRequest({ model: "ignored", config: {} }), "gemini-3.5-flash-lite");
-    assert.equal(modelForRequest({ model: "ignored", config: { responseMimeType: "application/json" } }), "gemini-3.5-flash-lite");
+    assert.equal(modelForRequest({ model: "ignored", config: { responseMimeType: "application/json" } }), PLANNER_MODEL);
   });
   await withTakiModel("taki_2_1", async () => {
     assert.equal(modelForRequest({ model: "ignored", config: { responseMimeType: "application/json" } }), PLANNER_MODEL);

@@ -8,7 +8,7 @@ import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
 import { cleanAssistantText, finalizeResponse, resolveCalendarUpdateDates, sanitizeSources, validateAction } from "../src/validators.js";
 import { briefForVoice, extractCalendarTitle, progressiveVoiceBundles, resolveRelativeYmd, VOICE_MAX_CHARS } from "../src/util.js";
-import { formatMathNumber, looksLikeCurrentRecommendationQuestion, looksLikeFreshFactQuestion, looksLikeLiveInfoQuestion, looksLikeSubjectiveRecommendationQuestion, parseMusicCommand, parsePackageTracking, responseSatisfiesExplicitFormat, responseStyleForTakiModel, youtubeVideoInputURL } from "../src/tools.js";
+import { eventQueryFromCalendarMessage, formatMathNumber, looksLikeAddLookupEventToCalendar, looksLikeCurrentRecommendationQuestion, looksLikeExplicitWebSearchRequest, looksLikeFreshFactQuestion, looksLikeLiveInfoQuestion, looksLikeSubjectiveRecommendationQuestion, parseMusicCommand, parsePackageTracking, responseSatisfiesExplicitFormat, responseStyleForTakiModel, youtubeVideoInputURL } from "../src/tools.js";
 import { usageLimitsFor } from "../src/credits.js";
 import { subscriptionMergeDecision } from "../src/iap.js";
 import { billableAudioDurationMs, normalizeSpeechKeyterms, normalizeTextForSpeech, shouldAskForVoiceRepeat, speechCharacterCount, splitTextForProgressiveSpeech, stabilityForVariability, STT_MODEL, TTS_MODEL, VOICE_REPEAT_PROMPT } from "../src/voice.js";
@@ -99,6 +99,26 @@ test("changeable public facts always route to current research", () => {
   for (const question of timelessQuestions) {
     assert.equal(looksLikeFreshFactQuestion(question), false, question);
   }
+});
+
+test("explicit web-search language always requests research", () => {
+  for (const request of [
+    "Look it up",
+    "Search the web for the answer",
+    "Browse the internet for Braves news",
+    "Verify that online",
+    "Google it"
+  ]) {
+    assert.equal(looksLikeExplicitWebSearchRequest(request), true, request);
+  }
+  assert.equal(looksLikeExplicitWebSearchRequest("Look up at the sky"), false);
+  assert.equal(looksLikeExplicitWebSearchRequest("Search for coffee in Maps"), false);
+});
+
+test("a next public event requested for Calendar is a mandatory lookup action", () => {
+  const request = "Add the next Braves game to my calendar";
+  assert.equal(looksLikeAddLookupEventToCalendar(request), true);
+  assert.equal(eventQueryFromCalendarMessage(request), "the next Braves game");
 });
 
 test("personal support and supplied text never become unnecessary web research", () => {

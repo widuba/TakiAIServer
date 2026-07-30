@@ -2194,6 +2194,21 @@ export function looksLikeFreshFactQuestion(message: string) {
   return false;
 }
 
+// An explicit request to use the public web always wins over model-memory
+// shortcuts. Keep this separate from freshness detection: "look it up" may be
+// a follow-up whose subject only exists in the conversation history.
+export function looksLikeExplicitWebSearchRequest(message: string) {
+  const m = message.toLowerCase().replace(/\s+/g, " ").trim();
+  return (
+    /\b(?:search|browse|check|research)\s+(?:the\s+)?(?:web|internet|online)\b/.test(m)
+    || /\b(?:web|internet|online)\s+(?:search|lookup|research)\b/.test(m)
+    || /\b(?:use|check|find|verify|confirm)\s+(?:the\s+)?(?:web|internet|online|current sources?)\b/.test(m)
+    || /\b(?:verify|confirm)\s+(?:(?:it|that|this|them|those)\s+)?online\b/.test(m)
+    || /\blook\s+(?:(?:it|that|this|them|those|something|the answer)\s+)?up\b(?!\s+(?:at|toward|towards)\b)/.test(m)
+    || /\bgoogle\s+(?:it|that|this|them|those|the answer)\b/.test(m)
+  );
+}
+
 // Recommendations are intentionally subjective: "good", "best", and "what
 // should I watch" ask Taki to exercise judgment, not prove a single objective
 // answer. Keep this separate from strict fact detection so recommendation
@@ -2620,7 +2635,12 @@ Rules:
       generateContent({
         model: RESEARCH_MODEL,
         contents: prompt,
-        config: { temperature: 0, tools: [{ googleSearch: {} }] }
+        config: {
+          temperature: 0,
+          tools: [{ googleSearch: {} }],
+          forceWebSearch: true,
+          webSearchContextSize: activeTakiModelInfo().key === "taki_2_1_reasoning" ? "high" : "medium"
+        }
       } as any),
       RESEARCH_TIMEOUT_MS,
       "Current event research"
@@ -2662,7 +2682,12 @@ Rules:
         // well as the accurate one, and pro was too slow for N games (timed out).
         model: MAIN_MODEL,
         contents: prompt,
-        config: { temperature: 0, tools: [{ googleSearch: {} }] }
+        config: {
+          temperature: 0,
+          tools: [{ googleSearch: {} }],
+          forceWebSearch: true,
+          webSearchContextSize: activeTakiModelInfo().key === "taki_2_1_reasoning" ? "high" : "medium"
+        }
       } as any),
       LIST_RESEARCH_TIMEOUT_MS,
       "Upcoming events research"
@@ -2727,7 +2752,15 @@ ${EVENT_TIME_RULES}
 
   try {
     const response: any = await withTimeout(
-      generateContent({ model: MAIN_MODEL, contents: prompt, config: { temperature: 0, thinkingConfig: { thinkingBudget: 0 } } }),
+      generateContent({
+        model: MAIN_MODEL,
+        contents: prompt,
+        config: {
+          temperature: 0,
+          responseMimeType: "application/json",
+          thinkingConfig: { thinkingBudget: 0 }
+        }
+      }),
       9000,
       "Extract future event"
     );
@@ -2814,7 +2847,15 @@ ${EVENT_TIME_RULES}
 
   try {
     const response: any = await withTimeout(
-      generateContent({ model: MAIN_MODEL, contents: prompt, config: { temperature: 0, thinkingConfig: { thinkingBudget: 0 } } }),
+      generateContent({
+        model: MAIN_MODEL,
+        contents: prompt,
+        config: {
+          temperature: 0,
+          responseMimeType: "application/json",
+          thinkingConfig: { thinkingBudget: 0 }
+        }
+      }),
       12000,
       "Extract future events"
     );
@@ -3045,7 +3086,8 @@ ${memoryText}
   // speed through a smaller response budget, not by guessing from stale memory.
   const isLive = looksLikeLiveInfoQuestion(state.message)
     || looksLikeFreshFactQuestion(state.message)
-    || looksLikeCurrentRecommendationQuestion(state.message);
+    || looksLikeCurrentRecommendationQuestion(state.message)
+    || looksLikeExplicitWebSearchRequest(state.message);
   // A short question is "easy" only if it's genuinely conversational/subjective.
   // Consequential, objective decisions (purchases, products, money) escalate to
   // the informational model even when phrased briefly.

@@ -1,4 +1,4 @@
-import { generateContent, activeTakiModelInfo, MAIN_MODEL, PLANNER_MODEL, PLANNER_TIMEOUT_MS, safetyConfig, ServiceError } from "./ai.js";
+import { generateContent, MAIN_MODEL, PLANNER_MODEL, PLANNER_TIMEOUT_MS, safetyConfig, ServiceError } from "./ai.js";
 import type {
   AssistantAction,
   AssistantPlan,
@@ -38,6 +38,7 @@ import {
   looksLikeStockQuestion,
   looksLikeLotteryQuestion,
   looksLikeFreshFactQuestion,
+  looksLikeExplicitWebSearchRequest,
   looksLikeLiveInfoQuestion,
   looksLikeCurrentRecommendationQuestion,
   looksLikePredictionQuestion,
@@ -892,11 +893,6 @@ Return exactly:
 }
 `;
 
-  const selectedModel = activeTakiModelInfo().key;
-  const plannerTimeout = Math.min(
-    PLANNER_TIMEOUT_MS,
-    selectedModel === "taki_2_0_swift" ? 6000 : selectedModel === "taki_2_1" ? 9000 : 12000
-  );
   const result: any = await withTimeout(
     generateContent({
       model: PLANNER_MODEL,
@@ -905,7 +901,7 @@ Return exactly:
       // context resolution and instruction following for ambiguous phrasing.
       config: { temperature: 0, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 }, ...safetyConfig(state.userProfile?.teen) }
     } as any),
-    plannerTimeout,
+    PLANNER_TIMEOUT_MS,
     "Planner"
   );
 
@@ -2089,6 +2085,16 @@ export async function planAssistantResponse(
       { lastIntent: "event_lookup" },
       verified.sources
     );
+  }
+
+  // Explicit research language is a hard instruction, even when the subject is
+  // only present in conversation history ("look it up"). Combined requests such
+  // as "search for the game and text Chris" continue through the planner so the
+  // researched result can feed the requested device action.
+  const explicitWebSearchNeedsAction = /\b(?:text|message|email|call|add|put|schedule|save|create|remind|directions|navigate)\b/i.test(state.message);
+  if (looksLikeExplicitWebSearchRequest(state.message) && !explicitWebSearchNeedsAction) {
+    const answer = await getGeneralAnswer(state, onStableVoiceText);
+    return answerPlan(answer.text, { lastIntent: "web_search" }, answer.sources);
   }
 
   // Complete a pending calendar clarification deterministically when possible.
