@@ -29,7 +29,7 @@ export function looksLikeCookingRequest(message: string): boolean {
   const m = message.toLowerCase();
   // Exclude non-food uses of "make/prepare" ("make a reservation", "make a list",
   // "make me a schedule") so they don't get hijacked as recipes.
-  if (/\b(reservation|booking|schedule|playlist|appointment|a call|a list|a plan|a decision|a note|a reminder|an? (?:doctor|dentist))\b/.test(m)) return false;
+  if (/\b(reservation|booking|schedule|playlist|appointment|a call|a list|a plan|choice|decision|a note|a reminder|an? (?:doctor|dentist))\b/.test(m)) return false;
   return (
     /\b(cooking mode|recipe)\b/.test(m) ||
     /\b(walk|guide) me through (?:making|cooking|baking)\b/.test(m) ||

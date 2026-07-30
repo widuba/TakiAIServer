@@ -308,6 +308,52 @@ function directCommandText(message: string): string {
     .trim();
 }
 
+export function unsupportedFinancialActionAnswer(message: string): string | null {
+  const command = directCommandText(message);
+  const startsLikeTransfer = /^(?:send|transfer|wire|pay|move)\b/i.test(command);
+  const involvesMoney = /(?:[$€£]\s*\d|\b\d+(?:\.\d{1,2})?\s*(?:dollars?|bucks?|usd|eur|gbp)\b|\b(?:money|funds?|bank account|checking|savings|venmo|cash ?app|paypal|zelle)\b)/i.test(command);
+  const asksForFalseCompletionClaim = /\b(?:claim|pretend|say|state)\b.{0,80}\b(?:transferred|sent|paid|moved)\b/i.test(command);
+  if (!involvesMoney || (!startsLikeTransfer && !asksForFalseCompletionClaim)) return null;
+  if (asksForFalseCompletionClaim) {
+    return "Nothing was transferred. I can’t access bank or payment accounts or claim that a payment happened when it didn’t.";
+  }
+  return "I can’t access bank or payment accounts or move money. I can help you draft a payment message or set a reminder, but you’ll need to complete the payment in your banking or payment app.";
+}
+
+export function emergencyGuidanceFor(message: string): string | null {
+  const m = message.toLowerCase();
+  const severeChestOrBreathing =
+    /\b(crushing|severe|sudden|intense)\b.{0,30}\bchest (?:pain|pressure|tightness)\b/.test(m)
+    || /\bchest (?:pain|pressure|tightness)\b.{0,50}\b(?:trouble|difficulty|can'?t|cannot|struggling to)\s+(?:breath|breathe|breathing)\b/.test(m);
+  if (!severeChestOrBreathing) return null;
+  return "Call 911 or your local emergency number now. Do not drive yourself; sit somewhere safe, unlock the door if you can, and follow the dispatcher’s instructions.";
+}
+
+export function looksLikeStandaloneDraftRequest(message: string): boolean {
+  const m = message.trim();
+  if (!/^(?:please\s+)?(?:(?:help me\s+)?(?:draft|write|compose|rewrite))\b/i.test(m)) return false;
+  if (/https?:\/\//i.test(m)) return false;
+  if (/\b(?:send|open)\b.{0,30}\b(?:to|in messages|in mail)\b/i.test(m)) return false;
+  // A named destination means the user likely wants a native Messages/Mail
+  // draft. With no destination, they are asking for wording in the chat.
+  if (/\b(?:text|message|email)\s+to\s+(?:my\s+)?[\p{L}\p{N}][\p{L}\p{N}'’-]*/iu.test(m)) return false;
+  return true;
+}
+
+export function looksLikeInlineTransformationRequest(message: string): boolean {
+  const m = message.trim();
+  if (/https?:\/\//i.test(m)) return false;
+  if (!/^(?:please\s+)?(?:summari[sz]e|rewrite|translate|proofread|shorten)\b/i.test(m)) return false;
+  return /:\s*\S|[“\"]{1,3}.+[”\"]{1,3}|\b(?:this|the following)\b[\s\S]{20,}/i.test(m);
+}
+
+export function looksLikeEmotionalSupportRequest(message: string): boolean {
+  const m = message.toLowerCase();
+  const feeling = /\b(i(?:'m| am)\s+(?:overwhelmed|anxious|stressed|lonely|sad|scared|panicking|burned out|burnt out)|i feel\s+(?:overwhelmed|anxious|stressed|lonely|sad|scared|lost)|don'?t know where to start)\b/.test(m);
+  const support = /\b(talk to me|help me|calm|cope|what should i do|where (?:do i|should i) start|practical friend)\b/.test(m);
+  return feeling && support;
+}
+
 function directPending(
   state: ConversationState,
   intent: AssistantAction["type"],
@@ -1139,6 +1185,16 @@ export async function planAssistantResponse(
     return answerPlan("What would you like me to do?");
   }
 
+  const emergencyGuidance = emergencyGuidanceFor(state.message);
+  if (emergencyGuidance) {
+    return answerPlan(emergencyGuidance, { lastIntent: "answer_only" });
+  }
+
+  const unsupportedFinancialAction = unsupportedFinancialActionAnswer(state.message);
+  if (unsupportedFinancialAction) {
+    return answerPlan(unsupportedFinancialAction, { lastIntent: "answer_only" });
+  }
+
   const instantVoiceReply = fastVoiceReply(state);
   if (instantVoiceReply) {
     return answerPlan(instantVoiceReply, { lastIntent: "answer_only" });
@@ -1151,6 +1207,19 @@ export async function planAssistantResponse(
   });
   if (productAnswer) {
     return answerPlan(productAnswer, { lastIntent: "answer_only" });
+  }
+
+  // Writing assistance, transformations of text already supplied in the turn,
+  // and personal support are answers—not phone actions or public web lookups.
+  // Routing them directly also prevents words such as “text,” “Saturday,” or
+  // “today” from being mistaken for Messages, Calendar, or live-research intent.
+  if (
+    looksLikeStandaloneDraftRequest(state.message)
+    || looksLikeInlineTransformationRequest(state.message)
+    || looksLikeEmotionalSupportRequest(state.message)
+  ) {
+    const answer = await getGeneralAnswer(state, onStableVoiceText);
+    return answerPlan(answer.text, { lastIntent: "answer_only" }, answer.sources);
   }
 
   const sharePlan = await planShareRequest(state);

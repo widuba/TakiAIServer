@@ -139,8 +139,7 @@ function offsetString(minutes: number) {
 
 // Resolve a relative date phrase to a YYYY-MM-DD in the user's OWN timezone, so
 // "Thursday" means Thursday on the user's calendar (not the server's).
-export function resolveRelativeYmd(message: string, timeZone = TIME_ZONE) {
-  const now = new Date();
+export function resolveRelativeYmd(message: string, timeZone = TIME_ZONE, now = new Date()) {
   const lower = message.toLowerCase();
   const todayYmd = ymdInTimeZone(now, timeZone);
 
@@ -156,6 +155,13 @@ export function resolveRelativeYmd(message: string, timeZone = TIME_ZONE) {
     const todayIndex = weekdays.indexOf(todayWeekday);
     let daysUntil = mentionedIndex - todayIndex;
     if (daysUntil <= 0) daysUntil += 7;
+    // In ordinary speech, “Friday” means the next occurrence, while “next
+    // Friday” means the Friday in the following calendar week. Without this
+    // distinction a Thursday request for “next Friday” incorrectly became
+    // tomorrow instead of eight days away.
+    if (new RegExp(`\\bnext\\s+${weekdays[mentionedIndex]}\\b`, "i").test(message) && daysUntil < 7) {
+      daysUntil += 7;
+    }
     return addDaysToYmd(todayYmd, daysUntil);
   }
 
@@ -343,7 +349,7 @@ export function extractCalendarTitle(message: string) {
     .replace(/^i\s+have\s+/i, "")
     .replace(/\bput that.*$/i, "")
     .replace(/\balong with.*$/i, "")
-    .replace(/\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b.*$/i, "")
+    .replace(/\b(?:(?:this|next|coming)\s+)?(?:today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b.*$/i, "")
     .replace(/\bat\s+\d{1,2}(:\d{2})?\s*(am|pm)?\b.*$/i, "")
     .replace(/\s+/g, " ")
     .trim();

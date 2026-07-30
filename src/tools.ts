@@ -2146,6 +2146,19 @@ export function looksLikePredictionQuestion(message: string) {
 export function looksLikeFreshFactQuestion(message: string) {
   const m = message.toLowerCase();
 
+  // Text supplied for transformation is the source of truth. A date word inside
+  // that text ("opens Saturday", "meeting today") must not turn a summarize or
+  // rewrite request into a public web lookup.
+  if (/^(?:please\s+)?(?:summari[sz]e|rewrite|translate|proofread|shorten)\b[^:]{0,120}:\s*\S/i.test(message.trim())) {
+    return false;
+  }
+  // “I’m overwhelmed today—help me” is personal support, not a request for a
+  // current public fact. Web verification here is both slow and emotionally
+  // inappropriate.
+  if (/\b(i(?:'m| am)|i feel)\s+(?:overwhelmed|anxious|stressed|lonely|sad|scared|lost|panicking|burned out|burnt out)\b/.test(m)) {
+    return false;
+  }
+
   const recency = /\b(latest|newest|most recent|current(?:ly)?|right now|today|tonight|nowadays|these days|so far|this (?:week|month|year)|20\d\d|just (?:released|announced|came out|changed)|recently (?:released|announced|launched|changed|updated))\b/.test(m);
   const release = /\b(release[sd]?|releasing|announce[sd]?|came out|come out|coming out|available now|out now|launch(?:e[sd])?)\b/.test(m);
   const product = /\b(chip|processor|silicon|cpu|gpu|graphics card|iphone|ipad|mac|macbook|imac|phone|laptop|tablet|smartwatch|watch|model|version|console|car|ev|product|device|software|os|update)\b/.test(m);
@@ -2880,6 +2893,45 @@ export type TakiResponseStyle = {
   voiceDirective: string;
 };
 
+const COUNT_WORDS: Record<string, number> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10
+};
+
+function requestedCount(value: string | undefined): number | null {
+  if (!value) return null;
+  const normalized = value.toLowerCase();
+  const number = COUNT_WORDS[normalized] ?? Number(normalized);
+  return Number.isInteger(number) && number > 0 && number <= 20 ? number : null;
+}
+
+export function responseSatisfiesExplicitFormat(message: string, response: string): boolean {
+  const m = message.toLowerCase();
+  const exactItems = requestedCount(m.match(/\bexactly\s+(one|two|three|four|five|six|seven|eight|nine|ten|\d{1,2})\b/)?.[1]);
+  const wordsPerItem = requestedCount(m.match(/\b(one|two|three|four|five|six|seven|eight|nine|ten|\d{1,2})\s+words?\s+per\s+(?:item|line|point)\b/)?.[1]);
+  const requiresNumberedList = /\bnumbered list\b/.test(m);
+  if (!exactItems && !wordsPerItem && !requiresNumberedList) return true;
+
+  const items = response
+    .split(/\r?\n/)
+    .map((line) => line.match(/^\s*\d+[.)]\s+(.+?)\s*$/)?.[1] || "")
+    .filter(Boolean);
+  if (requiresNumberedList && items.length === 0) return false;
+  if (exactItems && items.length !== exactItems) return false;
+  if (wordsPerItem && items.some((item) => (item.match(/[\p{L}\p{N}]+(?:['’\-][\p{L}\p{N}]+)*/gu) || []).length !== wordsPerItem)) {
+    return false;
+  }
+  return true;
+}
+
 export function responseStyleForTakiModel(key: TakiModelKey): TakiResponseStyle {
   if (key === "taki_2_0_swift") {
     return {
@@ -2951,6 +3003,7 @@ ${voiceBlock}
 MODEL RESPONSE DEPTH (${selectedModel.name}):
 - ${state.voiceMode ? responseStyle.voiceDirective : responseStyle.textDirective}
 - A direct user request for a particular length, depth, or format takes precedence, except for the hard spoken limit in voice mode.
+- Before answering, silently verify every explicit count and format constraint (for example, exact item counts and words per item). Do not approximate an exact constraint.
 
 How to answer:
 - Follow MODEL RESPONSE DEPTH above. Lead with the answer; no preamble ("Great question", "Of course", "Sure!"), no restating the question, and no redundant wrap-up summary.
@@ -3051,10 +3104,35 @@ ${memoryText}
       generatedText = String(response.text || "");
       generatedSources = getGroundingSources(response);
     }
-    const text = stripMarkdown(generatedText.trim());
+    let text = stripMarkdown(generatedText.trim());
     if (text) {
       if (allowSearch && generatedSources.length === 0) {
         throw new Error("Current answer lacked linkable grounding sources");
+      }
+      // Small conversational models occasionally miss mechanical constraints
+      // even when the content is correct. Retry only that rare, explicitly
+      // count-constrained case; ordinary replies keep the single-call fast path.
+      if (!state.voiceMode && !allowSearch && !responseSatisfiesExplicitFormat(state.message, text)) {
+        try {
+          const repair: any = await withTimeout(
+            generateContent({
+              model: primaryModel,
+              contents: `${GUARDRAILS}\nCorrect the draft so it follows the user's explicit formatting and count constraints exactly. Preserve its meaning. Return only the corrected answer in plain text.\n\nUser request:\n${state.message}\n\nDraft:\n${text}`,
+              config: {
+                thinkingConfig: { thinkingLevel: "LOW" },
+                maxOutputTokens: responseStyle.textMaxOutputTokens,
+                ...safetyConfig(state.userProfile?.teen)
+              }
+            } as any),
+            8000,
+            "Format correction"
+          );
+          const corrected = stripMarkdown(String(repair.text || "").trim());
+          if (corrected && responseSatisfiesExplicitFormat(state.message, corrected)) text = corrected;
+        } catch {
+          // Keep the useful original answer if the optional mechanical repair
+          // times out; do not turn a formatting miss into a service failure.
+        }
       }
       return { text: cap(text), ...(generatedSources.length ? { sources: generatedSources } : {}) };
     }
