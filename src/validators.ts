@@ -370,7 +370,19 @@ export function sanitizeSources(values?: AssistantSource[]): AssistantSource[] {
       continue;
     }
     if (url.protocol !== "https:" && url.protocol !== "http:") continue;
+    if (url.username || url.password) continue;
+    const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    if (
+      host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") ||
+      host === "0.0.0.0" || host === "::1" || host === "::" ||
+      /^(?:fc|fd)[0-9a-f]{2}:/.test(host) || /^fe[89ab][0-9a-f]:/.test(host) ||
+      /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) ||
+      /^169\.254\./.test(host) || /^172\.(?:1[6-9]|2\d|3[01])\./.test(host)
+    ) continue;
     url.hash = "";
+    for (const key of [...url.searchParams.keys()]) {
+      if (/^(?:utm_.+|fbclid|gclid|dclid|mc_cid|mc_eid|ref_src)$/i.test(key)) url.searchParams.delete(key);
+    }
     const key = url.toString();
     if (seen.has(key)) continue;
     seen.add(key);

@@ -2032,7 +2032,7 @@ export async function planAssistantResponse(
   // the live voice path while capability-shaped questions still keep planning.
   if (looksLikePlainVoiceKnowledgeQuestion(state)) {
     const ga = await getGeneralAnswer(state, onStableVoiceText);
-    return answerPlan(ga.text, { lastIntent: "answer_only" });
+    return answerPlan(ga.text, { lastIntent: "answer_only" }, ga.sources);
   }
 
   let plan: PlannerModelOutput;
@@ -2045,7 +2045,7 @@ export async function planAssistantResponse(
     if (error instanceof ServiceError) throw error;
     console.error("Planner failed, using general answer:", error);
     const ga = await getGeneralAnswer(state, onStableVoiceText);
-    return answerPlan(ga.text);
+    return answerPlan(ga.text, {}, ga.sources);
   }
 
   // Explicit clarification from the planner: park a pending clarification so the
@@ -2710,7 +2710,7 @@ export async function planAssistantResponse(
         return answerPlan(inline, { lastIntent: "answer_only" });
       }
       const ga = await getGeneralAnswer(state, onStableVoiceText);
-      return answerPlan(ga.text, { lastIntent: "answer_only" });
+      return answerPlan(ga.text, { lastIntent: "answer_only" }, ga.sources);
     }
   }
 }

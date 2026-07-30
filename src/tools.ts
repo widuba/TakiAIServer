@@ -2914,7 +2914,7 @@ export function responseStyleForTakiModel(key: TakiModelKey): TakiResponseStyle 
 export async function getGeneralAnswer(
   state: ConversationState,
   onStableVoiceText?: (text: string) => void | Promise<void>
-): Promise<{ text: string }> {
+): Promise<{ text: string; sources?: { title: string; url: string }[] }> {
   const memoryText = state.fullTranscriptText
     ? `
 
@@ -2957,6 +2957,7 @@ How to answer:
 - Include background, caveats, alternatives, or lists when the selected model depth or the user's request makes them useful; never add filler.
 - Be accurate and complete enough to fully satisfy the question.
 - For anything recent, time-sensitive, or that you're unsure of, USE web search and rely on the results — never guess at current facts or make things up. If you can't find it, say so plainly.
+- For current information, verify important factual claims against at least two independent reliable sources when possible. Prefer official or primary sources, include the relevant date, and acknowledge meaningful disagreement instead of hiding it.
 - When the user asks for an opinion, recommendation, favorite, or "good/best"
   choices, make a concrete judgment and explain it briefly. Subjectivity is not
   missing information: do not answer "I don't know" merely because tastes differ.
@@ -3014,6 +3015,7 @@ ${memoryText}
   try {
     let generatedText = "";
     let emittedVoiceText = "";
+    let generatedSources: { title: string; url: string }[] = [];
     if (state.voiceMode && onStableVoiceText) {
       const stream = generateContentStream({
         model: primaryModel,
@@ -3022,6 +3024,8 @@ ${memoryText}
       } as any);
       for await (const chunk of stream) {
         generatedText += String(chunk?.text || "");
+        const chunkSources = getGroundingSources(chunk);
+        if (chunkSources.length) generatedSources = chunkSources;
         const progress = progressiveVoiceBundles(
           stripMarkdown(generatedText),
           emittedVoiceText,
@@ -3045,10 +3049,14 @@ ${memoryText}
         "General answer"
       );
       generatedText = String(response.text || "");
+      generatedSources = getGroundingSources(response);
     }
     const text = stripMarkdown(generatedText.trim());
     if (text) {
-      return { text: cap(text) };
+      if (allowSearch && generatedSources.length === 0) {
+        throw new Error("Current answer lacked linkable grounding sources");
+      }
+      return { text: cap(text), ...(generatedSources.length ? { sources: generatedSources } : {}) };
     }
     throw new Error("empty");
   } catch (error) {
@@ -3060,12 +3068,28 @@ ${memoryText}
     // Graceful degrade so we always reply, even if the strong model times out.
     try {
       const r2: any = await withTimeout(
-        generateContent({ model: MAIN_MODEL, contents: prompt, config: { thinkingConfig: { thinkingBudget: 0 }, ...safetyConfig(state.userProfile?.teen) } } as any),
+        generateContent({
+          model: MAIN_MODEL,
+          contents: prompt,
+          config: {
+            ...(allowSearch ? {
+              tools: [{ googleSearch: {} }],
+              forceWebSearch: true,
+              webSearchContextSize: "medium"
+            } : {}),
+            thinkingConfig: { thinkingBudget: 0 },
+            ...safetyConfig(state.userProfile?.teen)
+          }
+        } as any),
         8000,
         "General answer fast"
       );
       const fb = cap(stripMarkdown(String(r2.text || "").trim()));
-      if (fb) return { text: fb };
+      const fallbackSources = getGroundingSources(r2);
+      if (fb && (!allowSearch || fallbackSources.length > 0)) {
+        return { text: fb, ...(fallbackSources.length ? { sources: fallbackSources } : {}) };
+      }
+      if (allowSearch) return { text: "I can't verify that from linkable sources right now." };
       return { text: "I'm not sure how to answer that — can you say a bit more?" };
     } catch (fallbackError) {
       if (fallbackError instanceof ServiceError) throw fallbackError;
