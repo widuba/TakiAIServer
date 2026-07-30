@@ -112,7 +112,7 @@ test("voice preflight differs by exactly the 40-AI-Credit fallback", () => {
 });
 
 test("usage blocks report the reason the app renders", () => {
-  assert.equal(usageBlockFor(account({ balance: 0 }), 10, false)?.reason, "credits");
-  assert.equal(usageBlockFor(account({ tier: "free", voiceCredits: 0 }), 10, true), null);
-  assert.equal(usageBlockFor(account(), 10, false), null);
+  assert.equal(usageBlockFor(account({ balance: 0 }), 10)?.reason, "credits");
+  assert.equal(usageBlockFor(account({ tier: "free", voiceCredits: 0 }), 10), null);
+  assert.equal(usageBlockFor(account(), 10), null);
 });

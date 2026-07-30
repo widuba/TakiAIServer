@@ -285,7 +285,12 @@ test("transient iCloud failures retain a monotonic durable outbox", () => {
   assert.match(appSource, /async function uploadCloudEnvelope\(/);
   assert.match(appSource, /cloudEnvelopeRevision\(remote\.value \|\| ""\) > pendingRevision/);
   assert.match(appSource, /return "superseded"/);
-  assert.match(appSource, /if \(localStorage\.getItem\(`\$\{CLOUD_PENDING_PREFIX\}\$\{key\}`\)\) return null/);
+  const cloudPullSource = between(appSource, "async function cloudPull(", "// Lets the (module-level) photos_show handler");
+  assert.match(cloudPullSource, /if \(localStorage\.getItem\(`\$\{CLOUD_PENDING_PREFIX\}\$\{key\}`\)\) return false/);
+  assert.ok(
+    cloudPullSource.indexOf("await apply(parsed.data)") < cloudPullSource.indexOf("localStorage.setItem(`ios-ai-cloud-t-${key}`"),
+    "a cloud revision must be persisted successfully before its cursor advances"
+  );
   assert.match(appSource, /if \(localStorage\.getItem\(`\$\{CLOUD_PENDING_PREFIX\}\$\{key\}`\) === envelope\)/);
   assert.match(carPlaySource, /let revision = max\(Int64\(Date\(\)\.timeIntervalSince1970 \* 1000\), priorRevision \+ 1\)/);
   assert.match(cloudSyncBridgeSource, /FileManager\.default\.ubiquityIdentityToken != nil/);

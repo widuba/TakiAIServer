@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chatSyncKey, mergeSyncedChats, sanitizeSyncedChat, syncChats } from "../src/chatSync.js";
+import { chatSyncKey, mergeSyncedChats, readSyncedChats, sanitizeSyncedChat, syncChats } from "../src/chatSync.js";
 import { storeDelete } from "../src/store.js";
 
 function chat(id: string, updatedAt: string, messages: any[]) {
@@ -57,6 +57,26 @@ test("a restored chat newer than its tombstone becomes available again", async (
     const restored = await syncChats(identity, [{ ...original, updatedAt: new Date(Date.now() + 1_000).toISOString() }], "restored");
     assert.equal(restored.chats[0]?.id, "restored");
     assert.equal(restored.deleted.restored, undefined);
+  } finally {
+    await storeDelete(chatSyncKey(identity));
+  }
+});
+
+test("simultaneous iPhone and CarPlay writes cannot erase each other's turns", async () => {
+  const identity = `test-chat-concurrency-${Date.now()}-${Math.random()}`;
+  const iphone = chat("shared", "2026-07-01T00:00:03.000Z", [{
+    id: "iphone-turn", role: "user", text: "Sent from iPhone", createdAt: "2026-07-01T00:00:01.000Z"
+  }]);
+  const carplay = chat("shared", "2026-07-01T00:00:04.000Z", [{
+    id: "carplay-turn", role: "assistant", text: "Sent from CarPlay", createdAt: "2026-07-01T00:00:02.000Z"
+  }]);
+  try {
+    await Promise.all([
+      syncChats(identity, [iphone], "shared"),
+      syncChats(identity, [carplay], "shared")
+    ]);
+    const stored = await readSyncedChats(identity);
+    assert.deepEqual(stored.chats[0]?.messages.map((message) => message.id), ["iphone-turn", "carplay-turn"]);
   } finally {
     await storeDelete(chatSyncKey(identity));
   }

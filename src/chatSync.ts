@@ -1,4 +1,4 @@
-import { storeGet, storeSet } from "./store.js";
+import { storeGet, storeUpdate } from "./store.js";
 
 export type SyncedChatSource = { title: string; url: string };
 export type SyncedChatMessage = {
@@ -27,6 +27,7 @@ const MAX_CHATS = 50;
 const MAX_MESSAGES_PER_CHAT = 300;
 const MAX_TOTAL_TEXT = 1_500_000;
 const TOMBSTONE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const EMPTY_CHAT_SYNC: ChatSyncRecord = { chats: [], deleted: {}, updatedAt: 0 };
 
 function safeIdentity(identity: string): string {
   return identity.replace(/[^a-zA-Z0-9_:-]/g, "_");
@@ -129,9 +130,8 @@ export function mergeSyncedChats(
   return bounded;
 }
 
-export async function readSyncedChats(identity: string): Promise<ChatSyncRecord> {
-  const current = await storeGet<ChatSyncRecord | null>(chatSyncKey(identity), null);
-  if (!current) return { chats: [], deleted: {}, updatedAt: 0 };
+function normalizeChatSyncRecord(current: ChatSyncRecord | null): ChatSyncRecord {
+  if (!current) return { ...EMPTY_CHAT_SYNC };
   const cutoff = Date.now() - TOMBSTONE_RETENTION_MS;
   const deleted = Object.fromEntries(
     Object.entries(current.deleted || {}).filter(([, timestamp]) => Number(timestamp) > cutoff)
@@ -144,39 +144,49 @@ export async function readSyncedChats(identity: string): Promise<ChatSyncRecord>
   };
 }
 
+export async function readSyncedChats(identity: string): Promise<ChatSyncRecord> {
+  const current = await storeGet<ChatSyncRecord | null>(chatSyncKey(identity), null);
+  return normalizeChatSyncRecord(current);
+}
+
 export async function syncChats(
   identity: string,
   incoming: unknown[],
   activeChatId?: string,
   deletedChatIds: string[] = []
 ): Promise<ChatSyncRecord> {
-  const current = await readSyncedChats(identity);
-  const now = Date.now();
-  const deleted = { ...current.deleted };
-  for (const id of deletedChatIds.map((value) => String(value).trim().slice(0, 200)).filter(Boolean)) {
-    deleted[id] = now;
-  }
-  // A restored chat is given a fresh updatedAt by the client. Let that newer
-  // revision clear its older deletion tombstone while still rejecting stale
-  // copies from another device that has not observed the deletion yet.
-  for (const value of incoming) {
-    const chat = sanitizeSyncedChat(value);
-    if (chat && deleted[chat.id] && Date.parse(chat.updatedAt) > deleted[chat.id]) {
-      delete deleted[chat.id];
+  const key = chatSyncKey(identity);
+  return await storeUpdate<ChatSyncRecord | null, ChatSyncRecord>(key, null, (stored) => {
+    // Keep the entire read/merge/write cycle under the store's per-key lock.
+    // iPhone and CarPlay can post the same chat at nearly the same time; an
+    // unlocked read-modify-write lets the later write erase the earlier turn.
+    const current = normalizeChatSyncRecord(stored);
+    const now = Date.now();
+    const deleted = { ...current.deleted };
+    for (const id of deletedChatIds.map((value) => String(value).trim().slice(0, 200)).filter(Boolean)) {
+      deleted[id] = now;
     }
-  }
-  const chats = mergeSyncedChats(current.chats, incoming, deleted);
-  const selected = activeChatId && chats.some((chat) => chat.id === activeChatId)
-    ? activeChatId
-    : current.activeChatId && chats.some((chat) => chat.id === current.activeChatId)
-      ? current.activeChatId
-      : chats[0]?.id;
-  const next: ChatSyncRecord = {
-    chats,
-    ...(selected ? { activeChatId: selected } : {}),
-    deleted,
-    updatedAt: now
-  };
-  await storeSet(chatSyncKey(identity), next);
-  return next;
+    // A restored chat is given a fresh updatedAt by the client. Let that newer
+    // revision clear its older deletion tombstone while still rejecting stale
+    // copies from another device that has not observed the deletion yet.
+    for (const value of incoming) {
+      const chat = sanitizeSyncedChat(value);
+      if (chat && deleted[chat.id] && Date.parse(chat.updatedAt) > deleted[chat.id]) {
+        delete deleted[chat.id];
+      }
+    }
+    const chats = mergeSyncedChats(current.chats, incoming, deleted);
+    const selected = activeChatId && chats.some((chat) => chat.id === activeChatId)
+      ? activeChatId
+      : current.activeChatId && chats.some((chat) => chat.id === current.activeChatId)
+        ? current.activeChatId
+        : chats[0]?.id;
+    const next: ChatSyncRecord = {
+      chats,
+      ...(selected ? { activeChatId: selected } : {}),
+      deleted,
+      updatedAt: now
+    };
+    return { value: next, result: next };
+  });
 }

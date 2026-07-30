@@ -9,7 +9,7 @@ import type { DeviceLocation, DeviceWeather } from "./src/types.js";
 import { buildConversationState } from "./src/context.js";
 import { planAssistantResponse } from "./src/planner.js";
 import { finalizeResponse } from "./src/validators.js";
-import { getGeneralAnswer, styleInCharacter, getWeatherSnapshot, inferEventDestination, matchEventToQuery, getTravelTime, answerAboutImage, answerAboutAttachments, fitVoiceResponse } from "./src/tools.js";
+import { styleInCharacter, getWeatherSnapshot, inferEventDestination, matchEventToQuery, getTravelTime, answerAboutImage, answerAboutAttachments, fitVoiceResponse } from "./src/tools.js";
 // getTravelTime (above) also powers the background commute push loop.
 import { briefForVoice, withTimeout } from "./src/util.js";
 import { parseIncomingStyleProfiles } from "./src/messageStyle.js";
@@ -228,7 +228,7 @@ app.get("/health", async (_req, res) => {
     ok: true,
     app: "Taki AI server",
     mode: "planner-first-modular-v3",
-    version: "2026-07-29-on-device-core-v14",
+    version: "2026-07-29-stability-v15",
     durableStorage: isDurable(),
     aiProvider: ACTIVE_AI_PROVIDER,
     models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL },
@@ -713,7 +713,7 @@ app.post("/api/vision", async (req, res) => {
   let tier: Tier = "free";
   const sum = await creditSummary(deviceId);
   tier = sum.tier;
-  const block = usageBlockFor(sum, ATTACHMENT_BASE_CREDITS, voiceMode);
+  const block = usageBlockFor(sum, ATTACHMENT_BASE_CREDITS);
   if (block) { res.status(402).json(usageBlockedPayload(block)); return; }
   try {
     const takiModel = normalizeTakiModel(req.body?.profile?.model);
@@ -744,7 +744,7 @@ app.post("/api/vision", async (req, res) => {
   } catch (error) {
     if (error instanceof InsufficientCreditsError) {
       const fresh = await creditSummary(deviceId);
-      res.status(402).json(usageBlockedPayload(usageBlockFor(fresh, error.required, voiceMode)!));
+      res.status(402).json(usageBlockedPayload(usageBlockFor(fresh, error.required)!));
       return;
     }
     console.error("Vision error:", error);
@@ -769,7 +769,7 @@ app.post("/api/attachments", async (req, res) => {
   let tier: Tier = "free";
   const attachmentSummary = await creditSummary(deviceId);
   tier = attachmentSummary.tier;
-  const attachmentBlock = usageBlockFor(attachmentSummary, Math.max(MIN_REQUEST_CREDITS, attachmentCredits), voiceMode);
+  const attachmentBlock = usageBlockFor(attachmentSummary, Math.max(MIN_REQUEST_CREDITS, attachmentCredits));
   if (attachmentBlock) { res.status(402).json(usageBlockedPayload(attachmentBlock)); return; }
 
   try {
@@ -800,7 +800,7 @@ app.post("/api/attachments", async (req, res) => {
   } catch (error) {
     if (error instanceof InsufficientCreditsError) {
       const fresh = await creditSummary(deviceId);
-      res.status(402).json(usageBlockedPayload(usageBlockFor(fresh, error.required, voiceMode)!));
+      res.status(402).json(usageBlockedPayload(usageBlockFor(fresh, error.required)!));
       return;
     }
     console.error("Attachment answer failed:", error);
@@ -1083,7 +1083,7 @@ app.post("/api/credits/preflight", async (req, res) => {
     : kind === "voice"
       ? voiceTurnEstimateCredits(summary.voiceCredits > 0)
       : MIN_REQUEST_CREDITS;
-  const block = usageBlockFor(summary, requiredCredits, kind === "voice");
+  const block = usageBlockFor(summary, requiredCredits);
   if (block) {
     await noteBillingEvent(deviceId, "insufficient_credits_blocked", { mode: kind, requiredAiCredits: requiredCredits, availableAiCredits: summary.balance });
     res.status(402).json(usageBlockedPayload(block)); return;
@@ -2510,7 +2510,7 @@ async function runAssistant(
   if (deviceId && usageSummary) {
     const sum = usageSummary;
     const estimated = voiceMode ? voiceTurnEstimateCredits(sum.voiceCredits > 0) : MIN_REQUEST_CREDITS;
-    const block = usageBlockFor(sum, estimated, voiceMode);
+    const block = usageBlockFor(sum, estimated);
     if (block) return usageBlockedPayload(block);
   }
   const measured = await measureUsage(async () => {
@@ -2557,7 +2557,7 @@ async function runAssistant(
       if (error instanceof InsufficientCreditsError) {
         const fresh = await creditSummary(deviceId);
         await noteBillingEvent(deviceId, "insufficient_credits_blocked", { mode: voiceMode ? "voice" : "text", requiredAiCredits: error.required, availableAiCredits: error.available });
-        return usageBlockedPayload(usageBlockFor(fresh, error.required, voiceMode)!);
+        return usageBlockedPayload(usageBlockFor(fresh, error.required)!);
       }
       throw error;
     }

@@ -65,21 +65,19 @@ export function attachmentBaseCostCredits(attachments: Array<{ kind?: unknown }>
     * ATTACHMENT_BASE_CREDITS;
 }
 
-// Is this voice turn covered by the free-voice allowance? Only on an included
-// tier, only while base subscription credits remain, and only under the cap.
-export function isFreeVoice(tier: Tier, baseCredits: number, voiceCycleUsed: number, voiceLifetimeUsed = 0): boolean {
+// Compatibility helpers used by account and pricing checks. The lifetime
+// counter remains in the signature for older callers, but current eligibility
+// is determined by the cycle balance.
+export function isFreeVoice(tier: Tier, baseCredits: number, voiceCycleUsed: number, _voiceLifetimeUsed = 0): boolean {
   if (tier === "free") return false;
   const cap = FREE_VOICE_PER_CYCLE[tier] || 0;
   return cap > 0 && baseCredits > 0 && voiceCycleUsed < cap;
 }
 
-// Voice mode is available on any paid tier, while the free tier still has
-// surcharge-free turns left, OR whenever the account has purchased credits to
-// pay the per-turn voice surcharge — a paying user should never be locked out of
-// voice just because the free monthly voice turns are used up.
-export function hasVoiceAccess(tier: Tier, voiceLifetimeUsed = 0, hasPurchasedCredits = false): boolean {
+export function hasVoiceAccess(tier: Tier, _voiceLifetimeUsed = 0, hasPurchasedCredits = false): boolean {
   return tier !== "free" || hasPurchasedCredits;
 }
+
 // Credits charged for a paid voice turn (beyond the free allowance).
 export function worstCaseContributionUsd(tier: Tier): number {
   const config = TIERS[tier];

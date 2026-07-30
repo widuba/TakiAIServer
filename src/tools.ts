@@ -4,7 +4,7 @@ import { capabilityPromptBlock } from "./capabilities.js";
 import { productKnowledgePromptBlock } from "./productKnowledge.js";
 import type { UserPersona } from "./persona.js";
 import type { TakiModelKey } from "./ai.js";
-import { isoFromYmdTime, addMinutesToIsoLocal, addDaysToYmd, ymdInTimeZone, extractJsonObject, briefForVoice, progressiveVoiceBundles } from "./util.js";
+import { isoFromYmdTime, addMinutesToIsoLocal, addDaysToYmd, ymdInTimeZone, briefForVoice, progressiveVoiceBundles } from "./util.js";
 import { extractFlightCode, hasExplicitFinanceCue, hasProductPriceCue } from "./entityClassifier.js";
 import { getCurrentMovieRecommendationEvidence } from "./currentRecommendations.js";
 

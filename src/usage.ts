@@ -28,8 +28,7 @@ export function usageMessageForReason(reason: "daily" | "monthly"): string {
 
 export function usageBlockFor(
   summary: any,
-  requiredCredits = MIN_REQUEST_CREDITS,
-  voiceMode = false
+  requiredCredits = MIN_REQUEST_CREDITS
 ): UsageBlock | null {
   const required = Math.max(MIN_REQUEST_CREDITS, Math.ceil(requiredCredits));
   let reason: UsageBlockReason | null = null;
@@ -103,7 +102,7 @@ export function decideAssistantCharge(args: {
   const usageUsd = args.baseUsd;
   const normalAiCredits = Math.ceil(usageUsd / CREDIT_USD);
   const requiredCredits = normalAiCredits + (args.voiceMode && !includedVoice ? VOICE_SURCHARGE_CREDITS : 0);
-  const block = usageBlockFor(args.summary, requiredCredits, args.voiceMode);
+  const block = usageBlockFor(args.summary, requiredCredits);
   return {
     usageUsd,
     requiredCredits,
