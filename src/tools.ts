@@ -1436,7 +1436,13 @@ export function parseHomeCommand(message: string): { action: string; target: str
   const m = message.toLowerCase().trim();
   // Lights — handle any word order and verb: "turn on the lights", "turn the
   // lights off", "lights out", "dim the bedroom lights", "kitchen lights on".
-  if (/\blights?\b/.test(m) && /\b(turn|switch|dim|brighten|lower|raise|shut|kill|out|on|off|set)\b/.test(m)) {
+  // "out", "on" and "off" are far too common to imply a command on their own:
+  // "The lights went out in the story" matched and would have switched the
+  // user's real lights off. Require an actual control VERB, or the terse command
+  // form people speak ("lights out", "kitchen lights on").
+  const lightsControlVerb = /\b(turn|switch|dim|brighten|lower|raise|shut|kill|set)\b/.test(m);
+  const terseLightsCommand = /^(?:ok |okay |hey )?(?:taki[,\s]+)?(?:[a-z]+\s+)?lights?\s+(?:on|off|out)\b[.!]?$/.test(m);
+  if (/\blights?\b/.test(m) && (lightsControlVerb || terseLightsCommand)) {
     const isOff = /\b(off|out)\b/.test(m) || /\b(shut|kill)\b/.test(m);
     // Room = the word right before "lights", if it's a real room (not an article/verb).
     let target = "";

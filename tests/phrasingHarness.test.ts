@@ -254,6 +254,8 @@ test("harness: one intent survives many phrasings", () => {
     // Home control vs scenes
     { message: "Turn off the kitchen lights", claims: ["home"] },
     { message: "Lock the front door", claims: ["home"] },
+    { message: "lights out", claims: ["home"], note: "terse spoken command must still work" },
+    { message: "dim the bedroom lights", claims: ["home"] },
     { message: "Goodnight", claims: ["scene"] },
 
     // Music
@@ -297,6 +299,14 @@ test("harness: ordinary questions are never claimed by a device detector", () =>
     { message: "What should I get my sister for her birthday?", claims: [] },
     { message: "Summarize this in one sentence: the garden opens Saturday.", claims: [] },
     { message: "I'm feeling overwhelmed today", claims: [] },
-    { message: "Tell me a joke", claims: [] }
+    { message: "Tell me a joke", claims: [] },
+    // "lights" + a word as common as "out" used to be enough to fire a HomeKit
+    // command, so a narrative sentence would switch the user's real lights off.
+    { message: "The lights went out in the story", claims: [] },
+    { message: "How do LED lights work?", claims: [] },
+    // Weather claims this ("forecast"); it is aurora-adjacent so that is
+    // defensible, but the key point is that HOME must not claim it.
+    { message: "Northern lights forecast", claims: ["weather"] },
+    { message: "City lights at night are pretty", claims: [] }
   ]);
 });
