@@ -69,9 +69,33 @@ function accountSummaryLine(account: CreditSummary | null | undefined, timeZone 
   return `CURRENT USER ACCOUNT: ${tierName(account.tier)}; ${count(account.aiCredits ?? account.balance)} AI Credits; ${count(account.voiceCredits)} Voice Credits.${status}${end ? ` Current billing period ends ${end}.` : ""}`;
 }
 
+// Taki's paid tiers are called Plus, Premium, and Pro — which are also the most
+// common suffixes in consumer hardware names. "iPhone 17 Pro price", "MacBook
+// Pro price", "AirPods Pro cost" and "Galaxy S25 Plus price" were all answered
+// with Taki's own subscription pricing ("Pro costs $24.99 per month..."), the
+// same shape as the "model" hijack. A tier word that follows a brand or a model
+// number is part of a PRODUCT name, so the question is not about Taki.
+const PRODUCT_TIER_NAME = [
+  // Known hardware brands, however the user capitalizes them.
+  /\b(?:iphone|ipad|macbook|mac|imac|airpods|apple\s*watch|watch|surface|galaxy|pixel|kindle|echo|switch|xbox|playstation|thinkpad|xps)\b[^.?!]{0,20}?\b(?:pro|plus|max)\b/i,
+  // A model number immediately before the tier word: "17 Pro", "S25 Plus".
+  /\b[0-9][a-z0-9]*\s+(?:pro|plus|max)\b/i,
+  // An unknown but clearly capitalized product name: "Foo Pro". Taki itself is
+  // excluded so "Taki Pro" stays a tier question.
+  /\b(?!Taki\b)[A-Z][A-Za-z0-9]*\s+(?:Pro|Plus|Max)\b/
+];
+
+function namesAProductTier(original: string): boolean {
+  return PRODUCT_TIER_NAME.some((re) => re.test(original));
+}
+
 export function isProductKnowledgeQuestion(message: string): boolean {
-  const m = String(message || "").trim().toLowerCase().replace(/[’]/g, "'");
+  const original = String(message || "");
+  const m = original.trim().toLowerCase().replace(/[’]/g, "'");
   if (!m) return false;
+  // Anything naming a product tier is a question about that product, not Taki.
+  // Checked before the tier rules below, which are the ones that misfire.
+  if (namesAProductTier(original) && !/\btaki\b/.test(m)) return false;
   if (/^(?:who|what) are you\??$|^what is taki(?: ai)?\??$|^tell me about (?:yourself|taki(?: ai)?)\??$|^are you (?:chatgpt|free)\??$/.test(m)) return true;
   if (/\b(?:ai|voice) credits?\b|\bcredit (?:balance|expiry|expiration|rollover|top[- ]?up|pack|cost|price)\b/.test(m)) return true;
   if (/\bcredits?\b/.test(m) && /\b(?:how many|do i have|balance|left|remaining|available|work|expire|expiration|expiry|roll over|rollover|carry over|carryover|cost|charge|buy|purchase)\b/.test(m)) return true;

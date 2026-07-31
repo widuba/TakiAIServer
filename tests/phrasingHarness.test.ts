@@ -170,6 +170,17 @@ test("harness: bugs found in the feature sweep stay fixed", () => {
     { message: "What model car should I buy?", claims: [] },
     { message: "What Taki model am I using?", claims: ["product_knowledge"] },
 
+    // Taki's tiers are Plus/Premium/Pro — also the commonest hardware suffixes.
+    // "iPhone 17 Pro price" was answered with Taki's own subscription pricing.
+    { message: "iPhone 17 Pro price", claims: [] },
+    { message: "MacBook Pro price", claims: [] },
+    { message: "AirPods Pro cost", claims: [] },
+    { message: "Galaxy S25 Plus price", claims: [] },
+    { message: "iphone 17 pro price", claims: [], note: "lowercase typing must not slip through" },
+    // ...while genuine tier questions still answer locally.
+    { message: "What does Taki Pro cost?", claims: ["product_knowledge"] },
+    { message: "What does Plus include?", claims: ["product_knowledge"] },
+
     // The imperative alert form failed the "alert me" gate entirely.
     { message: "Set a price alert for Bitcoin above 70000", claims: ["price_alert", "crypto_question"], wins: "price_alert" },
     { message: "Set an alert for Tesla below 200", claims: ["price_alert"] },
