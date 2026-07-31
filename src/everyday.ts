@@ -97,8 +97,19 @@ export function routeEverydayAction(message: string, context: EverydayContext): 
 
   const reminderReschedule = text.match(/^(?:reschedule|move|postpone|change the time of)\s+(?:the\s+|my\s+)?(?:reminder|task)?\s*(?:to\s+)?(.+?)\s+(?:to|for|until)\s+(.+?)[?.!]*$/i);
   if (reminderReschedule && (saysReminder || !namesCalendarEntry(reminderReschedule[1]))) {
-    const ymd = resolveRelativeYmd(reminderReschedule[2], context.timeZone) || resolveRelativeYmd(text, context.timeZone);
+    let ymd = resolveRelativeYmd(reminderReschedule[2], context.timeZone) || resolveRelativeYmd(text, context.timeZone);
     const time = resolveTimeFromMessage(reminderReschedule[2]) || resolveTimeFromMessage(text);
+    // "Reschedule my reminder to call mom to 5pm" names a time but no DATE, so
+    // ymd was null, dueDate came out null, and the update carried no change at
+    // all — the user just got "What should I change about that reminder?" back.
+    // A bare time means today, or tomorrow when it has already passed.
+    if (!ymd && time) {
+      const todayYmd = resolveRelativeYmd("today", context.timeZone);
+      const candidate = todayYmd ? isoFromYmdTime(todayYmd, time.hour, time.minute ?? 0, context.timeZone) : null;
+      ymd = candidate && Date.parse(candidate) > Date.now()
+        ? todayYmd
+        : resolveRelativeYmd("tomorrow", context.timeZone) || todayYmd;
+    }
     const dueDate = ymd ? isoFromYmdTime(ymd, time?.hour ?? 9, time?.minute ?? 0, context.timeZone) : null;
     return reminderUpdate(reminderReschedule[1], { dueDate }, "I'll reschedule that reminder.");
   }

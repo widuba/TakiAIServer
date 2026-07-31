@@ -228,7 +228,7 @@ app.get("/health", async (_req, res) => {
     ok: true,
     app: "Taki AI server",
     mode: "planner-first-modular-v3",
-    version: "2026-07-31-calendar-edit-v32",
+    version: "2026-07-31-reminder-time-v33",
     durableStorage: isDurable(),
     aiProvider: ACTIVE_AI_PROVIDER,
     models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL },

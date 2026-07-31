@@ -13,6 +13,7 @@ import { usageLimitsFor } from "../src/credits.js";
 import { subscriptionMergeDecision } from "../src/iap.js";
 import { billableAudioDurationMs, normalizeSpeechKeyterms, normalizeTextForSpeech, shouldAskForVoiceRepeat, speechCharacterCount, splitTextForProgressiveSpeech, stabilityForVariability, STT_MODEL, TTS_MODEL, VOICE_REPEAT_PROMPT } from "../src/voice.js";
 import { parseRecurring } from "../src/recurring.js";
+import { routeEverydayAction } from "../src/everyday.js";
 import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
@@ -1000,6 +1001,21 @@ test("live currency conversions expose the exact rate endpoint", () => {
 test("chat titles are short and stripped of model formatting", () => {
   assert.equal(normalizeChatTitle('**"Vacation Planning: Italy!"**'), "Vacation Planning Italy");
   assert.equal(normalizeChatTitle("one two three four five six seven"), "one two three four five six");
+});
+
+test("rescheduling a reminder to a bare time still sets a due date", () => {
+  // Regression: "reschedule ... to 5pm" names a time but no DATE, so ymd was
+  // null, dueDate came out null, the update carried no change, and the user got
+  // "What should I change about that reminder?" instead of a reschedule.
+  const ctx = { timeZone: "America/New_York", previousAnswer: "" } as any;
+  const bareTime: any = routeEverydayAction("Reschedule my reminder to call mom to 5pm", ctx);
+  assert.equal(bareTime?.action?.type, "reminder_update");
+  assert.ok(bareTime?.action?.dueDate, "a bare time must still produce a due date");
+  assert.ok(Date.parse(bareTime.action.dueDate) > Date.now(), "and it must be in the future");
+
+  // An explicit date keeps working.
+  const withDate: any = routeEverydayAction("Reschedule my reminder to call mom to tomorrow at 5pm", ctx);
+  assert.ok(withDate?.action?.dueDate);
 });
 
 test("a recurring reminder keeps its recurrence instead of becoming a one-off", () => {
