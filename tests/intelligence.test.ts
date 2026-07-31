@@ -8,7 +8,7 @@ import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
 import { cleanAssistantText, finalizeResponse, resolveCalendarUpdateDates, sanitizeSources, validateAction } from "../src/validators.js";
 import { briefForVoice, extractCalendarTitle, progressiveVoiceBundles, resolveRelativeYmd, VOICE_MAX_CHARS } from "../src/util.js";
-import { eventQueryFromCalendarMessage, formatMathNumber, looksLikeAddLookupEventToCalendar, looksLikeCurrentRecommendationQuestion, looksLikeExplicitWebSearchRequest, looksLikeFreshFactQuestion, looksLikeLiveInfoQuestion, looksLikeSubjectiveRecommendationQuestion, parseMusicCommand, parsePackageTracking, responseSatisfiesExplicitFormat, responseStyleForTakiModel, youtubeVideoInputURL } from "../src/tools.js";
+import { parseScheduledMessage, eventQueryFromCalendarMessage, formatMathNumber, looksLikeAddLookupEventToCalendar, looksLikeCurrentRecommendationQuestion, looksLikeExplicitWebSearchRequest, looksLikeFreshFactQuestion, looksLikeLiveInfoQuestion, looksLikeSubjectiveRecommendationQuestion, parseMusicCommand, parsePackageTracking, responseSatisfiesExplicitFormat, responseStyleForTakiModel, youtubeVideoInputURL } from "../src/tools.js";
 import { usageLimitsFor } from "../src/credits.js";
 import { subscriptionMergeDecision } from "../src/iap.js";
 import { billableAudioDurationMs, normalizeSpeechKeyterms, normalizeTextForSpeech, shouldAskForVoiceRepeat, speechCharacterCount, splitTextForProgressiveSpeech, stabilityForVariability, STT_MODEL, TTS_MODEL, VOICE_REPEAT_PROMPT } from "../src/voice.js";
@@ -1000,6 +1000,24 @@ test("live currency conversions expose the exact rate endpoint", () => {
 test("chat titles are short and stripped of model formatting", () => {
   assert.equal(normalizeChatTitle('**"Vacation Planning: Italy!"**'), "Vacation Planning Italy");
   assert.equal(normalizeChatTitle("one two three four five six seven"), "one two three four five six");
+});
+
+test("a scheduled text keeps its message body instead of collapsing to a reminder", () => {
+  // The generic "remind me to …" shape detector runs long before the
+  // scheduled-message block, so it used to claim these first and drop the body.
+  // Both documented phrasings must still parse as draft-and-send-later.
+  const remind = parseScheduledMessage("remind me to text Mom happy birthday at 9am");
+  assert.equal(remind?.recipient, "Mom");
+  assert.match(remind?.body || "", /happy birthday/i);
+
+  const schedule = parseScheduledMessage("schedule a text to Mom saying I am running late at 5pm");
+  assert.equal(schedule?.recipient, "Mom");
+  assert.match(schedule?.body || "", /running late/i);
+
+  // A plain reminder with no message stays a plain reminder.
+  assert.equal(parseScheduledMessage("remind me to call the dentist at 9am"), null);
+  // No parseable time means it is not a scheduled send.
+  assert.equal(parseScheduledMessage("remind me to text Mom happy birthday"), null);
 });
 
 test("search is offered on anything the live detectors miss, never absent by default", () => {

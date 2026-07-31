@@ -514,7 +514,13 @@ export function directCorePhoneAction(state: ConversationState, message = state.
   }
 
   const reminderShape = /^(?:remind me(?:\s+to)?|(?:add|create|set|make)\s+(?:a\s+)?reminder(?:\s+to)?)\s+(.+)$/i.exec(text);
-  if (reminderShape) {
+  // "Remind me to text Mom happy birthday at 9am" is a draft-and-send-later, not
+  // a plain reminder. This shape detector runs long before the scheduled-message
+  // block, so without this guard it claimed every "remind me to …" first and
+  // extractReminderTitle threw away the message body — the exact mis-route that
+  // block's comment warns about, which made its own documented example
+  // unreachable. Defer to it and keep the body.
+  if (reminderShape && !parseScheduledMessage(state.message)) {
     const title = titleCaseTask(extractReminderTitle(text));
     if (title && title !== "Reminder") {
       const action = blankAction("reminder_create");
