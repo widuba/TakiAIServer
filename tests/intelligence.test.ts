@@ -1055,6 +1055,11 @@ test("a location automation parses without a comma before the action", () => {
   // A bare command is not an automation, and "remind me" stays a location reminder.
   assert.equal(parseLocationAutomation("Turn on the lights"), null);
   assert.equal(parseLocationAutomation("When I get home remind me to water the plants"), null);
+  // The comma-less pattern splits on an action verb, so a reminder whose text
+  // contains one ("check email") must not be mangled into place="work remind me
+  // to check" / action="email".
+  assert.equal(parseLocationAutomation("When I arrive at work remind me to check email"), null);
+  assert.equal(parseLocationAutomation("When I get home remind me to call Mom"), null);
 });
 
 test("a named coin is never answered with an equity search", () => {

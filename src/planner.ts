@@ -1590,7 +1590,13 @@ export async function planAssistantResponse(
   // Habit / medication tracking with streaks (device-stored). Runs AFTER the
   // health-log detector so "log a 30-minute run" goes to HealthKit, not here.
   {
-    const habit = parseHabit(state.message);
+    // "Remind me to take my medication every day at 8am" is a recurring REMINDER
+    // that happens to name a habit. Habit tracking runs first, so without this
+    // it answered "Done." and no 8am alert was ever scheduled. Only an explicit
+    // "remind me" defers; "mark my medication" stays habit tracking.
+    const explicitRecurringReminder =
+      /\bremind me\b|\breminders?\b/i.test(state.message) && !!parseRecurring(state.message);
+    const habit = explicitRecurringReminder ? null : parseHabit(state.message);
     if (habit) {
       const action = blankAction("habit_action");
       action.habitOp = habit.op;

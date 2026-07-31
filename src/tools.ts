@@ -1392,8 +1392,11 @@ export function parseLocationAutomation(message: string): { trigger: "arrive" | 
   }
   if (!mm) return null;
   action = action.trim().replace(/[.?!]+$/, "");
-  // "remind me …" belongs to the location-reminder path, not automations.
-  if (/^remind me\b/i.test(action)) return null;
+  // "remind me …" belongs to the location-reminder path, not automations. Check
+  // the PLACE too: the comma-less pattern splits on an action verb, so "when I
+  // arrive at work remind me to check email" would otherwise land as
+  // place="work remind me to check" / action="email".
+  if (/^remind me\b/i.test(action) || /\bremind me\b/i.test(place)) return null;
   const t = trigger.toLowerCase();
   const isLeave = /\b(leave|exit|get out)\b/.test(t);
   let p = place.trim().replace(/^(the|my|a)\s+/i, "").replace(/[.?!]+$/, "").trim();
