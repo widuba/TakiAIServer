@@ -3,6 +3,8 @@ import test from "node:test";
 import { randomUUID } from "node:crypto";
 import {
   recordViolation,
+  recordAssoc,
+  associationsFor,
   reinstate,
   unban,
   warnUser,
@@ -10,10 +12,14 @@ import {
   acknowledgeNotice,
   terminateAndBan,
   isBanned,
+  getBanList,
+  retireBannedIps,
+  retiredBannedIps,
   getSafetyAccount,
   safetyDetailFor,
   strikeThreshold
 } from "../src/safety.js";
+import { storeSet } from "../src/store.js";
 
 const newId = () => `sfdev${randomUUID().replaceAll("-", "").slice(0, 12)}`;
 const flag = (identity: string) =>
@@ -105,6 +111,36 @@ test("manual suspend counts toward escalation like an auto-suspend", async () =>
   const acct = await suspendAccount(id, "manual review");
   assert.equal(acct.status, "suspended");
   assert.equal(acct.suspensionCount, 1);
+});
+
+test("terminating never adds an IP to the ban list, and IPs never block", async () => {
+  const id = newId();
+  const ip = "203.0.113.77";
+  await recordAssoc(id, undefined, ip);
+  await flag(id);
+  await terminateAndBan(id);
+
+  const list = await getBanList();
+  assert.equal(list.ips.includes(ip), false, "the IP is not added to the ban list");
+  // A different, unbanned identity sharing that IP must stay unblocked.
+  assert.equal(await isBanned(newId(), undefined, ip), false, "a shared IP never blocks a bystander");
+  // The IP is still on the record for the terminated identity.
+  assert.ok((await associationsFor(id)).ips.includes(ip), "the IP is still recorded");
+});
+
+test("stale banned IPs are archived and cleared, idempotently", async () => {
+  const stale = `198.51.100.${Math.floor(Math.random() * 200) + 1}`;
+  const list = await getBanList();
+  await storeSet("safety:banlist", { ...list, ips: [...list.ips, stale] });
+
+  const moved = await retireBannedIps();
+  assert.ok(moved >= 1, "reports how many were retired");
+  assert.deepEqual((await getBanList()).ips, [], "ban list no longer carries IPs");
+  assert.ok((await retiredBannedIps()).includes(stale), "the record is preserved, not destroyed");
+
+  // Running it again is a no-op.
+  assert.equal(await retireBannedIps(), 0);
+  assert.ok((await retiredBannedIps()).includes(stale), "archive survives a second run");
 });
 
 test("unban lifts the permanent ban and reactivates with an overview", async () => {

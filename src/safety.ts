@@ -244,6 +244,35 @@ export async function recordAssoc(identity: string, deviceId?: string, ip?: stri
 
 export async function getBanList(): Promise<BanList> { return await storeGet<BanList>(BAN_KEY, { identities: [], devices: [], ips: [] }); }
 
+const RETIRED_IPS_KEY = "safety:banlist:retired-ips";
+
+// One-time cleanup: IP banning was removed, but earlier terminations wrote IPs
+// into the ban list. Nothing reads them anymore (isBanned ignores IPs), so this
+// clears the stale array — archiving it to `safety:banlist:retired-ips` first so
+// the record of which IPs were once banned is preserved rather than destroyed.
+// Idempotent: a ban list with no IPs is left untouched. Returns how many moved.
+export async function retireBannedIps(): Promise<number> {
+  const b = await getBanList();
+  const ips = Array.isArray(b.ips) ? b.ips.filter(Boolean) : [];
+  if (ips.length === 0) {
+    if (Array.isArray(b.ips) && b.ips.length === 0) return 0;
+    b.ips = [];
+    await storeSet(BAN_KEY, b);
+    return 0;
+  }
+  const archive = await storeGet<{ ips: string[]; retiredAt: number }>(RETIRED_IPS_KEY, { ips: [], retiredAt: 0 });
+  const merged = Array.from(new Set([...(archive.ips || []), ...ips]));
+  await storeSet(RETIRED_IPS_KEY, { ips: merged, retiredAt: Date.now() });
+  b.ips = [];
+  await storeSet(BAN_KEY, b);
+  return ips.length;
+}
+
+// The IPs that were on the ban list before IP banning was removed (record only).
+export async function retiredBannedIps(): Promise<string[]> {
+  return (await storeGet<{ ips: string[] }>(RETIRED_IPS_KEY, { ips: [] })).ips || [];
+}
+
 // Device ids + IPs seen for an identity (used to show linked devices per account).
 export async function associationsFor(identity: string): Promise<Assoc> {
   return await storeGet<Assoc>(assocKey(identity), { devices: [], ips: [] });

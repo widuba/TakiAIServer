@@ -29,7 +29,7 @@ import { decideAssistantCharge, planCorrectionSynthesis, usageBlockFor, usageBlo
 import { verifyTransaction, verifyCreditTransaction, claimCreditTransaction, transferCreditTransaction, rebindCreditTransactions, linkTransactionIdentity, transferSubscriptionIdentity, claimSubscriptionPeriod, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
 import { revokeAppleAuthorizationCode, verifyAppleIdentityToken } from "./src/appleauth.js";
 import { purgeAppleAccount } from "./src/accountDeletion.js";
-import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, unban, warnUser, suspendAccount, acknowledgeNotice, safetyDetailFor, allSafetyAccounts, reviewQueue, linkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG, promptExtractionMessageForMode } from "./src/safety.js";
+import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, unban, warnUser, suspendAccount, acknowledgeNotice, safetyDetailFor, allSafetyAccounts, retireBannedIps, retiredBannedIps, reviewQueue, linkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG, promptExtractionMessageForMode } from "./src/safety.js";
 import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, noteInteraction, noteChannelCost, noteSession, noteEngagementPreferences, noteBillingEvent, userForIdentity, identitiesForIp, allUsers, deleteUser, type UserRecord } from "./src/users.js";
 import { TIERS } from "./src/credits.js";
 import { billableAudioDurationMs, transcribe, synthesize, splitTextForProgressiveSpeech, listVoices, isVoiceConfigured, PIRATE_MARSHAL_VOICE_ID, speechCharacterCount, shouldAskForVoiceRepeat, VOICE_REPEAT_PROMPT } from "./src/voice.js";
@@ -228,7 +228,7 @@ app.get("/health", async (_req, res) => {
     ok: true,
     app: "Taki AI server",
     mode: "planner-first-modular-v3",
-    version: "2026-07-31-safety-escalation-v19",
+    version: "2026-07-31-retire-ip-bans-v20",
     durableStorage: isDurable(),
     aiProvider: ACTIVE_AI_PROVIDER,
     models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL },
@@ -1977,7 +1977,9 @@ app.post("/api/admin/warn", async (req, res) => {
 // Every account with any safety history — the "all accounts" management section.
 app.post("/api/admin/accounts", async (req, res) => {
   if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
-  res.json({ accounts: await allSafetyAccounts() });
+  // retiredBannedIps: IPs that were on the ban list before IP banning was
+  // removed. Kept as a record only — they no longer block anyone.
+  res.json({ accounts: await allSafetyAccounts(), retiredBannedIps: await retiredBannedIps() });
 });
 
 // Full detail for one account: status, escalation, lifetime total, and the whole
@@ -3078,6 +3080,11 @@ app.get("/api/voice/sample", async (req, res) => {
 void storeDeleteCategory("connected_knowledge")
   .then((removed) => { if (removed) console.log(`Removed ${removed} retired connected-knowledge record(s).`); })
   .catch((error) => { console.error("Could not purge retired connected-knowledge records:", error); })
+  // IP banning was removed; clear any IPs left on the ban list by older
+  // terminations (archived to safety:banlist:retired-ips, not destroyed).
+  .then(() => retireBannedIps())
+  .then((retired) => { if (retired) console.log(`Retired ${retired} stale banned IP(s) from the ban list.`); })
+  .catch((error) => { console.error("Could not retire stale banned IPs:", error); })
   .finally(() => {
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`Taki AI server (planner-first, modular) listening on http://0.0.0.0:${PORT}`);
