@@ -266,11 +266,14 @@ export async function appleForDevice(deviceId: string): Promise<string> {
   return (await storeGet<{ sub: string }>(devAppleKey(deviceId), { sub: "" })).sub;
 }
 
-export async function isBanned(identity: string, deviceId?: string, ip?: string): Promise<boolean> {
+// IP addresses are recorded for context (associationsFor) but never used to
+// block — a shared/public IP would catch bystanders. Bans key on the identity
+// and its device id(s) / linked Apple account only. The `ip` argument is kept
+// for call-site compatibility and is intentionally ignored here.
+export async function isBanned(identity: string, deviceId?: string, _ip?: string): Promise<boolean> {
   const b = await getBanList();
   if (b.identities.includes(identity)) return true;
   if (deviceId && b.devices.includes(deviceId)) return true;
-  if (ip && ip !== "unknown" && b.ips.includes(ip)) return true;
   return false;
 }
 
@@ -451,9 +454,10 @@ export async function previewTermination(identity: string): Promise<BanImpact> {
 export async function terminateAndBan(identity: string): Promise<BanImpact> {
   const impact = await previewTermination(identity);
   const b = await getBanList();
+  // Ban the identities and devices only. Associated IPs stay in `impact` for the
+  // record/preview but are deliberately NOT added to the ban list.
   b.identities = Array.from(new Set([...b.identities, ...impact.identities]));
   b.devices = Array.from(new Set([...b.devices, ...impact.devices]));
-  b.ips = Array.from(new Set([...b.ips, ...impact.ips]));
   await storeSet(BAN_KEY, b);
   for (const i of impact.identities) {
     const a = await getSafetyAccount(i);
