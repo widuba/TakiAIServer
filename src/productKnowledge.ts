@@ -14,6 +14,16 @@ import { activeTakiModelInfo } from "./ai.js";
 
 const PAID_TIERS: Tier[] = ["plus", "plus_voice", "pro"];
 
+// Questions about TAKI'S OWN model tier.
+//
+// This used to be /\b(?:taki )?models?\b/ — with "taki" optional, so any bare
+// "model" matched and hijacked the question. "What is the latest iPhone model?"
+// was answered with "You're using Metron, which is balanced for speed…". The
+// word must now be tied to Taki, to the assistant itself, or to a tier name, so
+// phone models, car models, model numbers, and 3D models route normally.
+const TAKI_MODEL_QUESTION =
+  /\btaki(?: ai)? models?\b|\b(?:what|which)\s+(?:ai\s+|taki\s+)?(?:model|version)\s+(?:are you|is this|am i (?:using|on)|do you (?:use|run))\b|\byour (?:ai |current )?model\b|\b(?:dromos|metron|sophos)\b|\b(?:switch|change|pick|choose|select)\s+(?:the\s+|your\s+)?(?:ai\s+)?models?\b|\bmodel (?:picker|selector|selection|button)\b|\b(?:swift|reasoning) model\b/;
+
 function money(value: number): string {
   return `$${value.toFixed(2)}`;
 }
@@ -66,7 +76,7 @@ export function isProductKnowledgeQuestion(message: string): boolean {
   if (/\b(?:ai|voice) credits?\b|\bcredit (?:balance|expiry|expiration|rollover|top[- ]?up|pack|cost|price)\b/.test(m)) return true;
   if (/\bcredits?\b/.test(m) && /\b(?:how many|do i have|balance|left|remaining|available|work|expire|expiration|expiry|roll over|rollover|carry over|carryover|cost|charge|buy|purchase)\b/.test(m)) return true;
   if (/\b(?:subscriptions?|memberships?|pricing|billing period|billing retry)\b/.test(m)) return true;
-  if (/\b(?:taki )?models?\b|\bwhat (?:model|version) are you\b|\b(?:swift|reasoning) model\b/.test(m)) return true;
+  if (TAKI_MODEL_QUESTION.test(m)) return true;
   if (/\bhow much (?:do you|does taki(?: ai)?|is taki(?: ai)?) cost\b|\bwhat (?:does taki(?: ai)? cost|do you charge)\b/.test(m)) return true;
   if (/\b(?:your|taki(?: ai)?'?s) (?:plans?|tiers?|prices?|pricing|cost)\b/.test(m)) return true;
   if (/\b(?:plus|premium|pro|free) (?:plan|tier|subscription|price|cost)\b/.test(m)) return true;
@@ -94,7 +104,7 @@ export function productAnswerFor(message: string, context: ProductAnswerContext 
     return "I'm Taki AI, a daily-life assistant for iPhone, iPad, CarPlay, and Apple TV. I can answer and continue synced conversations on every supported screen. On iPhone and CarPlay, I can also work with supported communication, calendars, reminders, maps, music, Health, HomeKit, photos, and other device features when the platform and permissions allow it.";
   }
 
-  if (/\b(?:taki )?models?\b|\bwhat (?:model|version) are you\b|\b(?:swift|reasoning) model\b/.test(m)) {
+  if (TAKI_MODEL_QUESTION.test(m)) {
     const selected = activeTakiModelInfo();
     return `You're using ${selected.name}, which is ${selected.detail.toLowerCase()}. Tap Model in text chat or voice mode to expand the Faster-to-Smarter control; it switches immediately as you drag. Dromos is generally faster and cheaper across a variety of everyday questions; Metron balances speed, depth, and typical credit use; Sophos is generally more thorough and expensive. These are overall tendencies, not guarantees for every request. Every model can research the web and uses Taki's reliable action planner. Credits reflect the model tokens and paid tools actually used, so a web lookup can cost more on any model.`;
   }

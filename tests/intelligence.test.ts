@@ -1002,6 +1002,34 @@ test("chat titles are short and stripped of model formatting", () => {
   assert.equal(normalizeChatTitle("one two three four five six seven"), "one two three four five six");
 });
 
+test("the word \"model\" only means Taki's model when it is about Taki", () => {
+  // Regression: the detector was /\b(?:taki )?models?\b/ with "taki" optional, so
+  // any bare "model" hijacked the turn. "What is the latest iPhone model?" was
+  // answered with "You're using Metron, which is balanced for speed…".
+  for (const message of [
+    "What is the latest iPhone model?",
+    "What model car should I buy?",
+    "What's the model number on my router?",
+    "Show me a 3D model of the solar system",
+    "Which MacBook model is best?"
+  ]) {
+    assert.equal(isProductKnowledgeQuestion(message), false, message);
+    assert.equal(productAnswerFor(message), null, message);
+  }
+
+  // Genuine questions about Taki's own tier still resolve locally.
+  for (const message of [
+    "What Taki model am I using?",
+    "What model are you?",
+    "Which model am I on?",
+    "How do I switch models?",
+    "What is Metron?"
+  ]) {
+    assert.equal(isProductKnowledgeQuestion(message), true, message);
+  }
+  assert.match(productAnswerFor("What Taki model am I using?") || "", /You're using Metron/);
+});
+
 test("a scheduled text keeps its message body instead of collapsing to a reminder", () => {
   // The generic "remind me to …" shape detector runs long before the
   // scheduled-message block, so it used to claim these first and drop the body.
