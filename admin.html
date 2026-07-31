@@ -84,8 +84,48 @@
     async function openAccount(identity) {
       selected = identity; renderList(); location.hash = `account=${encodeURIComponent(identity)}`;
       $("detail").innerHTML = `<div class="empty">Loading account...</div>`;
-      try { const data = await post("/api/admin/account", {identity}); renderDetail(data.account); }
+      try {
+        const [data, safety] = await Promise.all([
+          post("/api/admin/account", {identity}),
+          post("/api/admin/account-safety", {identity}).catch(() => null)
+        ]);
+        data.account.safety = safety && safety.account ? safety.account : null;
+        renderDetail(data.account);
+      }
       catch (error) { $("detail").innerHTML = `<div class="empty">${esc(error.message)}</div>`; }
+    }
+    async function safetyAction(path, identity, extra, confirmText) {
+      if (confirmText && !confirm(confirmText)) return;
+      try { await post(path, {identity, ...(extra||{})}); await openAccount(identity); await load(); }
+      catch (error) { alert(error.message); }
+    }
+    function flaggedRows(list) {
+      const rows = (list || []).slice().reverse();
+      return rows.length
+        ? rows.map((v) => `<tr><td>${date(v.at)}</td><td>${esc(v.category)}</td><td class="subtle">${esc(String(v.text||"").slice(0,240))}</td></tr>`).join("")
+        : `<tr><td colspan="3" class="subtle">No flagged messages recorded.</td></tr>`;
+    }
+    function safetyControls(a) {
+      const s = a.safety, id = a.identity;
+      const status = s ? s.status : a.status;
+      const btn = (label, cls, path, extra, confirmText) =>
+        `<button class="quiet ${cls||""}" onclick='safetyAction(${JSON.stringify(path)},${JSON.stringify(id)},${JSON.stringify(extra||null)},${confirmText?JSON.stringify(confirmText):"null"})'>${esc(label)}</button>`;
+      const warn = `<button class="quiet" onclick='const m=prompt("Warning message (optional):");if(m!==null)safetyAction("/api/admin/warn",${JSON.stringify(id)},{message:m},null)'>Warn</button>`;
+      const suspend = `<button class="quiet" onclick='const r=prompt("Suspension reason (optional):");if(r!==null)safetyAction("/api/admin/suspend",${JSON.stringify(id)},{reason:r},null)'>Suspend</button>`;
+      const actions = [
+        warn,
+        status !== "suspended" && status !== "terminated" ? suspend : "",
+        status === "suspended" ? btn("Reinstate","", "/api/admin/reinstate", null, "Reinstate this account? They will see the overview before returning.") : "",
+        status !== "terminated" ? btn("Terminate + ban","reset", "/api/admin/terminate", null, "Permanently ban this identity, its devices/IPs, and linked identities? No appeal.") : "",
+        status === "terminated" ? btn("Unban","", "/api/admin/unban", null, "Lift the ban and reactivate this account?") : ""
+      ].filter(Boolean).join(" ");
+      const grid = s
+        ? `${dataBox("Status",status)}${dataBox("Times suspended",num(s.suspensionCount))}${dataBox("Total flagged (lifetime)",num(s.flaggedTotal))}${dataBox("Current strikes",num(s.strikes))}${dataBox("Re-suspend at",`${num(s.nextThreshold)} flagged`)}${dataBox("Warnings",num(s.warnings))}${dataBox("Pending notice",s.pendingNotice?"yes":"no")}`
+        : `${dataBox("Status",status)}${dataBox("Strikes",num(a.strikes))}`;
+      return `<div class="grid">${grid}</div>
+        <div class="actions" style="margin-top:14px">${actions}</div>
+        <h2 style="margin-top:18px">Flagged messages (lifetime)</h2>
+        <table class="plain-table"><thead><tr><th>When</th><th>Category</th><th>Message</th></tr></thead><tbody>${flaggedRows(s ? s.flaggedHistory : [])}</tbody></table>`;
     }
     function dataBox(label, value) { return `<div class="data"><span>${esc(label)}</span><b>${esc(value)}</b></div>`; }
     function usageBar(used, limit) { const value = limit ? Math.min(100, Math.round(used/limit*100)) : 0; return `<div class="bar"><span style="width:${value}%"></span></div><small class="subtle">${num(used)} / ${num(limit)} used</small>`; }
@@ -130,7 +170,7 @@
         <section class="section"><h2>Feature use</h2>${featureRows(a.featureUsage)}</section>
         <section class="section"><h2>Personalized engagement</h2><div class="consent"><span class="badge ${a.engagementPreferences.pushEnabled?"on":"off"}">Push ${a.engagementPreferences.pushEnabled?"enabled":"off"}</span><span class="badge ${a.engagementPreferences.emailEnabled?"on":"off"}">Email ${a.engagementPreferences.emailEnabled?"enabled":"off"}</span><span class="badge">Interests: ${esc((a.engagementPreferences.interests||[]).join(", ")||"none")}</span></div><div class="two"><div><div class="recommendation"><b>Next push: ${esc(push.title||"")}</b><p>${esc(push.body||"")}</p><small>${esc(push.reason||"")}</small></div><div class="actions"><button id="sendPush" ${a.engagementPreferences.pushEnabled?"":"disabled"}>Send recommended push</button></div></div><div><div class="recommendation"><b>Next email: ${esc(email.title||"")}</b><p>${esc(email.body||"")}</p><small>${esc(email.reason||"")}</small></div><div class="actions"><button id="sendEmail" ${a.engagementPreferences.emailEnabled?"":"disabled"}>Send recommended email</button></div></div></div><table class="plain-table" style="margin-top:18px"><thead><tr><th>Category</th><th>Channel</th><th>Sent</th><th>Opened</th><th>Response</th><th>Avg session</th></tr></thead><tbody>${performanceRows(e.performance)}</tbody></table><h2 style="margin-top:20px">Campaign history</h2><table class="plain-table"><thead><tr><th>Sent</th><th>Type</th><th>Status</th><th>Response</th></tr></thead><tbody>${campaigns}</tbody></table></section>
         <section class="section"><h2>Purchases</h2><table class="plain-table"><thead><tr><th>Date</th><th>Type</th><th>Tier</th><th>Gross</th></tr></thead><tbody>${purchases}</tbody></table></section>
-        <section class="section"><h2>Devices and safety</h2><div class="grid">${dataBox("Status",a.status)}${dataBox("Strikes",num(a.strikes))}${dataBox("First seen",date(a.firstSeenAt))}${dataBox("Last seen",date(a.lastSeenAt))}</div><table class="plain-table" style="margin-top:16px"><thead><tr><th>Model</th><th>Name</th><th>ID</th><th>Last seen</th></tr></thead><tbody>${devices}</tbody></table><p class="subtle">Linked identities: ${esc((a.linkedIdentities||[]).join(", "))}<br>IP associations: ${num((a.ips||[]).length)} · Neighboring identities: ${esc((a.ipNeighbors||[]).join(", ")||"none")}</p></section>`;
+        <section class="section"><h2>Devices and safety</h2><div class="grid">${dataBox("First seen",date(a.firstSeenAt))}${dataBox("Last seen",date(a.lastSeenAt))}</div>${safetyControls(a)}<table class="plain-table" style="margin-top:16px"><thead><tr><th>Model</th><th>Name</th><th>ID</th><th>Last seen</th></tr></thead><tbody>${devices}</tbody></table><p class="subtle">Linked identities: ${esc((a.linkedIdentities||[]).join(", "))}<br>IP associations: ${num((a.ips||[]).length)} · Neighboring identities: ${esc((a.ipNeighbors||[]).join(", ")||"none")}</p></section>`;
       $("sendPush")?.addEventListener("click",()=>sendCampaign(a.identity,"push")); $("sendEmail")?.addEventListener("click",()=>sendCampaign(a.identity,"email"));
     }
     async function sendCampaign(identity,channel){if(!confirm(`Send the recommended ${channel} to this account now?`))return;try{const result=await post("/api/admin/engagement-send",{identity,channel});alert(result.ok?`${channel} sent.`:(result.reason||"Send failed."));await openAccount(identity)}catch(error){alert(error.message)}}
