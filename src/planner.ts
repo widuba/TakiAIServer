@@ -763,8 +763,13 @@ changes — keep the meaning. Examples:
 ${styleGuidanceBlock}
 
 CALENDAR EDIT / UPDATE an EXISTING entry ("add the location to the X event", "change the
-time of X to Y", "move X to Friday at 5", "rename X to Y", "add a note to X"):
+time of X to Y", "move X to Friday at 5", "rename X to Y", "add a note to X",
+"move/reschedule my dentist appointment to Friday at 3", "move my 2pm meeting to 4pm",
+"change my dentist appointment to Monday"):
 - intent = "calendar_update". Do NOT create a new event for an edit.
+- An APPOINTMENT, MEETING, or EVENT lives on the calendar: moving or rescheduling one is
+  calendar_update, never reminder_update, even though "reschedule" also appears under
+  REMINDERS MAINTENANCE below.
 - action.calendarQuery = which event to find (its title/keywords, e.g. "Braves").
 - Set ONLY the field(s) being changed: location, title, notes, startDate, endDate
   (ISO-8601 with timezone offset for dates).
@@ -850,7 +855,10 @@ SAVE A CONTACT ("save/add NAME's number ###", "add a contact NAME email X", "rem
   intent = "contact_create", action.recipientName = the person's name,
   action.recipientPhone = digits if given, action.emailAddress = email if given.
 
-REMINDERS MAINTENANCE:
+REMINDERS MAINTENANCE (reminders and tasks ONLY):
+- These NEVER apply to an appointment, meeting, or calendar event. "Move/reschedule my
+  dentist appointment to Friday at 3" and "move my 2pm meeting to 4pm" are calendar_update.
+  Choose reminder_update only when the item is genuinely a reminder or task the user set.
 - Complete/reopen/reschedule/rename/add notes -> reminder_update. Set reminderQuery to the
   existing reminder, and only the changed fields: reminderCompleted, dueDate, title, notes.
 - Delete an existing reminder -> reminder_delete with reminderQuery.
