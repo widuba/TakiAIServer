@@ -2650,6 +2650,33 @@ app.post("/api/assistant", async (req, res) => {
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   if (!(await requireCreditIdentity(deviceId, res))) return;
   const voiceMode = req.body?.voiceMode === true;
+  // Opt-in progressive text. Older installed builds omit the flag and keep
+  // receiving a single JSON body, so streaming can ship before the app does.
+  const progressiveText = req.body?.progressiveText === true && !voiceMode;
+  let textStreamStarted = false;
+  // Started lazily on the FIRST partial chunk, so the usage-block (402) and
+  // outage (503) paths can still set a status code when nothing has streamed.
+  const startTextStream = () => {
+    if (!progressiveText || textStreamStarted) return;
+    textStreamStarted = true;
+    res.status(200);
+    res.set("Content-Type", "application/x-ndjson; charset=utf-8");
+    res.set("Cache-Control", "no-cache, no-transform");
+    res.set("X-Accel-Buffering", "no");
+    res.flushHeaders();
+  };
+  const writeTextEvent = (event: Record<string, unknown>) => {
+    if (!textStreamStarted) return;
+    res.write(`${JSON.stringify(event)}\n`);
+  };
+  const finishTextResponse = (payload: Record<string, unknown>, status = 200) => {
+    if (textStreamStarted) {
+      writeTextEvent({ type: "final", response: payload });
+      res.end();
+    } else {
+      res.status(status).json(payload);
+    }
+  };
   // Privacy: only the style vectors for recipients named in this message arrive
   // here — never a contact list or message history.
   const styleProfiles = parseIncomingStyleProfiles(req.body?.styleProfiles);
@@ -2688,26 +2715,30 @@ app.post("/api/assistant", async (req, res) => {
         false,
         false,
         0,
-        meteringRequestId
+        meteringRequestId,
+        undefined,
+        progressiveText
+          ? (text: string) => { startTextStream(); writeTextEvent({ type: "text", text }); }
+          : undefined
       ))
     );
-    if (result?.usageBlocked) { res.status(402).json(result); return; }
-    res.json(result);
+    if (result?.usageBlocked) { finishTextResponse(result, 402); return; }
+    finishTextResponse(result);
   } catch (error) {
     // Vendor outage (Gemini quota/auth/down): reply immediately with a spoken
     // message instead of a bare 502 the app can't voice.
     if (error instanceof ServiceError) {
-      res.status(503).json({
+      finishTextResponse({
         ...finalizeResponse({ spokenText: error.spoken, action: null, memoryPatch: { pendingClarification: null }, needsExecution: false }, state),
         serviceUnavailable: true,
         serviceError: error.kind
-      });
+      }, 503);
       return;
     }
     console.error("Assistant route error:", error);
     // Do not make a second model call here: the first request may have completed
     // before persistence failed, and retrying would double provider cost.
-    res.status(502).json({ error: "assistant unavailable" });
+    finishTextResponse({ error: "assistant unavailable" }, 502);
   }
 });
 

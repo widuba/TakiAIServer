@@ -3090,9 +3090,13 @@ export function answerRoutingFor(message: string, voiceMode = false): {
   return { isLive, isSubstantive, isEasy, policy };
 }
 
+// onProgress streams the answer as it is produced. Its payload depends on mode:
+//   voice -> TTS-sized spoken bundles (progressiveVoiceBundles)
+//   text  -> the cumulative answer so far, which the client renders as it grows
+// Callers pass it positionally as before, so planner call sites are unchanged.
 export async function getGeneralAnswer(
   state: ConversationState,
-  onStableVoiceText?: (text: string) => void | Promise<void>
+  onProgress?: (text: string) => void | Promise<void>
 ): Promise<{ text: string; sources?: { title: string; url: string }[] }> {
   const memoryText = state.fullTranscriptText
     ? `
@@ -3218,16 +3222,34 @@ ${memoryText}
     let generatedText = "";
     let emittedVoiceText = "";
     let generatedSources: { title: string; url: string }[] = [];
-    if (state.voiceMode && onStableVoiceText) {
+    // Text streams only when search is not FORCED. A forced-search answer must
+    // carry sources or be retried through the fallback, and nothing can be
+    // retried once the user has already read it. Live questions therefore keep
+    // the single-shot path; everything else gains progressive text.
+    const streamTextToClient = !state.voiceMode && !!onProgress && !forceSearch;
+    if ((state.voiceMode && onProgress) || streamTextToClient) {
       const stream = generateContentStream({
         model: primaryModel,
         contents: prompt,
         config: primaryConfig
       } as any);
+      let emittedTextLength = 0;
       for await (const chunk of stream) {
         generatedText += String(chunk?.text || "");
         const chunkSources = getGroundingSources(chunk);
         if (chunkSources.length) generatedSources = chunkSources;
+        if (streamTextToClient) {
+          // Send the cumulative answer rather than a delta: stripMarkdown can
+          // rewrite earlier characters as more text arrives (a half-received
+          // "**bold**"), so a replace-in-place render is the only consistent one.
+          const soFar = stripMarkdown(generatedText).trimStart();
+          if (soFar.length > emittedTextLength) {
+            emittedTextLength = soFar.length;
+            progressiveTextStarted = true;
+            await onProgress!(soFar);
+          }
+          continue;
+        }
         const progress = progressiveVoiceBundles(
           stripMarkdown(generatedText),
           emittedVoiceText,
@@ -3236,7 +3258,7 @@ ${memoryText}
         );
         for (const bundle of progress.bundles) {
           progressiveTextStarted = true;
-          await onStableVoiceText(bundle);
+          await onProgress!(bundle);
         }
         emittedVoiceText = progress.emittedText;
       }
