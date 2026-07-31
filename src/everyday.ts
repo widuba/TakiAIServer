@@ -119,20 +119,32 @@ export function routeEverydayAction(message: string, context: EverydayContext): 
     return reminderUpdate(reminderRename[1], { title: cleanValue(reminderRename[2]) }, "I'll rename that reminder.");
   }
 
+  // These three verbs are ordinary English ("complete", "finish", "reopen",
+  // "add the note ... to ..."), and with "reminder|task" optional they claimed
+  // sentences that were never about a reminder at all:
+  //   "Complete the sentence for me"  -> tried to mark a reminder complete
+  //   "Finish my coffee"              -> same
+  //   "Reopen the investigation"      -> same
+  //   "Mark the meeting as done"      -> a CALENDAR entry
+  // reminderDelete below already required an explicit "reminder"/"task" for
+  // exactly this reason, so these now hold the same standard. Anything without
+  // that signal falls through to the planner, which still routes real reminder
+  // edits via its REMINDERS MAINTENANCE guidance — so the feature is not lost,
+  // it just stops hijacking unrelated requests.
   const reminderNote = text.match(/^add\s+(?:the\s+)?note\s+(.+?)\s+to\s+(?:the\s+|my\s+)?(?:reminder|task)?\s*(.+?)[?.!]*$/i);
-  if (reminderNote) {
+  if (reminderNote && saysReminder && !namesCalendarEntry(reminderNote[2])) {
     return reminderUpdate(reminderNote[2], { notes: cleanValue(reminderNote[1]) }, "I'll update that reminder.");
   }
 
   const reminderComplete =
     text.match(/^(?:complete|finish|check off)\s+(?:the\s+|my\s+)?(?:reminder|task)?\s*(?:to\s+)?(.+?)[?.!]*$/i) ||
     text.match(/^(?:mark|set)\s+(?:the\s+|my\s+)?(.+?)\s+(?:reminder|task)?\s*(?:as\s+)?(?:done|complete|completed)[?.!]*$/i);
-  if (reminderComplete) {
+  if (reminderComplete && saysReminder && !namesCalendarEntry(reminderComplete[1])) {
     return reminderUpdate(reminderComplete[1], { reminderCompleted: true }, "I'll mark that reminder complete.");
   }
 
   const reminderReopen = text.match(/^(?:reopen|uncomplete)\s+(?:the\s+|my\s+)?(?:reminder|task)?\s*(.+?)[?.!]*$/i);
-  if (reminderReopen) {
+  if (reminderReopen && saysReminder && !namesCalendarEntry(reminderReopen[1])) {
     return reminderUpdate(reminderReopen[1], { reminderCompleted: false }, "I'll reopen that reminder.");
   }
 

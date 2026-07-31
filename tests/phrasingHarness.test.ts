@@ -222,7 +222,17 @@ test("harness: bugs found in the feature sweep stay fixed", () => {
     { message: "Reschedule my dentist appointment to Friday at 3pm", claims: [] },
     { message: "Move my 2pm meeting to 4pm", claims: [] },
     { message: "Rename my dentist appointment to checkup", claims: [] },
+    // The same optional "(reminder|task)?" appeared across the whole everyday
+    // family, so ordinary English claimed a reminder edit — including a writing
+    // request. reminderDelete already required the explicit word; the rest now do.
+    { message: "Complete the sentence for me", claims: [], note: "a writing request, not a reminder" },
+    { message: "Finish my coffee", claims: [] },
+    { message: "Reopen the investigation", claims: [] },
+    { message: "Mark the meeting as done", claims: [], note: "meeting is a calendar entry" },
+    { message: "Add the note bring snacks to the birthday party event", claims: [] },
     // ...but genuine reminder edits still belong to it.
+    { message: "Complete the reminder to buy milk", claims: ["everyday_reminder_edit"] },
+    { message: "Mark my grocery task as done", claims: ["everyday_reminder_edit"] },
     { message: "Reschedule my reminder to call mom to 5pm", claims: ["everyday_reminder_edit"] },
     { message: "Rename the reminder groceries to shopping", claims: ["everyday_reminder_edit"] },
 
