@@ -1935,15 +1935,24 @@ export function looksLikeStockQuestion(message: string) {
   return false;
 }
 
-function extractStockEntity(message: string): string {
+export function extractStockEntity(message: string): string {
   return message
     .toLowerCase()
+    // Normalize curly apostrophes so "Apple’s" and "Apple's" behave the same.
+    .replace(/[’]/g, "'")
     .replace(/[?.!,]/g, "")
     .replace(/\b(after ?hours?|after ?market|aftermarket|pre ?market|extended ?hours?|extended)\b/g, " ")
     .replace(
       /\b(what'?s|what is|what are|whats|how much is|how much are|tell me|give me|the|current|currently|right now|today|stock|stocks|shares?|share|price|prices|of|for|quote|trading at|trading|at|nasdaq|nyse|ticker|cost|worth|value|live|going for)\b/g,
       " "
     )
+    // Strip the possessive AFTER the phrase words above, never before: doing it
+    // first would turn "what's" into "what", which is not in that list, and leave
+    // it in the query. Previously the 's survived entirely, so "What's Apple's
+    // stock price?" searched Yahoo for "apple's", matched no equity, and the
+    // whole question fell through to a web search that refused to answer.
+    .replace(/'s\b/g, "")
+    .replace(/'/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -1961,6 +1970,10 @@ export async function getStockPrice(message: string): Promise<AssistantResponse 
       6000,
       "Stock search"
     );
+    // Yahoo answers rate limits and outages with a plain-text body ("Too Many
+    // Requests"). Parsing that as JSON threw, which the catch below turned into
+    // a silent null and a confusing "I can't verify that" refusal.
+    if (!s?.ok) return null;
     const sd = await s.json();
     const q = (sd?.quotes || []).find((x: any) => x?.symbol && (x.quoteType === "EQUITY" || x.quoteType === "ETF")) || (sd?.quotes || [])[0];
     if (!q?.symbol) return null;
@@ -1972,6 +1985,7 @@ export async function getStockPrice(message: string): Promise<AssistantResponse 
       6000,
       "Stock price"
     );
+    if (!r?.ok) return null;
     const d = await r.json();
     const result = d?.chart?.result?.[0];
     const meta = result?.meta;

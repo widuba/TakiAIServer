@@ -17,7 +17,7 @@ import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
 import { appleMacPriceSnapshotFromHtml, espnSportsSnapshotFromResponse, flightStatsSnapshotFromHtml, parseTrackCommand, ship24StatusFromResponse } from "../src/tracker.js";
-import { looksLikeEasyQuestion, looksLikeSubstantiveQuestion, looksLikeFlightQuestion, looksLikeStockQuestion, isIdentifySongRequest, answerRoutingFor } from "../src/tools.js";
+import { extractStockEntity, looksLikeEasyQuestion, looksLikeSubstantiveQuestion, looksLikeFlightQuestion, looksLikeStockQuestion, isIdentifySongRequest, answerRoutingFor } from "../src/tools.js";
 import { parseUserPersona, personaPromptBlock } from "../src/persona.js";
 import { normalizeChatTitle } from "../src/chatTitle.js";
 import { currencyConversionSource } from "../src/conversions.js";
@@ -1000,6 +1000,20 @@ test("live currency conversions expose the exact rate endpoint", () => {
 test("chat titles are short and stripped of model formatting", () => {
   assert.equal(normalizeChatTitle('**"Vacation Planning: Italy!"**'), "Vacation Planning Italy");
   assert.equal(normalizeChatTitle("one two three four five six seven"), "one two three four five six");
+});
+
+test("a possessive company name still resolves to a ticker", () => {
+  // Regression: only [?.!,] was stripped, so "What's Apple's stock price?" left
+  // the possessive intact and searched Yahoo for "apple's". That matched no
+  // equity, so the dedicated quote path returned null and the question fell
+  // through to a web search that answered "I can't verify that".
+  assert.equal(extractStockEntity("What's Apple's stock price?"), "apple");
+  assert.equal(extractStockEntity("What is Tesla's stock price?"), "tesla");
+  assert.equal(extractStockEntity("What’s Nvidia’s share price"), "nvidia");
+  assert.equal(extractStockEntity("How much is Microsoft's stock worth right now?"), "microsoft");
+  // Phrasings that already worked must not regress.
+  assert.equal(extractStockEntity("Apple stock price"), "apple");
+  assert.equal(extractStockEntity("AAPL price"), "aapl");
 });
 
 test("the word \"model\" only means Taki's model when it is about Taki", () => {
