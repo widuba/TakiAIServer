@@ -21,6 +21,7 @@ import {
   parseScoreAlert
 } from "../src/tools.js";
 import { parseRecurring } from "../src/recurring.js";
+import { routeEverydayAction } from "../src/everyday.js";
 import { parseExpense, parseHabit } from "../src/tracking.js";
 import { isProductKnowledgeQuestion } from "../src/productKnowledge.js";
 import { looksLikeCookingRequest } from "../src/cooking.js";
@@ -51,7 +52,7 @@ type DetectorName =
   | "location_automation" | "scheduled_message" | "recurring" | "music"
   | "home" | "scene" | "photos_search" | "weather" | "stock_question"
   | "crypto_question" | "cooking" | "identify_song" | "math" | "flight"
-  | "package" | "remember" | "habit" | "expense";
+  | "package" | "remember" | "habit" | "expense" | "everyday_reminder_edit";
 
 const DETECTORS: { name: DetectorName; claims: (message: string) => boolean }[] = [
   { name: "product_knowledge", claims: isProductKnowledgeQuestion },
@@ -75,7 +76,16 @@ const DETECTORS: { name: DetectorName; claims: (message: string) => boolean }[] 
   { name: "package", claims: (m) => !!parsePackageTracking(m) },
   { name: "remember", claims: (m) => !!parseRememberCommand(m) },
   { name: "habit", claims: (m) => !!parseHabit(m) },
-  { name: "expense", claims: (m) => !!parseExpense(m) }
+  { name: "expense", claims: (m) => !!parseExpense(m) },
+  // The everyday router edits existing reminders. Its patterns make
+  // "reminder|task" optional, so they can swallow calendar entries.
+  {
+    name: "everyday_reminder_edit",
+    claims: (m) => {
+      const routed: any = routeEverydayAction(m, { timeZone: "America/New_York", previousAnswer: "" } as any);
+      return String(routed?.action?.type || "").startsWith("reminder_");
+    }
+  }
 ];
 
 function claimsFor(message: string): DetectorName[] {
@@ -101,6 +111,7 @@ const PRECEDENCE: DetectorName[] = [
   "scene",                  // a named scene beats a single home command
   "home",
   "music",
+  "everyday_reminder_edit",
   "package", "flight", "photos_search", "cooking", "remember", "habit", "expense",
   "weather", "math", "crypto_question", "stock_question", "product_knowledge"
 ];
@@ -192,6 +203,17 @@ test("harness: bugs found in the feature sweep stay fixed", () => {
       note: "habit also matches; running it first answered 'Done.' and scheduled no 8am alert"
     },
     { message: "Remind me to stretch every hour", claims: ["recurring"] },
+
+    // Editing a calendar entry must not be claimed by the reminder editor:
+    // "reminder|task" is optional in its patterns, so it swallowed appointments
+    // and planned reminder_update, which fails on-device (no such reminder).
+    { message: "Move my dentist appointment to Friday at 3", claims: [] },
+    { message: "Reschedule my dentist appointment to Friday at 3pm", claims: [] },
+    { message: "Move my 2pm meeting to 4pm", claims: [] },
+    { message: "Rename my dentist appointment to checkup", claims: [] },
+    // ...but genuine reminder edits still belong to it.
+    { message: "Reschedule my reminder to call mom to 5pm", claims: ["everyday_reminder_edit"] },
+    { message: "Rename the reminder groceries to shopping", claims: ["everyday_reminder_edit"] },
 
     // A scheduled text must keep its body rather than collapse to a reminder.
     { message: "Remind me to text Mom happy birthday at 9am", claims: ["scheduled_message"] },

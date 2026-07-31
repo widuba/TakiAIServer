@@ -85,8 +85,18 @@ export function routeEverydayAction(message: string, context: EverydayContext): 
     return { action, spokenText: "Copying that to your clipboard.", lastIntent: "clipboard_copy" };
   }
 
+  // "reminder|task" is optional in these patterns, so they also matched calendar
+  // entries: "move my dentist appointment to Friday at 3" was claimed here and
+  // planned as reminder_update, which fails on-device with "I couldn't find a
+  // reminder matching ..." because the item is an event. Deleting the same item
+  // already routed to calendar_delete, so only editing was wrong. Stand down for
+  // an obvious calendar noun unless the user actually said "reminder"/"task",
+  // and let the planner's calendar_update handle it.
+  const saysReminder = /\b(reminder|task)\b/i.test(text);
+  const namesCalendarEntry = (value: string) => /\b(appointment|meeting|event)\b/i.test(value);
+
   const reminderReschedule = text.match(/^(?:reschedule|move|postpone|change the time of)\s+(?:the\s+|my\s+)?(?:reminder|task)?\s*(?:to\s+)?(.+?)\s+(?:to|for|until)\s+(.+?)[?.!]*$/i);
-  if (reminderReschedule) {
+  if (reminderReschedule && (saysReminder || !namesCalendarEntry(reminderReschedule[1]))) {
     const ymd = resolveRelativeYmd(reminderReschedule[2], context.timeZone) || resolveRelativeYmd(text, context.timeZone);
     const time = resolveTimeFromMessage(reminderReschedule[2]) || resolveTimeFromMessage(text);
     const dueDate = ymd ? isoFromYmdTime(ymd, time?.hour ?? 9, time?.minute ?? 0, context.timeZone) : null;
@@ -94,7 +104,7 @@ export function routeEverydayAction(message: string, context: EverydayContext): 
   }
 
   const reminderRename = text.match(/^(?:rename|retitle)\s+(?:the\s+|my\s+)?(?:reminder|task)?\s*(.+?)\s+to\s+(.+?)[?.!]*$/i);
-  if (reminderRename) {
+  if (reminderRename && (saysReminder || !namesCalendarEntry(reminderRename[1]))) {
     return reminderUpdate(reminderRename[1], { title: cleanValue(reminderRename[2]) }, "I'll rename that reminder.");
   }
 
