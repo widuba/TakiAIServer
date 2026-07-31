@@ -73,11 +73,11 @@ test("an existing ServiceError passes through unchanged", () => {
 test("Taki model selection is validated, scoped, and has a bounded fallback", async () => {
   assert.equal(normalizeTakiModel(undefined), "taki_2_1");
   assert.equal(normalizeTakiModel("made-up-model"), "taki_2_1");
-  assert.equal(takiModelInfo("taki_2_0_swift").name, "Taki 2.0 Swift");
+  assert.equal(takiModelInfo("taki_2_0_swift").name, "Dromos");
   assert.deepEqual(fallbackModelCandidates("gemini-3.6-flash"), ["gemini-3.6-flash", "gemini-3.5-flash"]);
   assert.deepEqual(fallbackModelCandidates("gemini-3.1-pro-preview"), ["gemini-3.1-pro-preview", "gemini-3.6-flash"]);
   await withTakiModel("taki_2_1_reasoning", async () => {
-    assert.equal(activeTakiModelInfo().name, "Taki 2.1 Reasoning");
+    assert.equal(activeTakiModelInfo().name, "Sophos");
   });
   await withTakiModel("taki_2_0_swift", async () => {
     assert.equal(modelForRequest({ model: "ignored", config: {} }), "gemini-3.5-flash-lite");
@@ -86,5 +86,5 @@ test("Taki model selection is validated, scoped, and has a bounded fallback", as
   await withTakiModel("taki_2_1", async () => {
     assert.equal(modelForRequest({ model: "ignored", config: { responseMimeType: "application/json" } }), PLANNER_MODEL);
   });
-  assert.equal(activeTakiModelInfo().name, "Taki 2.1");
+  assert.equal(activeTakiModelInfo().name, "Metron");
 });

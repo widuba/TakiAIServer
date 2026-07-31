@@ -401,7 +401,60 @@ async function fetchEspnSportsScore(query: string, timeZone: string): Promise<Tr
   return snapshots.find((snapshot) => snapshot !== null) || null;
 }
 
+async function fetchMlbBravesScore(query: string, timeZone: string): Promise<TrackerSnapshot | null> {
+  if (!/\b(?:atlanta\s+)?braves\b/i.test(query)) return null;
+  const today = sportsDateKey(timeZone);
+  const start = `${today.slice(0, 4)}-${today.slice(4, 6)}-${today.slice(6)}`;
+  const endDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  const endParts = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(endDate);
+  const part = (type: string) => endParts.find((item) => item.type === type)?.value || "";
+  const end = `${part("year")}-${part("month")}-${part("day")}`;
+  const sourceUrl = `https://statsapi.mlb.com/api/v1/schedule?sportId=1&teamId=144&startDate=${start}&endDate=${end}&hydrate=team,venue`;
+  try {
+    const response: any = await withTimeout(fetch(sourceUrl, { headers: PRICE_HEADERS }), 8_000, "MLB scoreboard");
+    if (!response.ok) return null;
+    const payload: any = await response.json();
+    const games = (Array.isArray(payload?.dates) ? payload.dates : [])
+      .flatMap((date: any) => Array.isArray(date?.games) ? date.games : [])
+      .filter((game: any) => {
+        const when = Date.parse(String(game?.gameDate || ""));
+        const state = String(game?.status?.abstractGameState || "").toLowerCase();
+        return state === "live" || (when > Date.now() && state !== "final") || (state === "final" && when > Date.now() - 6 * 60 * 60 * 1000);
+      })
+      .sort((a: any, b: any) => Date.parse(String(a.gameDate)) - Date.parse(String(b.gameDate)));
+    const game = games[0];
+    if (!game) return null;
+    const away = game?.teams?.away;
+    const home = game?.teams?.home;
+    if (!away?.team || !home?.team) return null;
+    const state = String(game?.status?.abstractGameState || "Preview").toLowerCase();
+    const live = state === "live";
+    const final = state === "final";
+    const awayAbbr = String(away.team.abbreviation || away.team.name || "Away").slice(0, 5);
+    const homeAbbr = String(home.team.abbreviation || home.team.name || "Home").slice(0, 5);
+    const scoreLine = live || final
+      ? `${awayAbbr} ${away.score ?? 0} – ${homeAbbr} ${home.score ?? 0}`
+      : `${awayAbbr} – ${homeAbbr}`;
+    const status = final
+      ? "Final"
+      : live
+        ? String(game?.status?.detailedState || "Live")
+        : new Date(game.gameDate).toLocaleString("en-US", { timeZone, weekday: "short", hour: "numeric", minute: "2-digit" });
+    return {
+      title: `${away.team.shortName || away.team.name} vs ${home.team.shortName || home.team.name}`.slice(0, 40),
+      symbol: "sportscourt.fill", line1: scoreLine.slice(0, 24),
+      line2: live ? "Live" : final ? "Final" : "Scheduled", trend: "flat",
+      status: status.slice(0, 30), sources: [{ title: "MLB.com schedule", url: sourceUrl }]
+    };
+  } catch (error) {
+    console.error("MLB scoreboard error:", error);
+    return null;
+  }
+}
+
 async function fetchSportsScore(query: string, timeZone: string = TIME_ZONE): Promise<TrackerSnapshot | null> {
+  const braves = await fetchMlbBravesScore(query, timeZone);
+  if (braves) return braves;
   const structured = await fetchEspnSportsScore(query, timeZone);
   if (structured) return structured;
   const nowLocal = new Date().toLocaleString("en-US", { timeZone, dateStyle: "full", timeStyle: "short" });
@@ -862,7 +915,9 @@ const snapCache = new Map<string, { at: number; snap: TrackerSnapshot }>();
 // TTLs sized so a ~15s push loop carries fresh data: finance (free APIs) every
 // poll, sports each push during a game, flight a bit slower (status rarely
 // changes minute-to-minute, and each lookup is a grounded search).
-const SNAP_TTL: Record<string, number> = { finance: 8000, product: 30 * 60 * 1000, sports: 14000, flight: 30000, package: 60000 };
+// Keep live feeds genuinely live. The server still deduplicates identical
+// content-state pushes, but each activity is re-checked at this cadence.
+const SNAP_TTL: Record<string, number> = { finance: 5000, product: 30 * 60 * 1000, sports: 8000, flight: 15000, package: 30000 };
 const snapInflight = new Map<string, Promise<TrackerSnapshot | null>>();
 
 export async function cachedTrackerSnapshot(kind: string, query: string, timeZone?: string): Promise<TrackerSnapshot | null> {

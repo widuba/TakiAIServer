@@ -314,8 +314,8 @@ test("product self-knowledge is broad without hijacking ordinary plans and price
   assert.match(prompt, /authoritative/);
   assert.match(prompt, /Premium is \$14\.99/);
   assert.match(prompt, /do not roll over/);
-  assert.match(prompt, /Taki 2\.1 Reasoning/);
-  assert.match(productAnswerFor("What Taki model am I using?") || "", /You're using Taki 2\.1/);
+  assert.match(prompt, /Sophos/);
+  assert.match(productAnswerFor("What Taki model am I using?") || "", /You're using Metron/);
 });
 
 test("inbox requests use the private Apple share workflow instead of removed connections", async () => {

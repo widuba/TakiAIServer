@@ -114,19 +114,19 @@ function takiAnswerModel(key: TakiModelKey): string {
 export const TAKI_MODELS = [
   {
     key: "taki_2_0_swift",
-    name: "Taki 2.0 Swift",
+    name: "Dromos",
     detail: "Usually fastest and lowest-credit across everyday questions; still uses research and reliable action planning when the request requires them",
     providerModel: takiAnswerModel("taki_2_0_swift")
   },
   {
     key: "taki_2_1",
-    name: "Taki 2.1",
+    name: "Metron",
     detail: "Balanced for speed, credit use, accuracy, and current information",
     providerModel: takiAnswerModel("taki_2_1")
   },
   {
     key: "taki_2_1_reasoning",
-    name: "Taki 2.1 Reasoning",
+    name: "Sophos",
     detail: "Usually the most thorough and highest-credit option; actual speed and cost also depend on research and tools used",
     providerModel: takiAnswerModel("taki_2_1_reasoning")
   }

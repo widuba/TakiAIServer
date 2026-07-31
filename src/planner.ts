@@ -1181,6 +1181,12 @@ export async function planAssistantResponse(
     return answerPlan("What would you like me to do?");
   }
 
+  // Clock features were retired. Keep this before their detectors so old or
+  // ambiguous requests cannot create notifications or Live Activities.
+  if (/\b(?:alarm|timer|stopwatch|countdown|clock)\b/i.test(state.message)) {
+    return answerPlan("Taki's alarm, timer, stopwatch, and countdown features have been removed.", { lastIntent: "answer_only" });
+  }
+
   const emergencyGuidance = emergencyGuidanceFor(state.message);
   if (emergencyGuidance) {
     return answerPlan(emergencyGuidance, { lastIntent: "answer_only" });
@@ -1957,6 +1963,9 @@ export async function planAssistantResponse(
     const wantsLeave = looksLikeLeaveTimeQuestion(state.message);
     const wantsCountdown = !wantsLeave && looksLikeCountdownRequest(state.message);
     if (wantsLeave || wantsCountdown) {
+      if (wantsCountdown) {
+        return answerPlan("Taki's countdown and clock features have been removed.", { lastIntent: "answer_only" });
+      }
       const kind = wantsLeave ? "commute" : "countdown";
       const query = eventQueryFromLiveActivityMessage(state.message);
       const action = blankAction("live_activity");

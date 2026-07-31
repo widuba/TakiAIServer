@@ -478,7 +478,7 @@ setInterval(async () => {
   }
 }, 15 * 1000);
 
-// Commute: re-check live traffic and push an updated departure time every 3 min
+// Commute: re-check live traffic and push an updated departure time every minute
 // (slower than finance — traffic drifts gradually, and this hits the Directions
 // API). Ends the activity once the event has started.
 const modeWord = (m: string) => (m === "walking" ? "walk" : m === "bicycling" ? "bike" : m === "transit" ? "transit" : "drive");
@@ -514,7 +514,7 @@ setInterval(async () => {
   } finally {
     commutePushBusy = false;
   }
-}, 3 * 60 * 1000);
+}, 60 * 1000);
 
 /* ---- Batch B proactive alerts (price / score) -------------------------- */
 

@@ -2798,6 +2798,13 @@ ${EVENT_TIME_RULES}
 }
 
 export async function findVerifiedFutureEvent(eventQuery: string, fallbackTz: string = TIME_ZONE): Promise<VerifiedEventResult> {
+  // MLB's schedule feed is the authoritative source for Braves games. Use it
+  // before general web research so “add the next Braves game” is deterministic
+  // even when a search model returns stale or incomplete results.
+  if (/\b(?:atlanta\s+)?braves\b/i.test(eventQuery)) {
+    const [next] = await findBravesFutureEvents(1, fallbackTz);
+    if (next) return next;
+  }
   // One (slow, accurate) grounded research pass, then up to two cheap extraction
   // passes over that same text. Re-researching with the accurate model would
   // risk the overall request budget, and a single grounded pass is reliable.
@@ -2810,6 +2817,45 @@ export async function findVerifiedFutureEvent(eventQuery: string, fallbackTz: st
     last = { ...result, sources: research.sources };
   }
   return last;
+}
+
+type BravesScheduleEvent = VerifiedEventResult;
+
+async function findBravesFutureEvents(count: number, timeZone: string): Promise<BravesScheduleEvent[]> {
+  const now = new Date();
+  const startDate = ymdInTimeZone(now, timeZone);
+  const endDate = addDaysToYmd(startDate, 21);
+  const url = `https://statsapi.mlb.com/api/v1/schedule?sportId=1&teamId=144&startDate=${startDate}&endDate=${endDate}&hydrate=team,venue`;
+  try {
+    const response = await withTimeout(fetch(url, { headers: { Accept: "application/json" } }), 8_000, "MLB schedule");
+    if (!response.ok) return [];
+    const payload: any = await response.json();
+    const games = (Array.isArray(payload?.dates) ? payload.dates : [])
+      .flatMap((date: any) => Array.isArray(date?.games) ? date.games : [])
+      .filter((game: any) => Date.parse(String(game?.gameDate || "")) > now.getTime())
+      .sort((a: any, b: any) => Date.parse(String(a.gameDate)) - Date.parse(String(b.gameDate)));
+    return games.slice(0, Math.max(1, Math.min(count, 6))).flatMap((game: any) => {
+      const startDate = String(game?.gameDate || "");
+      if (!Number.isFinite(Date.parse(startDate))) return [];
+      const away = String(game?.teams?.away?.team?.name || "").trim();
+      const home = String(game?.teams?.home?.team?.name || "").trim();
+      const title = `${away} vs ${home}`.trim() || "Atlanta Braves game";
+      const venue = String(game?.venue?.name || "").trim();
+      const notes = String(game?.seriesDescription || "").trim();
+      return [{
+        found: true,
+        title,
+        startDate,
+        endDate: new Date(Date.parse(startDate) + 3 * 60 * 60 * 1000).toISOString(),
+        location: venue,
+        notes,
+        sources: [{ title: "MLB.com schedule", url }]
+      } satisfies BravesScheduleEvent];
+    });
+  } catch (error) {
+    console.error("MLB Braves schedule error:", error);
+    return [];
+  }
 }
 
 // Extract up to `count` future events from one research answer (for "add the
@@ -2888,6 +2934,10 @@ ${EVENT_TIME_RULES}
 // games"). Returns [] if nothing verifiable.
 export async function findVerifiedFutureEvents(eventQuery: string, count: number, fallbackTz: string = TIME_ZONE): Promise<VerifiedEventResult[]> {
   const n = Math.max(1, Math.min(count, 6));
+  if (/\b(?:atlanta\s+)?braves\b/i.test(eventQuery)) {
+    const braves = await findBravesFutureEvents(n, fallbackTz);
+    if (braves.length) return braves;
+  }
   // One (slow) grounded research pass, then up to two cheap extraction passes
   // that REUSE that text — so a single extraction hiccup doesn't cost another
   // 14s of web research and blow the request budget.
