@@ -3026,30 +3026,30 @@ export function responseSatisfiesExplicitFormat(message: string, response: strin
 export function responseStyleForTakiModel(key: TakiModelKey): TakiResponseStyle {
   if (key === "taki_2_0_swift") {
     return {
-      textMaxOutputTokens: 320,
-      voiceMaxOutputTokens: 96,
+      textMaxOutputTokens: 560,
+      voiceMaxOutputTokens: 120,
       voiceMaxChars: 160,
       voiceMaxSentences: 1,
-      textDirective: "Give the essential answer quickly. Normally use one or two short sentences or one compact paragraph, and omit nonessential background.",
+      textDirective: "Lead with the single most useful answer and stop. Normally one or two tight sentences or one compact paragraph. Stay fast and correct: no background, hedging, or alternatives unless the user asked. Never sacrifice a materially correct detail for brevity.",
       voiceDirective: "Answer in ONE complete short sentence under 160 characters."
     };
   }
   if (key === "taki_2_1_reasoning") {
     return {
-      textMaxOutputTokens: 1800,
-      voiceMaxOutputTokens: 400,
+      textMaxOutputTokens: 3200,
+      voiceMaxOutputTokens: 420,
       voiceMaxChars: 520,
       voiceMaxSentences: 4,
-      textDirective: "For substantive questions, give a longer, more in-depth answer with reasoning, nuance, tradeoffs, and useful examples. Use several developed paragraphs when they improve the answer; do not pad trivial replies.",
+      textDirective: "Go genuinely deep on substantive questions. Reason it through: cover the key considerations, tradeoffs, edge cases, and a clear recommendation, with concrete examples or numbers where they sharpen the point. Organize a long answer into logical paragraphs (or plain numbered steps if the user wants a procedure). Match effort to the question — do not inflate a trivial reply, but never leave a hard question shallow.",
       voiceDirective: "Give a complete, in-depth spoken answer in up to FOUR clear sentences under 520 characters."
     };
   }
   return {
-    textMaxOutputTokens: 800,
-    voiceMaxOutputTokens: 180,
+    textMaxOutputTokens: 1300,
+    voiceMaxOutputTokens: 200,
     voiceMaxChars: 280,
     voiceMaxSentences: 2,
-    textDirective: "Be concise but complete. Usually use one to three sentences, adding supporting detail when it is genuinely useful.",
+    textDirective: "Be concise but genuinely complete: fully answer the question and add the supporting detail, caveat, or brief example that makes the answer actually useful. Usually one to four sentences; expand when the question rewards it and tighten when it doesn't. Prefer a clear, well-reasoned answer over a padded or a truncated one.",
     voiceDirective: "Answer in one or two complete spoken sentences under 280 characters."
   };
 }
@@ -3141,15 +3141,33 @@ ${memoryText}
   // A short question is "easy" only if it's genuinely conversational/subjective.
   // Consequential, objective decisions (purchases, products, money) escalate to
   // the informational model even when phrased briefly.
-  const isEasy = !isLive && looksLikeEasyQuestion(state.message) && !looksLikeSubstantiveQuestion(state.message);
+  const isSubstantive = looksLikeSubstantiveQuestion(state.message);
+  const isEasy = !isLive && looksLikeEasyQuestion(state.message) && !isSubstantive;
   const allowSearch = isLive;
   const primaryModel = isLive && !state.voiceMode ? RESEARCH_MODEL : isEasy ? FAST_MODEL : MAIN_MODEL;
+
+  // Smarter within-tier routing (text only — voice stays snappy for TTS): let the
+  // balanced default tier reason harder on a genuinely hard/consequential
+  // question, and let the deep tier skip expensive reasoning on a trivial one.
+  // Undefined leaves the tier's own default effort in place.
+  let effortOverride: "none" | "low" | "medium" | "high" | undefined;
+  if (!state.voiceMode) {
+    if (selectedModel.key === "taki_2_1" && isSubstantive) effortOverride = "medium";
+    else if (selectedModel.key === "taki_2_1_reasoning" && isEasy) effortOverride = "medium";
+  }
+
   const primaryConfig: any = {
     ...(allowSearch ? {
       tools: [{ googleSearch: {} }],
       forceWebSearch: true,
-      webSearchContextSize: selectedModel.key === "taki_2_1_reasoning" ? "high" : "medium"
+      // Give the balanced tier a deeper search too when the question is a
+      // substantive, consequential decision (not just the deep tier).
+      webSearchContextSize:
+        selectedModel.key === "taki_2_1_reasoning" || (selectedModel.key === "taki_2_1" && isSubstantive)
+          ? "high"
+          : "medium"
     } : {}),
+    ...(effortOverride ? { openAIReasoningEffort: effortOverride } : {}),
     thinkingConfig: isEasy || state.voiceMode ? { thinkingLevel: "MINIMAL" } : { thinkingLevel: "LOW" },
     maxOutputTokens: state.voiceMode
       ? responseStyle.voiceMaxOutputTokens

@@ -140,6 +140,16 @@ test("Taki can explicitly raise Mini reasoning without switching to a flagship m
   assert.equal(request.reasoning.effort, "medium");
 });
 
+test("the deep tier can drive Mini at high reasoning effort", () => {
+  const request = buildOpenAIRequest({
+    contents: "Think very carefully.",
+    config: { openAIReasoningEffort: "high" }
+  }, "gpt-5.4-mini");
+
+  assert.equal(request.model, "gpt-5.4-mini");
+  assert.equal(request.reasoning.effort, "high");
+});
+
 test("a bounded provider attempt aborts a stuck OpenAI request", async () => {
   const fetchImpl = async (_input: any, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
     init?.signal?.addEventListener("abort", () => {

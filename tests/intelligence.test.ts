@@ -711,8 +711,8 @@ test("Taki model tiers have materially different answer-depth budgets", () => {
   assert.ok(balanced.voiceMaxChars < reasoning.voiceMaxChars);
   assert.equal(swift.voiceMaxSentences, 1);
   assert.equal(reasoning.voiceMaxSentences, 4);
-  assert.match(swift.textDirective, /essential answer quickly/i);
-  assert.match(reasoning.textDirective, /longer, more in-depth/i);
+  assert.match(swift.textDirective, /fast|quick|tight|concise/i);
+  assert.match(reasoning.textDirective, /deep|tradeoffs?|reason/i);
 });
 
 test("easy questions route to the fast model; drafting, analysis, and long asks do not", () => {

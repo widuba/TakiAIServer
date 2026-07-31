@@ -107,13 +107,14 @@ export function openAIInputFromGeminiContents(contents: any): any {
   return [messageFromParts(contents)];
 }
 
-function reasoningEffort(model: string, config: any): "none" | "low" | "medium" {
+function reasoningEffort(model: string, config: any): "none" | "low" | "medium" | "high" {
   const requested = String(config?.openAIReasoningEffort || config?.openai_reasoning_effort || "").toLowerCase();
-  if (requested === "none" || requested === "low" || requested === "medium") return requested;
+  if (requested === "none" || requested === "low" || requested === "medium" || requested === "high") return requested;
   const thinking = config?.thinkingConfig || config?.thinking_config || {};
   const level = String(thinking?.thinkingLevel || thinking?.thinking_level || "").toUpperCase();
   if (Number(thinking?.thinkingBudget ?? thinking?.thinking_budget) === 0 || level === "MINIMAL") return "none";
   if (level === "LOW") return "low";
+  if (level === "HIGH") return "high";
   return /gpt-5\.(?:4|5|6)(?:-pro|-sol)?$/i.test(model) ? "medium" : "none";
 }
 

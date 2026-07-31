@@ -205,12 +205,23 @@ function prepareGeminiRequest(args: any, selectedModel: string): any {
 function prepareOpenAIRequest(args: any, selectedModel: string): any {
   const selected = modelSelectionStorage.getStore();
   const isPlanner = args?.config?.responseMimeType === "application/json";
-  const openAIReasoningEffort =
+  // Each tier has a default thinking budget: Sophos reasons hard, Metron stays
+  // balanced, Dromos answers instantly. Sophos is the opt-in "go deep" tier, so
+  // it now uses high effort rather than medium.
+  const tierEffort =
     selected === "taki_2_1_reasoning" && !isPlanner
-      ? "medium"
+      ? "high"
       : selected === "taki_2_1" || isPlanner
         ? "low"
         : "none";
+  // A caller (e.g. getGeneralAnswer's difficulty routing) may explicitly request
+  // a different effort for a single request — bumping the balanced tier up for a
+  // genuinely hard question, or dropping the deep tier down for a trivial one.
+  const requested = String(args?.config?.openAIReasoningEffort || "").toLowerCase();
+  const openAIReasoningEffort =
+    (requested === "none" || requested === "low" || requested === "medium" || requested === "high")
+      ? requested
+      : tierEffort;
   return {
     ...args,
     model: selectedModel,
