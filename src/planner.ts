@@ -385,7 +385,11 @@ export function directCorePhoneAction(state: ConversationState, message = state.
     return actionPlan("I'll undo the last supported item I created.", blankAction("undo_last"), { lastIntent: "undo_last" });
   }
 
-  if (/^(?:what did you just do|what have you (?:just )?done(?: on my (?:phone|iphone))?|did that (?:work|complete|succeed)|what happened with that|show(?: me)? (?:your )?(?:recent activity|recent actions|action history))$/i.test(text)) {
+  // Kept anchored so a passing mention never hijacks a sentence, but the phrase
+  // list was too literal: "what did I do recently" (the user's own framing for
+  // the same receipt) fell through to a generic "I don't have enough
+  // information" answer even though the history was right there.
+  if (/^(?:what did you just do|what have you (?:just )?done(?: on my (?:phone|iphone))?|what did (?:you|i) do (?:recently|today|earlier|last)(?:\s+\w+)?|what have (?:you|i) done (?:recently|today|so far)|did that (?:work|complete|succeed)|what happened with that|show(?: me)? (?:your |my )?(?:recent activity|recent actions|action history)|(?:my )?recent activity)$/i.test(text)) {
     return actionPlan("I'll check the actions that actually completed on your devices.", blankAction("action_history"), { lastIntent: "action_history" });
   }
 
@@ -514,13 +518,17 @@ export function directCorePhoneAction(state: ConversationState, message = state.
   }
 
   const reminderShape = /^(?:remind me(?:\s+to)?|(?:add|create|set|make)\s+(?:a\s+)?reminder(?:\s+to)?)\s+(.+)$/i.exec(text);
-  // "Remind me to text Mom happy birthday at 9am" is a draft-and-send-later, not
-  // a plain reminder. This shape detector runs long before the scheduled-message
-  // block, so without this guard it claimed every "remind me to …" first and
-  // extractReminderTitle threw away the message body — the exact mis-route that
-  // block's comment warns about, which made its own documented example
-  // unreachable. Defer to it and keep the body.
-  if (reminderShape && !parseScheduledMessage(state.message)) {
+  // This shape detector runs long before the richer reminder blocks, so without
+  // these guards it claimed every "remind me to …" first and threw the extra
+  // meaning away:
+  //   - a scheduled text ("remind me to text Mom happy birthday at 9am") lost
+  //     its message body, the exact mis-route that block's comment warns about;
+  //   - a recurring reminder ("remind me to take my medication every day at
+  //     8am") lost its recurrence into the TITLE and fired only once, which for
+  //     medication is the difference between a working reminder and a useless
+  //     one.
+  // Defer to whichever block understands more of the sentence.
+  if (reminderShape && !parseScheduledMessage(state.message) && !parseRecurring(state.message)) {
     const title = titleCaseTask(extractReminderTitle(text));
     if (title && title !== "Reminder") {
       const action = blankAction("reminder_create");
@@ -1625,7 +1633,13 @@ export async function planAssistantResponse(
     const wantsInboxRead =
       /\b(read|check|show|find|search|summari[sz]e|scan|look (?:at|through)|catch me up on)\b[^.?!]*\b(e-?mails?|mail|inbox|messages?)\b/.test(em) ||
       /\b(latest|recent|new|unread|important)\s+(e-?mails?|mail|inbox messages?)\b/.test(em);
-    if (wantsInboxRead) {
+    // "Remind me to check email" and "when I arrive at work remind me to check
+    // email" are REMINDERS that merely mention mail — asking Taki to set one is
+    // not asking it to read the inbox. Without this guard the mail explanation
+    // hijacked the sentence and no reminder was ever created.
+    const schedulesSomething =
+      /\bremind me\b|\breminders?\b|\bwhen(?:ever)? (?:i|we)\s+(?:get|arrive|reach|leave|exit)\b|\bevery\s+(?:day|morning|afternoon|evening|night|week|weekday|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b|\bdaily\b/.test(em);
+    if (wantsInboxRead && !schedulesSomething) {
       return answerPlan(
         "Apple doesn't let Taki silently read your Mail or Messages. Open the message, tap Share, and choose Taki AI; I can privately summarize it, identify urgent details and dates, or help you reply.",
         { lastIntent: "answer_only" }

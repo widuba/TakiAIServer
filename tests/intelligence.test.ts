@@ -1002,6 +1002,30 @@ test("chat titles are short and stripped of model formatting", () => {
   assert.equal(normalizeChatTitle("one two three four five six seven"), "one two three four five six");
 });
 
+test("a recurring reminder keeps its recurrence instead of becoming a one-off", () => {
+  // Regression: the generic "remind me to …" shape detector ran ~1300 lines
+  // before the recurring block and claimed the sentence first, folding "every
+  // day" into the TITLE. A daily medication reminder fired exactly once.
+  const meds = parseRecurring("Remind me to take my medication every day at 8am");
+  assert.ok(meds, "daily medication is recurring");
+  assert.equal(meds?.kind, "daily");
+  assert.equal(meds?.hour, 8);
+  assert.doesNotMatch(meds?.title || "", /every day/i, "recurrence must not leak into the title");
+
+  assert.ok(parseRecurring("Remind me to stretch every hour"));
+  // A one-off reminder must stay one-off.
+  assert.equal(parseRecurring("Remind me to call the dentist tomorrow at 9am"), null);
+});
+
+test("action history answers the user's own phrasing", () => {
+  const history = (m: string) => directCorePhoneAction(stateFor(m))?.action?.type;
+  assert.equal(history("What did I do recently?"), "action_history");
+  assert.equal(history("What did you just do"), "action_history");
+  assert.equal(history("Show me my recent activity"), "action_history");
+  // Still anchored: a passing mention is not a history request.
+  assert.notEqual(history("What did I do to deserve this"), "action_history");
+});
+
 test("a location automation parses without a comma before the action", () => {
   // Regression: the trigger-first pattern required a comma, so "When I get home
   // turn on the lights" matched nothing and fell through to the plain home/music
