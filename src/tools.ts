@@ -1185,7 +1185,12 @@ export function parseScheduledMessage(
  * "notify me", "let me know", "tell me when") is what disambiguates them.
  * ==========================================================================*/
 
-const ALERT_VERB = /\b(alert|notify|ping|text|tell|let)\s+me\b|\bkeep me (?:posted|updated|in the loop)\b|\bnotify me\b/i;
+// "alert me when …" plus the imperative "set a price alert for …". Without the
+// imperative form the gate rejected "Set a price alert for Bitcoin above 70000"
+// outright, and the request fell through to the crypto-quote detector (which
+// answered with the CURRENT price) or to the model, which invented a blocker.
+const ALERT_VERB =
+  /\b(alert|notify|ping|text|tell|let)\s+me\b|\bkeep me (?:posted|updated|in the loop)\b|\bnotify me\b|\b(?:set|create|make|add|put)\s+(?:up\s+)?(?:an?\s+)?(?:new\s+)?(?:price\s+|stock\s+|score\s+)?alerts?\b/i;
 
 // Parse a numeric amount like "70k", "3,500", "$180.50", "1.2m".
 function parseAmount(raw: string): number | null {
@@ -1208,6 +1213,11 @@ export function parsePriceAlert(
   // Needs a price-ish cue + a number.
   const mm = m.match(
     /\b(?:alert|notify|ping|text|tell|let)\s+me\s+(?:know\s+)?(?:when|if|once|as soon as)\s+(.+?)\s+(hits?|reaches?|gets? to|goes? (?:above|over|up to|below|under)|drops? (?:below|under|to)|falls? (?:below|under|to)|rises? (?:above|to)|crosses?|is (?:above|over|below|under|at)|hit|reach|above|over|below|under)\s+\$?([\d.,]+\s*[km]?)\b/i
+  )
+  // Imperative form: "set a price alert for Bitcoin above 70000", "create an
+  // alert on Tesla below 200". Same fields, different word order.
+  || m.match(
+    /\b(?:set|create|make|add|put)\s+(?:up\s+)?(?:an?\s+)?(?:new\s+)?(?:price\s+|stock\s+)?alerts?\s*(?:for|on|when)?\s+(.+?)\s+(?:when\s+it\s+)?(goes? (?:above|over|below|under)|drops? (?:below|under|to)|falls? (?:below|under|to)|rises? (?:above|to)|hits?|reaches?|crosses?|above|over|below|under|at)\s+\$?([\d.,]+\s*[km]?)\b/i
   );
   if (!mm) return null;
   let asset = mm[1].trim().replace(/^(the|a)\s+/i, "");

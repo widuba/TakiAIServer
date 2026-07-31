@@ -8,7 +8,7 @@ import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
 import { cleanAssistantText, finalizeResponse, resolveCalendarUpdateDates, sanitizeSources, validateAction } from "../src/validators.js";
 import { briefForVoice, extractCalendarTitle, progressiveVoiceBundles, resolveRelativeYmd, VOICE_MAX_CHARS } from "../src/util.js";
-import { parseScheduledMessage, eventQueryFromCalendarMessage, formatMathNumber, looksLikeAddLookupEventToCalendar, looksLikeCurrentRecommendationQuestion, looksLikeExplicitWebSearchRequest, looksLikeFreshFactQuestion, looksLikeLiveInfoQuestion, looksLikeSubjectiveRecommendationQuestion, parseMusicCommand, parsePackageTracking, responseSatisfiesExplicitFormat, responseStyleForTakiModel, youtubeVideoInputURL } from "../src/tools.js";
+import { parsePriceAlert, parseScheduledMessage, eventQueryFromCalendarMessage, formatMathNumber, looksLikeAddLookupEventToCalendar, looksLikeCurrentRecommendationQuestion, looksLikeExplicitWebSearchRequest, looksLikeFreshFactQuestion, looksLikeLiveInfoQuestion, looksLikeSubjectiveRecommendationQuestion, parseMusicCommand, parsePackageTracking, responseSatisfiesExplicitFormat, responseStyleForTakiModel, youtubeVideoInputURL } from "../src/tools.js";
 import { usageLimitsFor } from "../src/credits.js";
 import { subscriptionMergeDecision } from "../src/iap.js";
 import { billableAudioDurationMs, normalizeSpeechKeyterms, normalizeTextForSpeech, shouldAskForVoiceRepeat, speechCharacterCount, splitTextForProgressiveSpeech, stabilityForVariability, STT_MODEL, TTS_MODEL, VOICE_REPEAT_PROMPT } from "../src/voice.js";
@@ -1000,6 +1000,35 @@ test("live currency conversions expose the exact rate endpoint", () => {
 test("chat titles are short and stripped of model formatting", () => {
   assert.equal(normalizeChatTitle('**"Vacation Planning: Italy!"**'), "Vacation Planning Italy");
   assert.equal(normalizeChatTitle("one two three four five six seven"), "one two three four five six");
+});
+
+test("price alerts parse the imperative form, not just \"alert me when\"", () => {
+  // Regression: ALERT_VERB required a literal "alert me", so "Set a price alert
+  // for Bitcoin above 70000" failed the gate and fell through — the crypto
+  // detector answered with the CURRENT price, and "Set an alert for Tesla below
+  // 200" reached the model, which invented a "market/alerts connection" blocker.
+  const btc = parsePriceAlert("Set a price alert for Bitcoin above 70000");
+  assert.equal(btc?.query.toLowerCase(), "bitcoin");
+  assert.equal(btc?.target, 70000);
+  assert.equal(btc?.direction, "above");
+
+  const tsla = parsePriceAlert("Set an alert for Tesla below 200");
+  assert.equal(tsla?.query.toLowerCase(), "tesla");
+  assert.equal(tsla?.target, 200);
+  assert.equal(tsla?.direction, "below");
+
+  const aapl = parsePriceAlert("Create an alert on Apple above 350");
+  assert.equal(aapl?.query.toLowerCase(), "apple");
+  assert.equal(aapl?.direction, "above");
+
+  // The original phrasing must keep working.
+  const original = parsePriceAlert("Alert me when Bitcoin reaches 70000");
+  assert.equal(original?.target, 70000);
+  assert.equal(original?.direction, "above");
+
+  // Not alerts: a plain quote, and a retired timer request.
+  assert.equal(parsePriceAlert("What's Apple's stock price?"), null);
+  assert.equal(parsePriceAlert("Set a timer for 10 minutes"), null);
 });
 
 test("a possessive company name still resolves to a ticker", () => {
