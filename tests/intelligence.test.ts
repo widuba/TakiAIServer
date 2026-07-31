@@ -17,7 +17,7 @@ import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
 import { appleMacPriceSnapshotFromHtml, espnSportsSnapshotFromResponse, flightStatsSnapshotFromHtml, parseTrackCommand, ship24StatusFromResponse } from "../src/tracker.js";
-import { looksLikeEasyQuestion, looksLikeSubstantiveQuestion, looksLikeFlightQuestion, looksLikeStockQuestion, isIdentifySongRequest } from "../src/tools.js";
+import { looksLikeEasyQuestion, looksLikeSubstantiveQuestion, looksLikeFlightQuestion, looksLikeStockQuestion, isIdentifySongRequest, answerRoutingFor } from "../src/tools.js";
 import { parseUserPersona, personaPromptBlock } from "../src/persona.js";
 import { normalizeChatTitle } from "../src/chatTitle.js";
 import { currencyConversionSource } from "../src/conversions.js";
@@ -1000,6 +1000,35 @@ test("live currency conversions expose the exact rate endpoint", () => {
 test("chat titles are short and stripped of model formatting", () => {
   assert.equal(normalizeChatTitle('**"Vacation Planning: Italy!"**'), "Vacation Planning Italy");
   assert.equal(normalizeChatTitle("one two three four five six seven"), "one two three four five six");
+});
+
+test("search is offered on anything the live detectors miss, never absent by default", () => {
+  const policy = (m: string, voice = false) => answerRoutingFor(m, voice).policy;
+
+  // Definitely-current questions still force grounding.
+  assert.equal(policy("What is Apple's stock price?"), "forced");
+  assert.equal(policy("Search the web for the new iPhone"), "forced");
+
+  // The whole point: questions the keyword detectors do NOT classify as live can
+  // still reach the web. These previously answered from stale memory with the
+  // search tool absent, which is the main source of confidently wrong answers.
+  assert.equal(policy("Who runs the FDA?"), "offered");
+  assert.equal(policy("Is the Rivian R2 any good?"), "offered");
+  assert.equal(policy("Explain how mRNA vaccines work"), "offered");
+  // A price question the detectors DO catch stays forced.
+  assert.equal(policy("How much does a Costco membership cost?"), "forced");
+
+  // A subjective question still carries the tool, and simply never calls it —
+  // an unused tool costs nothing, so there is no reason to withhold it on text.
+  assert.equal(policy("Which is better, apples or oranges?"), "offered");
+
+  // "Easy" still picks the cheap/fast model, but no longer blocks grounding.
+  assert.equal(answerRoutingFor("Who runs the FDA?").isEasy, true);
+
+  // Voice never pays tool-selection latency unless the question is truly live.
+  assert.equal(policy("Explain how mRNA vaccines work", true), "none");
+  assert.equal(policy("Which is better, apples or oranges?", true), "none");
+  assert.equal(policy("What is Apple's stock price?", true), "forced");
 });
 
 test("conversational choices stay on the fast tier; consequential ones escalate", () => {

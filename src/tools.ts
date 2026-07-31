@@ -3054,6 +3054,42 @@ export function responseStyleForTakiModel(key: TakiModelKey): TakiResponseStyle 
   };
 }
 
+/* ---- Answer routing + search policy ------------------------------------- */
+// Search has THREE states, not two. It used to be either absent or forced, so any
+// question the keyword detectors missed got answered from stale training memory
+// with no way to check — while the prompt still told the model to "use web
+// search", a tool that was never attached. Merely OFFERING the tool costs nothing
+// unless the model runs a query (googleSearchListPriceUsd is 0 for 0 queries), so
+// the middle state buys accuracy for free on the turns that don't need it.
+//   forced  -> definitely-current question: ground before answering
+//   offered -> model decides; this is what catches every detector miss
+//   none    -> trivial/conversational, and voice: protect latency
+export type SearchPolicy = "forced" | "offered" | "none";
+
+export function answerRoutingFor(message: string, voiceMode = false): {
+  isLive: boolean; isSubstantive: boolean; isEasy: boolean; policy: SearchPolicy;
+} {
+  const isLive = looksLikeLiveInfoQuestion(message)
+    || looksLikeFreshFactQuestion(message)
+    || looksLikeCurrentRecommendationQuestion(message)
+    || looksLikeExplicitWebSearchRequest(message);
+  // A short question is "easy" only if it's genuinely conversational/subjective.
+  // Consequential, objective decisions (purchases, products, money) escalate to
+  // the informational model even when phrased briefly.
+  const isSubstantive = looksLikeSubstantiveQuestion(message);
+  const isEasy = !isLive && looksLikeEasyQuestion(message) && !isSubstantive;
+  // "Easy" decides the MODEL TIER only — it must never decide whether Taki is
+  // allowed to check reality. looksLikeEasyQuestion means "short and not a
+  // drafting task", which is true of "Who runs the FDA?" and "Is the Rivian R2
+  // any good?" — objective, changeable facts that were being answered from stale
+  // memory on the cheapest model with no tool. Every text turn now carries the
+  // tool and the model decides; a timeless question simply never calls it, which
+  // costs nothing. Voice stays tool-free unless the question is truly live, so
+  // spoken replies never pay tool-selection latency.
+  const policy: SearchPolicy = isLive ? "forced" : voiceMode ? "none" : "offered";
+  return { isLive, isSubstantive, isEasy, policy };
+}
+
 export async function getGeneralAnswer(
   state: ConversationState,
   onStableVoiceText?: (text: string) => void | Promise<void>
@@ -3083,6 +3119,19 @@ VOICE MODE — this reply is READ ALOUD:
 `
     : "";
 
+  const { isLive, isSubstantive, isEasy, policy } = answerRoutingFor(state.message, state.voiceMode);
+  const forceSearch = policy === "forced";
+  const offerSearch = policy !== "none";
+
+  // Tell the model the truth about the tool it actually has this turn. Claiming
+  // a search tool that was never attached is what made it guess at current facts
+  // instead of admitting it could not check.
+  const searchBlock = forceSearch
+    ? `WEB SEARCH: available, and this question needs it. Search before answering and rely on the results — never answer a current-facts question from memory.`
+    : offerSearch
+      ? `WEB SEARCH: available — use it whenever the answer depends on anything that can change (prices, releases, availability, standings, laws, who currently holds a role, "latest/newest/best") or whenever you are not confident your knowledge is current. Searching is cheap; a confidently wrong answer is not. For settled, timeless knowledge answer directly without searching.`
+      : `WEB SEARCH: NOT available this turn. Answer only from what you reliably know. If the answer depends on current or changeable facts, say plainly that you can't check it right now — never guess and never present a remembered fact as current.`;
+
   const prompt = `${GUARDRAILS}
 You are Taki AI, a sharp, genuinely helpful daily-life iPhone assistant talking to one person.
 ${personaPromptBlock(state.userProfile)}
@@ -3100,7 +3149,7 @@ How to answer:
 - Follow MODEL RESPONSE DEPTH above. Lead with the answer; no preamble ("Great question", "Of course", "Sure!"), no restating the question, and no redundant wrap-up summary.
 - Include background, caveats, alternatives, or lists when the selected model depth or the user's request makes them useful; never add filler.
 - Be accurate and complete enough to fully satisfy the question.
-- For anything recent, time-sensitive, or that you're unsure of, USE web search and rely on the results — never guess at current facts or make things up. If you can't find it, say so plainly.
+${searchBlock}
 - For current information, verify important factual claims against at least two independent reliable sources when possible. Prefer official or primary sources, include the relevant date, and acknowledge meaningful disagreement instead of hiding it.
 - When the user asks for an opinion, recommendation, favorite, or "good/best"
   choices, make a concrete judgment and explain it briefly. Subjectivity is not
@@ -3130,20 +3179,6 @@ ${memoryText}
       : t;
   };
 
-  // Three speed tiers. Search is offered only for a genuinely current question;
-  // attaching it to every substantive prompt made even timeless answers wait on
-  // tool selection. Every tier grounds time-sensitive facts: Swift earns its
-  // speed through a smaller response budget, not by guessing from stale memory.
-  const isLive = looksLikeLiveInfoQuestion(state.message)
-    || looksLikeFreshFactQuestion(state.message)
-    || looksLikeCurrentRecommendationQuestion(state.message)
-    || looksLikeExplicitWebSearchRequest(state.message);
-  // A short question is "easy" only if it's genuinely conversational/subjective.
-  // Consequential, objective decisions (purchases, products, money) escalate to
-  // the informational model even when phrased briefly.
-  const isSubstantive = looksLikeSubstantiveQuestion(state.message);
-  const isEasy = !isLive && looksLikeEasyQuestion(state.message) && !isSubstantive;
-  const allowSearch = isLive;
   const primaryModel = isLive && !state.voiceMode ? RESEARCH_MODEL : isEasy ? FAST_MODEL : MAIN_MODEL;
 
   // Smarter within-tier routing (text only — voice stays snappy for TTS): let the
@@ -3157,9 +3192,12 @@ ${memoryText}
   }
 
   const primaryConfig: any = {
-    ...(allowSearch ? {
+    ...(offerSearch ? {
       tools: [{ googleSearch: {} }],
-      forceWebSearch: true,
+      // Only a definitely-current question forces a query (tool_choice
+      // "required"). Otherwise the tool is merely available and the model
+      // searches when it judges the answer depends on something changeable.
+      ...(forceSearch ? { forceWebSearch: true } : {}),
       // Give the balanced tier a deeper search too when the question is a
       // substantive, consequential decision (not just the deep tier).
       webSearchContextSize:
@@ -3217,13 +3255,16 @@ ${memoryText}
     }
     let text = stripMarkdown(generatedText.trim());
     if (text) {
-      if (allowSearch && generatedSources.length === 0) {
+      // Only a FORCED (definitely-current) answer must carry sources. When search
+      // was merely offered, the model legitimately answers timeless questions
+      // from knowledge, and demanding grounding would reject a correct answer.
+      if (forceSearch && generatedSources.length === 0) {
         throw new Error("Current answer lacked linkable grounding sources");
       }
       // Small conversational models occasionally miss mechanical constraints
       // even when the content is correct. Retry only that rare, explicitly
       // count-constrained case; ordinary replies keep the single-call fast path.
-      if (!state.voiceMode && !allowSearch && !responseSatisfiesExplicitFormat(state.message, text)) {
+      if (!state.voiceMode && !forceSearch && !responseSatisfiesExplicitFormat(state.message, text)) {
         try {
           const repair: any = await withTakiModel("taki_2_1", () => withTimeout(
             generateContent({
@@ -3261,7 +3302,7 @@ ${memoryText}
           model: MAIN_MODEL,
           contents: prompt,
           config: {
-            ...(allowSearch ? {
+            ...(forceSearch ? {
               tools: [{ googleSearch: {} }],
               forceWebSearch: true,
               webSearchContextSize: "medium"
@@ -3275,10 +3316,10 @@ ${memoryText}
       );
       const fb = cap(stripMarkdown(String(r2.text || "").trim()));
       const fallbackSources = getGroundingSources(r2);
-      if (fb && (!allowSearch || fallbackSources.length > 0)) {
+      if (fb && (!forceSearch || fallbackSources.length > 0)) {
         return { text: fb, ...(fallbackSources.length ? { sources: fallbackSources } : {}) };
       }
-      if (allowSearch) return { text: "I can't verify that from linkable sources right now." };
+      if (forceSearch) return { text: "I can't verify that from linkable sources right now." };
       return { text: "I'm not sure how to answer that — can you say a bit more?" };
     } catch (fallbackError) {
       if (fallbackError instanceof ServiceError) throw fallbackError;
