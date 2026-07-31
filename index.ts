@@ -29,7 +29,7 @@ import { decideAssistantCharge, planCorrectionSynthesis, usageBlockFor, usageBlo
 import { verifyTransaction, verifyCreditTransaction, claimCreditTransaction, transferCreditTransaction, rebindCreditTransactions, linkTransactionIdentity, transferSubscriptionIdentity, claimSubscriptionPeriod, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
 import { revokeAppleAuthorizationCode, verifyAppleIdentityToken } from "./src/appleauth.js";
 import { purgeAppleAccount } from "./src/accountDeletion.js";
-import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, reviewQueue, linkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG, promptExtractionMessageForMode } from "./src/safety.js";
+import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, unban, warnUser, suspendAccount, acknowledgeNotice, safetyDetailFor, allSafetyAccounts, reviewQueue, linkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG, promptExtractionMessageForMode } from "./src/safety.js";
 import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, noteInteraction, noteChannelCost, noteSession, noteEngagementPreferences, noteBillingEvent, userForIdentity, identitiesForIp, allUsers, deleteUser, type UserRecord } from "./src/users.js";
 import { TIERS } from "./src/credits.js";
 import { billableAudioDurationMs, transcribe, synthesize, splitTextForProgressiveSpeech, listVoices, isVoiceConfigured, PIRATE_MARSHAL_VOICE_ID, speechCharacterCount, shouldAskForVoiceRepeat, VOICE_REPEAT_PROMPT } from "./src/voice.js";
@@ -1027,6 +1027,7 @@ app.get("/api/credits", async (req, res) => {
   // launch (full-screen), not just when the user asks something.
   let access: "active" | "suspended" | "banned" = "active";
   let accessMessage = "";
+  let notice: unknown = null;
   try {
     const ip = clientIp(req);
     // Only 8-digit physical-device ids participate in device association;
@@ -1036,8 +1037,20 @@ app.get("/api/credits", async (req, res) => {
     const acct = await getSafetyAccount(deviceId);
     if (acct.status === "terminated" || (await isBanned(deviceId, dev, ip)) || (await isTestRestricted(deviceId))) { access = "banned"; accessMessage = BANNED_MSG; }
     else if (acct.status === "suspended") { access = "suspended"; accessMessage = SUSPENDED_MSG; }
+    // An active account may still owe an acknowledgment: the overview shown after
+    // being reinstated, or a warning. The app must present it before continuing.
+    else if (acct.pendingNotice) { notice = acct.pendingNotice; }
   } catch (e) { console.error("credits access check:", e); }
-  res.json({ ...(await creditSummary(deviceId)), tiers: tierCatalog(), access, accessMessage });
+  res.json({ ...(await creditSummary(deviceId)), tiers: tierCatalog(), access, accessMessage, ...(notice ? { notice } : {}) });
+});
+
+// The user has seen and acknowledged their reinstatement/warning overview.
+app.post("/api/account/acknowledge-notice", async (req, res) => {
+  const b = req.body || {};
+  const identity = typeof b.identity === "string" ? b.identity.trim() : (typeof b.deviceId === "string" ? b.deviceId.trim() : "");
+  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  await acknowledgeNotice(identity);
+  res.json({ ok: true });
 });
 
 // Account-backed conversation sync for iPhone, iPad, CarPlay, web, and tvOS.
@@ -1931,6 +1944,49 @@ app.post("/api/admin/reinstate", async (req, res) => {
   if (!identity) { res.status(400).json({ error: "identity required" }); return; }
   await reinstate(identity);
   res.json({ ok: true, identity, status: "active" });
+});
+
+// Lift a permanent ban (the reverse of terminate): removes the identity + its
+// own devices/IPs from the ban list, reactivates it, and queues the overview.
+app.post("/api/admin/unban", async (req, res) => {
+  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  const lifted = await unban(identity);
+  res.json({ ok: true, identity, status: "active", lifted });
+});
+
+// Manually suspend an account (counts toward the escalation like an auto-suspend).
+app.post("/api/admin/suspend", async (req, res) => {
+  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  const acct = await suspendAccount(identity, typeof req.body?.reason === "string" ? req.body.reason : undefined);
+  res.json({ ok: true, identity, status: acct.status, suspensionCount: acct.suspensionCount });
+});
+
+// Issue a warning the user must acknowledge next launch.
+app.post("/api/admin/warn", async (req, res) => {
+  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  const acct = await warnUser(identity, typeof req.body?.message === "string" ? req.body.message : undefined);
+  res.json({ ok: true, identity, warnings: acct.warnings });
+});
+
+// Every account with any safety history — the "all accounts" management section.
+app.post("/api/admin/accounts", async (req, res) => {
+  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
+  res.json({ accounts: await allSafetyAccounts() });
+});
+
+// Full detail for one account: status, escalation, lifetime total, and the whole
+// retained flagged-message history (the only place that content is visible).
+app.post("/api/admin/account-safety", async (req, res) => {
+  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  res.json({ ok: true, account: await safetyDetailFor(identity) });
 });
 
 // Read-only preview of the exact permanent-ban cascade.
