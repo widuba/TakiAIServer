@@ -1380,6 +1380,16 @@ export function parseLocationAutomation(message: string): { trigger: "arrive" | 
     mm = message.match(new RegExp(`^(.+?)\\s+(?:when|whenever|as soon as) (?:i|we)\\s+${trig}\\s*(.*)$`, "i"));
     if (mm) { action = mm[1]; trigger = mm[2]; place = mm[3]; }
   }
+  if (!mm) {
+    // Trigger first with NO comma: "when I get home turn on the lights". People
+    // write this constantly, and without it the sentence matched nothing and fell
+    // through to the plain home/music detectors — which ran the action
+    // IMMEDIATELY instead of scheduling it. An action verb marks where the place
+    // ends, since there is no punctuation to split on.
+    const verb = "(turn|switch|play|start|stop|pause|set|lock|unlock|open|close|dim|brighten|run|text|call|send|email)";
+    mm = message.match(new RegExp(`\\bwhen(?:ever)? (?:i|we)\\s+${trig}\\s*(.*?)\\s*\\b${verb}\\b\\s*(.*)$`, "i"));
+    if (mm) { trigger = mm[1]; place = mm[2]; action = `${mm[3]} ${mm[4]}`.trim(); }
+  }
   if (!mm) return null;
   action = action.trim().replace(/[.?!]+$/, "");
   // "remind me …" belongs to the location-reminder path, not automations.

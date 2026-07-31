@@ -8,7 +8,7 @@ import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
 import { cleanAssistantText, finalizeResponse, resolveCalendarUpdateDates, sanitizeSources, validateAction } from "../src/validators.js";
 import { briefForVoice, extractCalendarTitle, progressiveVoiceBundles, resolveRelativeYmd, VOICE_MAX_CHARS } from "../src/util.js";
-import { parsePriceAlert, parseScheduledMessage, eventQueryFromCalendarMessage, formatMathNumber, looksLikeAddLookupEventToCalendar, looksLikeCurrentRecommendationQuestion, looksLikeExplicitWebSearchRequest, looksLikeFreshFactQuestion, looksLikeLiveInfoQuestion, looksLikeSubjectiveRecommendationQuestion, parseMusicCommand, parsePackageTracking, responseSatisfiesExplicitFormat, responseStyleForTakiModel, youtubeVideoInputURL } from "../src/tools.js";
+import { parseLocationAutomation, parsePriceAlert, parseScheduledMessage, eventQueryFromCalendarMessage, formatMathNumber, looksLikeAddLookupEventToCalendar, looksLikeCurrentRecommendationQuestion, looksLikeExplicitWebSearchRequest, looksLikeFreshFactQuestion, looksLikeLiveInfoQuestion, looksLikeSubjectiveRecommendationQuestion, parseMusicCommand, parsePackageTracking, responseSatisfiesExplicitFormat, responseStyleForTakiModel, youtubeVideoInputURL } from "../src/tools.js";
 import { usageLimitsFor } from "../src/credits.js";
 import { subscriptionMergeDecision } from "../src/iap.js";
 import { billableAudioDurationMs, normalizeSpeechKeyterms, normalizeTextForSpeech, shouldAskForVoiceRepeat, speechCharacterCount, splitTextForProgressiveSpeech, stabilityForVariability, STT_MODEL, TTS_MODEL, VOICE_REPEAT_PROMPT } from "../src/voice.js";
@@ -1000,6 +1000,37 @@ test("live currency conversions expose the exact rate endpoint", () => {
 test("chat titles are short and stripped of model formatting", () => {
   assert.equal(normalizeChatTitle('**"Vacation Planning: Italy!"**'), "Vacation Planning Italy");
   assert.equal(normalizeChatTitle("one two three four five six seven"), "one two three four five six");
+});
+
+test("a location automation parses without a comma before the action", () => {
+  // Regression: the trigger-first pattern required a comma, so "When I get home
+  // turn on the lights" matched nothing and fell through to the plain home/music
+  // detectors — which ran the action IMMEDIATELY instead of scheduling it. The
+  // lights came on while the user was still out.
+  const lights = parseLocationAutomation("When I get home turn on the lights");
+  assert.equal(lights?.trigger, "arrive");
+  assert.equal(lights?.place, "home");
+  assert.match(lights?.action || "", /turn on the lights/i);
+
+  // The documented capability example.
+  const music = parseLocationAutomation("When I get home play music");
+  assert.equal(music?.place, "home");
+  assert.match(music?.action || "", /play music/i);
+
+  const leaving = parseLocationAutomation("When I leave work turn off the lights");
+  assert.equal(leaving?.trigger, "leave");
+  assert.equal(leaving?.place, "work");
+
+  const gym = parseLocationAutomation("When I arrive at the gym play my workout playlist");
+  assert.equal(gym?.place, "gym");
+
+  // Both previously working orders must not regress.
+  assert.equal(parseLocationAutomation("When I get home, turn on the lights")?.place, "home");
+  assert.equal(parseLocationAutomation("Turn on the lights when I get home")?.place, "home");
+
+  // A bare command is not an automation, and "remind me" stays a location reminder.
+  assert.equal(parseLocationAutomation("Turn on the lights"), null);
+  assert.equal(parseLocationAutomation("When I get home remind me to water the plants"), null);
 });
 
 test("a named coin is never answered with an equity search", () => {
