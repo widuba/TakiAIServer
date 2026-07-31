@@ -183,10 +183,65 @@ export function parseTrackCommand(message: string): { kind: "finance" | "product
   return null;
 }
 
+// CoinGecko's free tier blocks shared cloud IPs, so it can fail from the server
+// even while working elsewhere. Yahoo quotes the same coins as a "<TICKER>-USD"
+// pair and is reachable, so it backs up every coin we know by name.
+const CRYPTO_YAHOO_SYMBOL: Record<string, string> = {
+  bitcoin: "BTC-USD", ethereum: "ETH-USD", dogecoin: "DOGE-USD", solana: "SOL-USD",
+  cardano: "ADA-USD", ripple: "XRP-USD", litecoin: "LTC-USD", binancecoin: "BNB-USD",
+  polkadot: "DOT-USD", "shiba-inu": "SHIB-USD", "matic-network": "MATIC-USD",
+  "avalanche-2": "AVAX-USD", chainlink: "LINK-USD", tron: "TRX-USD",
+  monero: "XMR-USD", stellar: "XLM-USD", "usd-coin": "USDC-USD", tether: "USDT-USD"
+};
+
+// Quote a known coin through Yahoo's currency pair when CoinGecko is unavailable.
+async function fetchCryptoViaYahoo(id: string, displayName: string): Promise<TrackerSnapshot | null> {
+  const symbol = CRYPTO_YAHOO_SYMBOL[id];
+  if (!symbol) return null;
+  try {
+    const chart = await fetchYahooJson(`/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1m&range=1d&includePrePost=true`, "Crypto price (Yahoo)");
+    const result = chart?.chart?.result?.[0];
+    const meta = result?.meta;
+    if (!meta) return null;
+    let price: number | null = typeof meta.regularMarketPrice === "number" ? meta.regularMarketPrice : null;
+    const closes = result?.indicators?.quote?.[0]?.close;
+    if (Array.isArray(closes)) {
+      for (let i = closes.length - 1; i >= 0; i--) {
+        if (typeof closes[i] === "number") { price = closes[i]; break; }
+      }
+    }
+    if (typeof price !== "number") return null;
+    const prev = meta.chartPreviousClose ?? meta.previousClose;
+    const chg = typeof prev === "number" && prev ? ((price - prev) / prev) * 100 : null;
+    const trend = chg == null ? "flat" : chg >= 0 ? "up" : "down";
+    return {
+      title: displayName,
+      symbol: trend === "down" ? "chart.line.downtrend.xyaxis" : "chart.line.uptrend.xyaxis",
+      line1: money(price),
+      line2: displayName,
+      trend,
+      status: chg == null ? "" : `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}% today`,
+      sources: [{ title: "finance.yahoo.com", url: `https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}` }]
+    };
+  } catch (error) {
+    console.error("Crypto via Yahoo error:", error);
+    return null;
+  }
+}
+
+// True when the query names a coin we know, so the caller must never answer it
+// with a stock search — "Bitcoin" there resolves to a Bitcoin ETF (~$48) instead
+// of the coin (~$62,000), which made price alerts absurd and unfireable.
+export function isKnownCryptoQuery(query: string): boolean {
+  const match = String(query || "").toLowerCase().match(CRYPTO_WORD);
+  return !!match && !!CRYPTO_IDS[match[0].toLowerCase()];
+}
+
 async function fetchCryptoQuote(query: string): Promise<TrackerSnapshot | null> {
   const match = query.toLowerCase().match(CRYPTO_WORD);
   if (!match) return null;
   const word = match[0].toLowerCase();
+  const displayName = word.length <= 4 ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1);
   try {
     let id = CRYPTO_IDS[word];
     if (!id) {
@@ -198,8 +253,8 @@ async function fetchCryptoQuote(query: string): Promise<TrackerSnapshot | null> 
       fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd&include_24hr_change=true`),
       6000, "Crypto price"
     );
-    const info = (await r.json())?.[id];
-    if (!info || typeof info.usd !== "number") return null;
+    const info = r?.ok ? (await r.json())?.[id] : null;
+    if (!info || typeof info.usd !== "number") return await fetchCryptoViaYahoo(id, displayName);
     const chg = typeof info.usd_24h_change === "number" ? info.usd_24h_change : null;
     const trend = chg == null ? "flat" : chg >= 0 ? "up" : "down";
     const name = word.charAt(0).toUpperCase() + word.slice(1);
@@ -214,7 +269,10 @@ async function fetchCryptoQuote(query: string): Promise<TrackerSnapshot | null> 
     };
   } catch (error) {
     console.error("Crypto quote error:", error);
-    return null;
+    // CoinGecko threw (rate limit, DNS, timeout). Fall back to Yahoo's pair
+    // rather than letting a coin fall through to an equity search.
+    const id = CRYPTO_IDS[word];
+    return id ? await fetchCryptoViaYahoo(id, displayName) : null;
   }
 }
 
@@ -903,8 +961,14 @@ export async function fetchTrackerSnapshot(kind: string, query: string, timeZone
   if (safeKind === "sports") return fetchSportsScore(query, timeZone);
   if (safeKind === "flight") return fetchFlightStatus(extractFlightCode(query) || query, timeZone);
   if (safeKind === "package") return fetchPackageSnapshot(query);
-  // finance: crypto first (CoinGecko), then stocks (Yahoo).
-  return (await fetchCryptoQuote(query)) || (await fetchStockQuote(query));
+  // finance: crypto first (CoinGecko, then Yahoo's pair), else stocks (Yahoo).
+  const crypto = await fetchCryptoQuote(query);
+  if (crypto) return crypto;
+  // A named coin must never be answered by an equity search: "Bitcoin" matches a
+  // Bitcoin ETF (~$48) rather than the coin (~$62,000). Reporting nothing is far
+  // better than reporting a confidently wrong price.
+  if (isKnownCryptoQuery(query)) return null;
+  return await fetchStockQuote(query);
 }
 
 // The device polls every ~10s for a smooth, live feel — but the grounded

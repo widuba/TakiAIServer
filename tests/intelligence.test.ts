@@ -16,7 +16,7 @@ import { parseRecurring } from "../src/recurring.js";
 import { safeParseJsonObject } from "../src/util.js";
 import { PROMPT_EXTRACTION_MSG, VOICE_PROMPT_EXTRACTION_MSG, promptExtractionMessageForMode } from "../src/safety.js";
 import { extractFlightCode, normalizeTrackerKind } from "../src/entityClassifier.js";
-import { appleMacPriceSnapshotFromHtml, espnSportsSnapshotFromResponse, flightStatsSnapshotFromHtml, parseTrackCommand, ship24StatusFromResponse } from "../src/tracker.js";
+import { isKnownCryptoQuery, appleMacPriceSnapshotFromHtml, espnSportsSnapshotFromResponse, flightStatsSnapshotFromHtml, parseTrackCommand, ship24StatusFromResponse } from "../src/tracker.js";
 import { extractStockEntity, looksLikeEasyQuestion, looksLikeSubstantiveQuestion, looksLikeFlightQuestion, looksLikeStockQuestion, isIdentifySongRequest, answerRoutingFor } from "../src/tools.js";
 import { parseUserPersona, personaPromptBlock } from "../src/persona.js";
 import { normalizeChatTitle } from "../src/chatTitle.js";
@@ -1000,6 +1000,18 @@ test("live currency conversions expose the exact rate endpoint", () => {
 test("chat titles are short and stripped of model formatting", () => {
   assert.equal(normalizeChatTitle('**"Vacation Planning: Italy!"**'), "Vacation Planning Italy");
   assert.equal(normalizeChatTitle("one two three four five six seven"), "one two three four five six");
+});
+
+test("a named coin is never answered with an equity search", () => {
+  // Regression: CoinGecko is blocked from the server's shared cloud IP, so the
+  // crypto lookup returned null and "Bitcoin" fell through to a Yahoo equity
+  // search — which resolves to a Bitcoin ETF (~$48) instead of the coin
+  // (~$62,000). Price alerts then read "It's $48.38 now" and could not fire.
+  assert.equal(isKnownCryptoQuery("Bitcoin"), true);
+  assert.equal(isKnownCryptoQuery("bitcoin above 70000"), true);
+  assert.equal(isKnownCryptoQuery("ETH"), true);
+  assert.equal(isKnownCryptoQuery("Apple"), false);
+  assert.equal(isKnownCryptoQuery("Tesla"), false);
 });
 
 test("price alerts parse the imperative form, not just \"alert me when\"", () => {
