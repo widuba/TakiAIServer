@@ -114,7 +114,7 @@
         : `<tr><td colspan="3" class="subtle">No flagged messages recorded.</td></tr>`;
     }
     function safetyControls(a) {
-      const s = a.safety, id = a.identity;
+      const s = a.safety, id = s?.identity || a.identity;
       const status = s ? s.status : a.status;
       const btn = (label, cls, path, extra, confirmText) =>
         `<button class="quiet ${cls||""}" onclick='safetyAction(${JSON.stringify(path)},${JSON.stringify(id)},${JSON.stringify(extra||null)},${confirmText?JSON.stringify(confirmText):"null"})'>${esc(label)}</button>`;

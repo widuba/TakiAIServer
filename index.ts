@@ -2013,7 +2013,7 @@ app.post("/api/admin/account-safety", async (req, res) => {
   if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
   const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
   if (!identity) { res.status(400).json({ error: "identity required" }); return; }
-  res.json({ ok: true, account: await safetyDetailFor(identity) });
+  res.json({ ok: true, account: await adminSafetyDetailFor(identity) });
 });
 
 // Read-only preview of the exact permanent-ban cascade.
@@ -2364,22 +2364,121 @@ async function canonicalAdminIdentities(): Promise<string[]> {
   return [...identities];
 }
 
+async function adminSafetyDetailFor(requestedIdentity: string) {
+  const identity = await canonicalAccountIdentity(requestedIdentity);
+  const appleSub = identity.startsWith("apple:") ? identity.slice("apple:".length) : "";
+  const memberIds = [...new Set([identity, ...(appleSub ? await devicesForApple(appleSub) : [])])];
+  const details = await Promise.all(memberIds.map(safetyDetailFor));
+  const selected = details.find((account) => account.status === "terminated")
+    || details.find((account) => account.status === "suspended")
+    || [...details].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))[0];
+  return { ...selected, linkedIdentities: memberIds };
+}
+
+function buildAdminListRow(identity: string, records: UserRecord[], safetyByIdentity: Map<string, Awaited<ReturnType<typeof allSafetyAccounts>>[number]>) {
+  const user = combineAdminUsers(identity, records);
+  const memberIds = [...new Set([identity, ...records.map((record) => record.identity)])];
+  const safetyAccounts = memberIds.map((id) => safetyByIdentity.get(id)).filter(Boolean);
+  const status = safetyAccounts.some((account) => account?.status === "terminated")
+    ? "terminated"
+    : safetyAccounts.some((account) => account?.status === "suspended") ? "suspended" : "active";
+  const strikes = Math.max(0, ...safetyAccounts.map((account) => Number(account?.strikes || 0)));
+  const trackedTextCostUsd = money(user.analytics.textCostUsd, 6);
+  const trackedVoiceCostUsd = money(user.analytics.voiceCostUsd, 6);
+  const trackedCostUsd = trackedTextCostUsd + trackedVoiceCostUsd;
+  const legacyUnallocatedCostUsd = money(Math.max(0, user.creditsUsed * CREDIT_USD - trackedCostUsd), 6);
+  const costUsd = money(trackedCostUsd + legacyUnallocatedCostUsd, 2);
+  let netRevenueUsd = 0;
+  for (const purchase of user.purchases) {
+    netRevenueUsd += purchase.kind === "topup" || purchase.kind === "web_subscription"
+      ? Math.max(0, purchase.amountUsd * 0.971 - 0.30)
+      : purchase.amountUsd * 0.85;
+  }
+  netRevenueUsd = money(netRevenueUsd);
+  const grossRevenueUsd = money(user.revenueUsd);
+  const profitUsd = money(netRevenueUsd - costUsd);
+  const activeDays30 = user.activeDays.filter((day) => Date.now() - Date.parse(`${day}T00:00:00Z`) < 30 * 86400_000).length;
+  const highValue = (netRevenueUsd >= 25 && profitUsd >= 8) || (user.purchases.length >= 3 && profitUsd > 10) || grossRevenueUsd >= 75;
+  const paid = user.tier !== "free" || grossRevenueUsd > 0;
+  const inactiveDays = user.lastSeenAt ? Math.floor((Date.now() - user.lastSeenAt) / 86400_000) : 9999;
+  const segment = status !== "active" ? status
+    : highValue ? "high_value"
+    : paid && inactiveDays >= 14 ? "at_risk"
+    : paid ? "growing"
+    : activeDays30 >= 5 ? "engaged"
+    : user.firstSeenAt && Date.now() - user.firstSeenAt < 7 * 86400_000 ? "new"
+    : "standard";
+  const devices = records.filter((record) => !record.identity.startsWith("apple:"));
+  const displayName = user.apple?.name || user.device?.takiName
+    || devices.map((record) => ownerNameFromDeviceName(record.device?.name || "")).find(Boolean)
+    || "Taki user";
+  return {
+    identity,
+    displayName,
+    email: user.apple?.email || "",
+    tier: user.tier || "free",
+    balance: 0,
+    status,
+    strikes,
+    firstSeenAt: user.firstSeenAt,
+    lastSeenAt: user.lastSeenAt,
+    activeDays30,
+    textQuestions: user.analytics.textQuestions,
+    voiceQuestions: user.analytics.voiceQuestions,
+    totalQuestions: user.analytics.textQuestions + user.analytics.voiceQuestions,
+    sessions: user.analytics.sessions,
+    averageSessionSeconds: user.analytics.sessions ? Math.round(user.analytics.totalSessionSeconds / user.analytics.sessions) : 0,
+    textCostUsd: trackedTextCostUsd,
+    voiceCostUsd: trackedVoiceCostUsd,
+    legacyUnallocatedCostUsd,
+    costUsd,
+    grossRevenueUsd,
+    netRevenueUsd,
+    profitUsd,
+    highValue,
+    segment,
+    deviceCount: devices.length,
+    topFeatures: Object.entries(user.analytics.featureUsage).sort((a, b) => b[1] - a[1]).slice(0, 5),
+    engagementPreferences: user.engagement
+  };
+}
+
+async function buildAdminListRows() {
+  const [users, safetyAccounts] = await Promise.all([allUsers(), allSafetyAccounts()]);
+  const groups = new Map<string, UserRecord[]>();
+  for (const user of users) {
+    const identity = user.identity.startsWith("apple:")
+      ? user.identity
+      : user.apple?.sub ? `apple:${user.apple.sub}` : user.identity;
+    groups.set(identity, [...(groups.get(identity) || []), user]);
+  }
+  const safetyByIdentity = new Map(safetyAccounts.map((account) => [account.identity, account]));
+  return [...groups.entries()]
+    .map(([identity, records]) => buildAdminListRow(identity, records, safetyByIdentity))
+    .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+}
+
 // Account-level feed: linked devices roll into one customer, while detail pages
 // retain device, feature, cost, purchase, engagement, and safety information.
 app.post("/api/admin/users", async (req, res) => {
-  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
-  const accounts = await Promise.all((await canonicalAdminIdentities()).map(buildAdminAccount));
-  const rows = accounts.map((account) => account.row).sort((a, b) => b.lastSeenAt - a.lastSeenAt);
-  const totals = rows.reduce((total, row) => ({
-    users: total.users + 1,
-    highValue: total.highValue + (row.highValue ? 1 : 0),
-    questions: total.questions + row.totalQuestions,
-    gross: total.gross + row.grossRevenueUsd,
-    net: total.net + row.netRevenueUsd,
-    cost: total.cost + row.costUsd,
-    profit: total.profit + row.profitUsd
-  }), { users: 0, highValue: 0, questions: 0, gross: 0, net: 0, cost: 0, profit: 0 });
-  res.json({ users: rows, totals: Object.fromEntries(Object.entries(totals).map(([key, value]) => [key, typeof value === "number" ? money(value) : value])), emailConfigured: isEngagementEmailConfigured(), pushConfigured: isPushConfigured() });
+  if (!requireAdminSecret(req.body?.secret, res)) return;
+  try {
+    const rows = await buildAdminListRows();
+    const totals = rows.reduce((total, row) => ({
+      users: total.users + 1,
+      highValue: total.highValue + (row.highValue ? 1 : 0),
+      questions: total.questions + row.totalQuestions,
+      gross: total.gross + row.grossRevenueUsd,
+      net: total.net + row.netRevenueUsd,
+      cost: total.cost + row.costUsd,
+      profit: total.profit + row.profitUsd
+    }), { users: 0, highValue: 0, questions: 0, gross: 0, net: 0, cost: 0, profit: 0 });
+    res.set("Cache-Control", "no-store");
+    res.json({ users: rows, totals: Object.fromEntries(Object.entries(totals).map(([key, value]) => [key, typeof value === "number" ? money(value) : value])), emailConfigured: isEngagementEmailConfigured(), pushConfigured: isPushConfigured() });
+  } catch (error) {
+    console.error("Admin account list failed:", error);
+    res.status(503).json({ error: "The account list could not load. Try Refresh in a moment." });
+  }
 });
 
 // Promotional email is intentionally separate from the optional personalized
