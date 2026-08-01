@@ -2486,10 +2486,13 @@ async function buildAdminListRows() {
 
 function isAnonymousZeroUseDashboardRecord(user: UserRecord, safetyIdentities: Set<string>): boolean {
   const messages = Number(user.analytics?.textQuestions || 0) + Number(user.analytics?.voiceQuestions || 0);
-  const hasDisplayIdentity = !!String(user.apple?.name || user.apple?.email || user.device?.takiName || "").trim()
+  // This mirrors the dashboard display-name fallback exactly. Email, request
+  // heartbeats, credits, and purchases do not give the row a human-facing name;
+  // a zero-message row without one is still displayed as “Taki user”. Removing
+  // it from the registry does not delete any credit, purchase, or account data.
+  const hasDisplayIdentity = !!String(user.apple?.name || user.device?.takiName || "").trim()
     || !!ownerNameFromDeviceName(user.device?.name);
-  const hasValue = Number(user.revenueUsd || 0) > 0 || (user.purchases || []).length > 0;
-  return messages === 0 && !hasDisplayIdentity && !hasValue && !safetyIdentities.has(user.identity);
+  return messages === 0 && !hasDisplayIdentity && !safetyIdentities.has(user.identity);
 }
 
 async function pruneAnonymousZeroUseDashboardRecords(): Promise<number> {
