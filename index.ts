@@ -76,6 +76,18 @@ function isAdminAuthorized(value: unknown): boolean {
   return supplied.length === expected.length && timingSafeEqual(supplied, expected);
 }
 
+function requireAdminSecret(value: unknown, res: express.Response): boolean {
+  if (!ADMIN_SECRET) {
+    res.status(503).json({ error: "Admin access is not configured on this server." });
+    return false;
+  }
+  if (!isAdminAuthorized(value)) {
+    res.status(403).json({ error: "Incorrect admin secret." });
+    return false;
+  }
+  return true;
+}
+
 async function purgeLegacyInboxConnection(identity: string): Promise<void> {
   if (!identity) return;
   const safeIdentity = identity.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -240,8 +252,21 @@ app.get("/health", async (_req, res) => {
   });
 });
 
-app.get(["/admin", "/admin/"], (_req, res) => {
+// Keep both URLs working. The dashboard used to be documented as
+// `/admin.html`, while the server only exposed `/admin`; serving the same
+// page at all three paths avoids a confusing login loop/404 when an operator
+// follows the documented URL.
+app.get(["/admin", "/admin/", "/admin.html"], (_req, res) => {
   res.sendFile(fileURLToPath(new URL("./admin.html", import.meta.url)));
+});
+
+// Authentication is intentionally independent from loading account analytics.
+// A storage or malformed-account failure must not make a valid secret look
+// incorrect or keep the operator trapped on the login screen.
+app.post("/api/admin/auth", (req, res) => {
+  if (!requireAdminSecret(req.body?.secret, res)) return;
+  res.set("Cache-Control", "no-store");
+  res.json({ ok: true });
 });
 
 function unsubscribePage(message: string, form = ""): string {

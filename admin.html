@@ -58,6 +58,14 @@
       if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
       return data;
     }
+    function showDashboard() {
+      $("login").classList.add("hidden");
+      $("app").classList.remove("hidden");
+    }
+    function showDashboardLoadError(error) {
+      $("config").textContent = "Dashboard data unavailable";
+      $("detail").innerHTML = `<div class="empty">Your admin secret was accepted, but the dashboard data could not load.<br>${esc(error?.message || "Unknown server error")}</div>`;
+    }
     async function load() {
       const data = await post("/api/admin/users");
       users = data.users || [];
@@ -189,9 +197,9 @@
         document.body.innerHTML=`<main class="login"><div class="login-panel"><h1>Reset complete</h1><p>${num(result.deletedRecords)} records deleted. ${num(result.canceledStripeSubscriptions)} Stripe subscriptions canceled. The server is restarting.</p></div></main>`;
       }catch(error){alert(error.message)}finally{button.disabled=false}
     }
-    $("loginForm").addEventListener("submit",async(event)=>{event.preventDefault();secret=$("secret").value.trim();$("loginError").textContent="";try{await load();sessionStorage.setItem("taki-admin-secret",secret);$("login").classList.add("hidden");$("app").classList.remove("hidden")}catch(error){$("loginError").textContent=error.message;secret=""}});
+    $("loginForm").addEventListener("submit",async(event)=>{event.preventDefault();secret=$("secret").value.trim();$("loginError").textContent="";try{await post("/api/admin/auth");sessionStorage.setItem("taki-admin-secret",secret);showDashboard();load().catch(showDashboardLoadError)}catch(error){$("loginError").textContent=error.message;secret=""}});
     $("search").addEventListener("input",renderList); $("promotional").addEventListener("click",openPromotional); $("fullReset").addEventListener("click",runFullReset); $("refresh").addEventListener("click",load); $("logout").addEventListener("click",()=>{sessionStorage.removeItem("taki-admin-secret");location.reload()});
-    if(secret){load().then(()=>{$("login").classList.add("hidden");$("app").classList.remove("hidden");const hash=location.hash.slice(1);if(hash==="promotional")openPromotional();else{const account=new URLSearchParams(hash).get("account");if(account)openAccount(account)}}).catch(()=>sessionStorage.removeItem("taki-admin-secret"))}
+    if(secret){post("/api/admin/auth").then(()=>{showDashboard();return load()}).then(()=>{const hash=location.hash.slice(1);if(hash==="promotional")openPromotional();else{const account=new URLSearchParams(hash).get("account");if(account)openAccount(account)}}).catch((error)=>{if($("app").classList.contains("hidden")){sessionStorage.removeItem("taki-admin-secret");secret=""}else{showDashboardLoadError(error)}})}
   </script>
 </body>
 </html>
