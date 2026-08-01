@@ -5,7 +5,7 @@ import { storeGet, storeSet } from "./store.js";
 import type { UserRecord } from "./users.js";
 
 export type EngagementChannel = "push" | "email";
-export type EngagementCategory = "planning" | "communication" | "health" | "nearby" | "home" | "research" | "reminders";
+export type EngagementCategory = "planning" | "communication" | "health" | "nearby" | "home" | "research" | "reminders" | "sports" | "travel" | "creativity" | "learning" | "entertainment";
 
 export interface EngagementCampaign {
   id: string;
@@ -28,7 +28,7 @@ type EngagementState = {
   performance: Partial<Record<EngagementCategory, Partial<Record<EngagementChannel, CategoryPerformance>>>>;
 };
 
-const CATEGORIES: EngagementCategory[] = ["planning", "communication", "health", "nearby", "home", "research", "reminders"];
+const CATEGORIES: EngagementCategory[] = ["planning", "communication", "health", "nearby", "home", "research", "reminders", "sports", "travel", "creativity", "learning", "entertainment"];
 const EMAIL_API_KEY = (process.env.RESEND_API_KEY || "").trim();
 const EMAIL_FROM = (process.env.ENGAGEMENT_FROM_EMAIL || "").trim();
 const SERVER_BASE_URL = (process.env.SERVER_BASE_URL || "https://takiaiserver.onrender.com").replace(/\/$/, "");
@@ -60,9 +60,9 @@ const CONTENT: Record<EngagementCategory, { title: string; body: string; emailSu
   },
   home: {
     title: "Get something done at home",
-    body: "Use Taki for a timer, reminder, routine, or a connected-home request.",
+    body: "Use Taki for a reminder, routine, or supported connected-home request.",
     emailSubject: "One less thing to manage at home",
-    emailBody: "Open Taki to set a timer or reminder, run a routine, or work with supported connected-home controls."
+    emailBody: "Open Taki to set a reminder, run a routine, or work with supported connected-home controls."
   },
   research: {
     title: "Get a sourced answer",
@@ -72,9 +72,39 @@ const CONTENT: Record<EngagementCategory, { title: string; body: string; emailSu
   },
   reminders: {
     title: "Keep the next thing from slipping",
-    body: "Ask Taki to set the reminder, alarm, or timer you have in mind.",
+    body: "Ask Taki to set the reminder you have in mind.",
     emailSubject: "Keep the next thing on track",
-    emailBody: "Open Taki to set a reminder, alarm, or timer while it is still on your mind."
+    emailBody: "Open Taki to set a reminder while it is still on your mind."
+  },
+  sports: {
+    title: "Catch up on your teams",
+    body: "Ask Taki for live scores, schedules, standings, or the next game.",
+    emailSubject: "Your sports catch-up is ready",
+    emailBody: "Open Taki for current scores, upcoming games, standings, and sourced sports answers."
+  },
+  travel: {
+    title: "Make the next trip smoother",
+    body: "Taki can compare routes, check current travel details, and help organize an itinerary.",
+    emailSubject: "Make your next trip easier",
+    emailBody: "Open Taki to compare routes, research current travel details, and turn plans into a practical itinerary."
+  },
+  creativity: {
+    title: "Turn an idea into something",
+    body: "Bring Taki a rough idea and shape it into writing, names, plans, or possibilities.",
+    emailSubject: "Give that idea a first draft",
+    emailBody: "Open Taki with the rough version of an idea and develop it into writing, names, plans, or new directions."
+  },
+  learning: {
+    title: "Understand something new",
+    body: "Ask Taki to explain a difficult topic clearly and follow your questions as you learn.",
+    emailSubject: "Learn something at your pace",
+    emailBody: "Open Taki to break down a difficult topic, ask follow-ups, and build understanding at your own pace."
+  },
+  entertainment: {
+    title: "Find something worth watching",
+    body: "Ask Taki for current movie, show, music, or activity recommendations that fit your mood.",
+    emailSubject: "Find your next favorite",
+    emailBody: "Open Taki for current movie, show, music, and activity recommendations shaped around what you enjoy."
   }
 };
 
@@ -120,6 +150,11 @@ function categoryForFeature(feature: string): EngagementCategory | null {
   if (/health|habit/.test(value)) return "health";
   if (/maps|weather|location|nearby|service_handoff/.test(value)) return "nearby";
   if (/home|timer|alarm|cooking|routine/.test(value)) return "home";
+  if (/sport|score|team|game|standings|baseball|football|basketball|hockey|soccer/.test(value)) return "sports";
+  if (/travel|flight|hotel|trip|itinerary|commute/.test(value)) return "travel";
+  if (/write|draft|brainstorm|creative|story|design/.test(value)) return "creativity";
+  if (/learn|explain|study|education|homework/.test(value)) return "learning";
+  if (/movie|show|music|recommendation|entertainment/.test(value)) return "entertainment";
   if (/search|source|photo|file|attachment|youtube|chat/.test(value)) return "research";
   if (/reminder|alert/.test(value)) return "reminders";
   return null;
@@ -306,11 +341,11 @@ export async function recordEngagementOpen(campaignId: string, identity?: string
 
 export async function recordEngagementSession(
   campaignId: string,
-  identity: string,
+  identity: string | undefined,
   durationSeconds: number
 ): Promise<boolean> {
   const campaign = await storeGet<EngagementCampaign | null>(campaignKey(campaignId), null);
-  if (!campaign || campaign.identity !== identity || campaign.status !== "sent") return false;
+  if (!campaign || (identity && campaign.identity !== identity) || campaign.status !== "sent") return false;
   const duration = Math.max(1, Math.min(6 * 3600, Math.round(Number(durationSeconds) || 0)));
   campaign.sessionSeconds = (campaign.sessionSeconds || 0) + duration;
   const state = await loadState(campaign.identity);
@@ -347,9 +382,9 @@ export async function shouldSendAutomatic(user: UserRecord, channel: EngagementC
   if (channel === "push" ? !user.engagement.pushEnabled : !user.engagement.emailEnabled) return false;
   if (!user.lastSeenAt || now - user.lastSeenAt > 45 * 86400_000) return false;
   const inactiveFor = now - user.lastSeenAt;
-  if (inactiveFor < (channel === "push" ? 36 : 72) * 3600_000) return false;
+  if (inactiveFor < (channel === "push" ? 20 : 48) * 3600_000) return false;
   const state = await loadState(user.identity);
   const latest = [...state.campaigns].reverse().find((campaign) => campaign.channel === channel && campaign.status === "sent");
-  const minimumGap = channel === "push" ? 4 * 86400_000 : 10 * 86400_000;
+  const minimumGap = channel === "push" ? 3 * 86400_000 : 7 * 86400_000;
   return !latest || now - latest.sentAt >= minimumGap;
 }

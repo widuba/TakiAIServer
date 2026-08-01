@@ -114,7 +114,7 @@
         : `<tr><td colspan="3" class="subtle">No flagged messages recorded.</td></tr>`;
     }
     function safetyControls(a) {
-      const s = a.safety, id = s?.identity || a.identity;
+      const s = a.safety, id = s?.enforcementIdentity || s?.identity || a.identity;
       const status = s ? s.status : a.status;
       const btn = (label, cls, path, extra, confirmText) =>
         `<button class="quiet ${cls||""}" onclick='safetyAction(${JSON.stringify(path)},${JSON.stringify(id)},${JSON.stringify(extra||null)},${confirmText?JSON.stringify(confirmText):"null"})'>${esc(label)}</button>`;
@@ -124,7 +124,7 @@
         warn,
         status !== "suspended" && status !== "terminated" ? suspend : "",
         status === "suspended" ? btn("Reinstate","", "/api/admin/reinstate", null, "Reinstate this account? They will see the overview before returning.") : "",
-        status !== "terminated" ? btn("Terminate + ban","reset", "/api/admin/terminate", null, "Permanently ban this identity, its devices/IPs, and linked identities? No appeal.") : "",
+        status !== "terminated" ? btn("Terminate + ban","reset", "/api/admin/terminate", null, "Permanently ban this account identity and its linked devices? Shared IP addresses are not restricted.") : "",
         status === "terminated" ? btn("Unban","", "/api/admin/unban", null, "Lift the ban and reactivate this account?") : ""
       ].filter(Boolean).join(" ");
       const grid = s
@@ -178,7 +178,7 @@
         <section class="section"><h2>Feature use</h2>${featureRows(a.featureUsage)}</section>
         <section class="section"><h2>Personalized engagement</h2><div class="consent"><span class="badge ${a.engagementPreferences.pushEnabled?"on":"off"}">Push ${a.engagementPreferences.pushEnabled?"enabled":"off"}</span><span class="badge ${a.engagementPreferences.emailEnabled?"on":"off"}">Email ${a.engagementPreferences.emailEnabled?"enabled":"off"}</span><span class="badge">Interests: ${esc((a.engagementPreferences.interests||[]).join(", ")||"none")}</span></div><div class="two"><div><div class="recommendation"><b>Next push: ${esc(push.title||"")}</b><p>${esc(push.body||"")}</p><small>${esc(push.reason||"")}</small></div><div class="actions"><button id="sendPush" ${a.engagementPreferences.pushEnabled?"":"disabled"}>Send recommended push</button></div></div><div><div class="recommendation"><b>Next email: ${esc(email.title||"")}</b><p>${esc(email.body||"")}</p><small>${esc(email.reason||"")}</small></div><div class="actions"><button id="sendEmail" ${a.engagementPreferences.emailEnabled?"":"disabled"}>Send recommended email</button></div></div></div><table class="plain-table" style="margin-top:18px"><thead><tr><th>Category</th><th>Channel</th><th>Sent</th><th>Opened</th><th>Response</th><th>Avg session</th></tr></thead><tbody>${performanceRows(e.performance)}</tbody></table><h2 style="margin-top:20px">Campaign history</h2><table class="plain-table"><thead><tr><th>Sent</th><th>Type</th><th>Status</th><th>Response</th></tr></thead><tbody>${campaigns}</tbody></table></section>
         <section class="section"><h2>Purchases</h2><table class="plain-table"><thead><tr><th>Date</th><th>Type</th><th>Tier</th><th>Gross</th></tr></thead><tbody>${purchases}</tbody></table></section>
-        <section class="section"><h2>Devices and safety</h2><div class="grid">${dataBox("First seen",date(a.firstSeenAt))}${dataBox("Last seen",date(a.lastSeenAt))}</div>${safetyControls(a)}<table class="plain-table" style="margin-top:16px"><thead><tr><th>Model</th><th>Name</th><th>ID</th><th>Last seen</th></tr></thead><tbody>${devices}</tbody></table><p class="subtle">Linked identities: ${esc((a.linkedIdentities||[]).join(", "))}<br>IP associations: ${num((a.ips||[]).length)} · Neighboring identities: ${esc((a.ipNeighbors||[]).join(", ")||"none")}</p></section>`;
+        <section class="section"><h2>Devices and safety</h2><div class="grid">${dataBox("First seen",date(a.firstSeenAt))}${dataBox("Last seen",date(a.lastSeenAt))}</div>${safetyControls(a)}<table class="plain-table" style="margin-top:16px"><thead><tr><th>Model</th><th>Name</th><th>ID</th><th>Last seen</th></tr></thead><tbody>${devices}</tbody></table><p class="subtle">Linked identities: ${esc((a.linkedIdentities||[]).join(", "))}<br>Observed IP addresses: ${num((a.ips||[]).length)} · Potentially associated accounts (shared IP only): ${esc((a.ipNeighbors||[]).join(", ")||"none")}</p><p class="subtle">Shared IP information is context only and is never used to suspend, terminate, or restrict an account.</p></section>`;
       $("sendPush")?.addEventListener("click",()=>sendCampaign(a.identity,"push")); $("sendEmail")?.addEventListener("click",()=>sendCampaign(a.identity,"email"));
     }
     async function sendCampaign(identity,channel){if(!confirm(`Send the recommended ${channel} to this account now?`))return;try{const result=await post("/api/admin/engagement-send",{identity,channel});alert(result.ok?`${channel} sent.`:(result.reason||"Send failed."));await openAccount(identity)}catch(error){alert(error.message)}}

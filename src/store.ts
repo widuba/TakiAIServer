@@ -161,6 +161,28 @@ export async function storeGet<T>(key: string, fallback: T): Promise<T> {
   }
 }
 
+// Fetch many independent blobs in one database round trip. Admin and cleanup
+// paths can involve thousands of accounts; issuing one SELECT per identity was
+// both slow and capable of exceeding the hosting request timeout.
+export async function storeGetMany<T>(keys: string[]): Promise<Map<string, T>> {
+  const unique = [...new Set(keys.filter(Boolean))];
+  const values = new Map<string, T>();
+  if (!unique.length) return values;
+  if (DATABASE_URL) {
+    const pool = await ensurePg();
+    const result = await pool.query("SELECT k, v FROM kv WHERE k = ANY($1::text[])", [unique]);
+    for (const row of result.rows) if (row?.v != null) values.set(String(row.k), row.v as T);
+    return values;
+  }
+  for (const key of unique) {
+    try {
+      const raw = fs.readFileSync(filePath(key), "utf8");
+      values.set(key, JSON.parse(raw) as T);
+    } catch { /* missing local key */ }
+  }
+  return values;
+}
+
 export async function storeSet(key: string, value: unknown): Promise<void> {
   if (writesBlockedForReset) throw new Error("Store writes are blocked during a full reset");
   let wrotePg = false;

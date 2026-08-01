@@ -1,4 +1,4 @@
-import { storeGet, storeSet } from "./store.js";
+import { storeGet, storeGetMany, storeSet, storeUpdate } from "./store.js";
 
 /* ============================================================================
  * User registry / analytics. The credits + safety stores are keyed per identity
@@ -67,13 +67,13 @@ const keyify = (s: string) => s.replace(/[^a-zA-Z0-9_:.-]/g, "_");
 const uKey = (id: string) => `user:${keyify(id)}`;
 const ipKey = (ip: string) => `userip:${keyify(ip)}`;
 
-async function loadUser(identity: string): Promise<UserRecord> {
-  const u = await storeGet<UserRecord>(uKey(identity), {
+function normalizeUser(identity: string, stored?: UserRecord): UserRecord {
+  const u = stored || {
     identity, firstSeenAt: 0, lastSeenAt: 0, requestCount: 0, creditsUsed: 0,
     tier: "free", tierHistory: [], ips: [], revenueUsd: 0, purchases: [], activeDays: [],
     analytics: { textQuestions: 0, voiceQuestions: 0, textCostUsd: 0, voiceCostUsd: 0, featureUsage: {}, recentQuestions: [], sessions: 0, totalSessionSeconds: 0, recentSessions: [], billingEvents: [] },
     engagement: { interests: [], pushEnabled: false, emailEnabled: false, updatedAt: 0 }
-  });
+  };
   u.identity = identity;
   if (!Array.isArray(u.ips)) u.ips = [];
   if (!Array.isArray(u.tierHistory)) u.tierHistory = [];
@@ -97,6 +97,10 @@ async function loadUser(identity: string): Promise<UserRecord> {
   }
   if (!Array.isArray(u.engagement.interests)) u.engagement.interests = [];
   return u;
+}
+async function loadUser(identity: string): Promise<UserRecord> {
+  const stored = await storeGet<UserRecord | null>(uKey(identity), null);
+  return normalizeUser(identity, stored || undefined);
 }
 async function saveUser(u: UserRecord): Promise<void> { await storeSet(uKey(u.identity), u); }
 const userChains = new Map<string, Promise<unknown>>();
@@ -298,9 +302,21 @@ export async function identitiesForIp(ip: string): Promise<string[]> {
 
 export async function allUsers(): Promise<UserRecord[]> {
   const idx = await storeGet<{ ids: string[] }>(USERS_INDEX, { ids: [] });
-  const out: UserRecord[] = [];
-  for (const id of idx.ids) out.push(await loadUser(id));
-  return out;
+  const stored = await storeGetMany<UserRecord>(idx.ids.map(uKey));
+  return idx.ids.map((id) => normalizeUser(id, stored.get(uKey(id))));
+}
+
+// Remove placeholder records from the dashboard registry in one atomic index
+// update. Underlying credit/safety data is intentionally preserved, and a real
+// future interaction can register the identity again.
+export async function removeUsersFromRegistry(identities: string[]): Promise<number> {
+  const remove = new Set(identities.filter(Boolean));
+  if (!remove.size) return 0;
+  return storeUpdate(USERS_INDEX, { ids: [] as string[] }, (index) => {
+    const before = Array.isArray(index.ids) ? index.ids.length : 0;
+    const ids = (Array.isArray(index.ids) ? index.ids : []).filter((id) => !remove.has(id));
+    return { value: { ids }, result: before - ids.length };
+  });
 }
 
 // Remove a user from the registry (dashboard). Leaves credits/safety untouched.

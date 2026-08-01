@@ -16,6 +16,7 @@ import {
   retireBannedIps,
   retiredBannedIps,
   getSafetyAccount,
+  noteMessageAfterSafetyThreshold,
   safetyDetailFor,
   strikeThreshold
 } from "../src/safety.js";
@@ -24,6 +25,19 @@ import { storeSet } from "../src/store.js";
 const newId = () => `sfdev${randomUUID().replaceAll("-", "").slice(0, 12)}`;
 const flag = (identity: string) =>
   recordViolation(identity, { text: "make a bomb", category: "weapons", at: Date.now() });
+
+async function finishDelayedSuspension(identity: string) {
+  await noteMessageAfterSafetyThreshold(identity);
+  await noteMessageAfterSafetyThreshold(identity);
+  const account = await getSafetyAccount(identity);
+  assert.equal(account.status, "active", "two grace messages do not bypass the eight-second minimum");
+  assert.equal(account.pendingSuspension?.additionalMessages, 2);
+  await storeSet(`safety:acct:${identity}`, {
+    ...account,
+    pendingSuspension: { ...account.pendingSuspension!, suspendAt: Date.now() - 1 }
+  });
+  return getSafetyAccount(identity);
+}
 
 test("suspension threshold escalates 3 -> 2 -> 1 and stays at 1", () => {
   assert.equal(strikeThreshold(0), 3);
@@ -36,12 +50,15 @@ test("suspension threshold escalates 3 -> 2 -> 1 and stays at 1", () => {
 test("each reinstatement lowers the bar: 3 flags, then 2, then 1", async () => {
   const id = newId();
 
-  // First cycle: takes three flagged messages to suspend.
+  // First cycle: three contextual flags start the delayed suspension window.
   await flag(id);
   assert.equal((await getSafetyAccount(id)).status, "active");
   await flag(id);
   assert.equal((await getSafetyAccount(id)).status, "active");
   let acct = await flag(id);
+  assert.equal(acct.status, "active");
+  assert.ok(acct.pendingSuspension);
+  acct = await finishDelayedSuspension(id);
   assert.equal(acct.status, "suspended");
   assert.equal(acct.suspensionCount, 1);
 
@@ -50,29 +67,36 @@ test("each reinstatement lowers the bar: 3 flags, then 2, then 1", async () => {
   await flag(id);
   assert.equal((await getSafetyAccount(id)).status, "active");
   acct = await flag(id);
+  assert.ok(acct.pendingSuspension);
+  acct = await finishDelayedSuspension(id);
   assert.equal(acct.status, "suspended");
   assert.equal(acct.suspensionCount, 2);
 
   // Third cycle and beyond: a single flagged message re-suspends.
   await reinstate(id);
   acct = await flag(id);
+  acct = await finishDelayedSuspension(id);
   assert.equal(acct.status, "suspended");
   assert.equal(acct.suspensionCount, 3);
 
   await reinstate(id);
   acct = await flag(id);
+  acct = await finishDelayedSuspension(id);
   assert.equal(acct.status, "suspended", "stays at a 1-strike threshold");
   assert.equal(acct.suspensionCount, 4);
 });
 
 test("lifetime flagged total survives every reinstatement", async () => {
   const id = newId();
-  for (let i = 0; i < 3; i++) await flag(id); // suspends (cycle 1: 3 flags)
+  for (let i = 0; i < 3; i++) await flag(id);
+  await finishDelayedSuspension(id);
   await reinstate(id);
   await flag(id);
-  await flag(id); // suspends (cycle 2: 2 flags)
+  await flag(id);
+  await finishDelayedSuspension(id);
   await reinstate(id);
-  await flag(id); // suspends (cycle 3: 1 flag)
+  await flag(id);
+  await finishDelayedSuspension(id);
   await reinstate(id);
 
   const detail = await safetyDetailFor(id);
@@ -84,13 +108,14 @@ test("lifetime flagged total survives every reinstatement", async () => {
 test("reinstatement queues an overview the user must acknowledge", async () => {
   const id = newId();
   for (let i = 0; i < 3; i++) await flag(id);
+  await finishDelayedSuspension(id);
   await reinstate(id);
 
   const acct = await getSafetyAccount(id);
   assert.ok(acct.pendingNotice, "an overview is queued");
   assert.equal(acct.pendingNotice?.kind, "reinstatement");
   assert.match(acct.pendingNotice?.reason || "", /weapons|explosives/i);
-  assert.ok((acct.pendingNotice?.messages.length || 0) > 0, "includes the flagged messages");
+  assert.deepEqual(acct.pendingNotice?.messages, [], "does not expose the exact flagged messages");
   assert.equal(acct.pendingNotice?.nextThreshold, 2, "tells them the bar is now lower");
 
   await acknowledgeNotice(id);
@@ -146,6 +171,7 @@ test("stale banned IPs are archived and cleared, idempotently", async () => {
 test("unban lifts the permanent ban and reactivates with an overview", async () => {
   const id = newId();
   for (let i = 0; i < 3; i++) await flag(id);
+  await finishDelayedSuspension(id);
   await terminateAndBan(id);
   assert.equal(await isBanned(id), true);
   assert.equal((await getSafetyAccount(id)).status, "terminated");

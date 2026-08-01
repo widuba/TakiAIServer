@@ -29,8 +29,9 @@ import { decideAssistantCharge, planCorrectionSynthesis, usageBlockFor, usageBlo
 import { verifyTransaction, verifyCreditTransaction, claimCreditTransaction, transferCreditTransaction, rebindCreditTransactions, linkTransactionIdentity, transferSubscriptionIdentity, claimSubscriptionPeriod, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
 import { revokeAppleAuthorizationCode, verifyAppleIdentityToken } from "./src/appleauth.js";
 import { purgeAppleAccount } from "./src/accountDeletion.js";
-import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, recordViolation, classifyHarm, looksLikePromptExtraction, reinstate, terminateAndBan, unban, warnUser, suspendAccount, acknowledgeNotice, safetyDetailFor, allSafetyAccounts, retireBannedIps, retiredBannedIps, reviewQueue, linkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG, promptExtractionMessageForMode } from "./src/safety.js";
-import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, noteInteraction, noteChannelCost, noteSession, noteEngagementPreferences, noteBillingEvent, userForIdentity, identitiesForIp, allUsers, deleteUser, type UserRecord } from "./src/users.js";
+import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, reinstate, terminateAndBan, unban, warnUser, suspendAccount, acknowledgeNotice, safetyDetailFor, allSafetyAccounts, retireBannedIps, retiredBannedIps, reviewQueue, linkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG } from "./src/safety.js";
+import { queueContextualSafetyReview } from "./src/safetyReview.js";
+import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, noteInteraction, noteChannelCost, noteSession, noteEngagementPreferences, noteBillingEvent, userForIdentity, identitiesForIp, allUsers, deleteUser, removeUsersFromRegistry, type UserRecord } from "./src/users.js";
 import { TIERS } from "./src/credits.js";
 import { billableAudioDurationMs, transcribe, synthesize, splitTextForProgressiveSpeech, listVoices, isVoiceConfigured, PIRATE_MARSHAL_VOICE_ID, speechCharacterCount, shouldAskForVoiceRepeat, VOICE_REPEAT_PROMPT } from "./src/voice.js";
 import { extractDurableMemories } from "./src/userMemory.js";
@@ -995,7 +996,10 @@ app.post("/api/analytics/session", async (req, res) => {
   }
   const campaign = typeof req.body?.campaign === "string" ? req.body.campaign.trim().slice(0, 80) : "";
   await noteSession(identity, durationSeconds, campaign || undefined);
-  if (campaign) await recordEngagementSession(campaign, identity, durationSeconds);
+  // The campaign UUID is an unguessable capability delivered in the push. The
+  // app may report its physical device id while the campaign belongs to its
+  // canonical Apple identity, so attribution must not reject that valid alias.
+  if (campaign) await recordEngagementSession(campaign, undefined, durationSeconds);
   res.json({ ok: true });
 });
 
@@ -1016,7 +1020,11 @@ app.post("/api/engagement/open", async (req, res) => {
   const campaign = typeof req.body?.campaign === "string" ? req.body.campaign.trim() : "";
   const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
   if (!campaign || !identity) { res.status(400).json({ error: "campaign and identity required" }); return; }
-  const recorded = await recordEngagementOpen(campaign, identity);
+  // A signed-in app can open a campaign sent to its canonical Apple identity
+  // while reporting the physical device id. The campaign UUID already binds the
+  // event to the correct account; an exact identity comparison caused every
+  // legitimate tap in that configuration to be shown as ignored.
+  const recorded = await recordEngagementOpen(campaign);
   res.status(recorded ? 200 : 404).json({ ok: recorded });
 });
 
@@ -1972,7 +1980,7 @@ app.post("/api/admin/reinstate", async (req, res) => {
 });
 
 // Lift a permanent ban (the reverse of terminate): removes the identity + its
-// own devices/IPs from the ban list, reactivates it, and queues the overview.
+// own devices from the ban list, reactivates it, and queues the overview.
 app.post("/api/admin/unban", async (req, res) => {
   if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
   const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
@@ -2041,7 +2049,7 @@ app.post("/api/admin/test-restrict-clear", async (req, res) => {
   res.json({ ok: true, identity, testOnly: true, cleared: true });
 });
 
-// Terminate + permanently ban the identity, its devices/IPs, and any other
+// Terminate + permanently ban the identity, its devices, and any other
 // identities seen on the same device(s). No appeal.
 app.post("/api/admin/terminate", async (req, res) => {
   if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
@@ -2357,13 +2365,6 @@ async function buildAdminAccount(requestedIdentity: string) {
   };
 }
 
-async function canonicalAdminIdentities(): Promise<string[]> {
-  const users = await allUsers();
-  const identities = new Set<string>();
-  for (const user of users) identities.add(await canonicalAccountIdentity(user.identity));
-  return [...identities];
-}
-
 async function adminSafetyDetailFor(requestedIdentity: string) {
   const identity = await canonicalAccountIdentity(requestedIdentity);
   const appleSub = identity.startsWith("apple:") ? identity.slice("apple:".length) : "";
@@ -2372,7 +2373,30 @@ async function adminSafetyDetailFor(requestedIdentity: string) {
   const selected = details.find((account) => account.status === "terminated")
     || details.find((account) => account.status === "suspended")
     || [...details].sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))[0];
-  return { ...selected, linkedIdentities: memberIds };
+  const status = details.some((account) => account.status === "terminated")
+    ? "terminated"
+    : details.some((account) => account.status === "suspended") ? "suspended" : "active";
+  const flaggedHistory = details
+    .flatMap((account) => account.flaggedHistory || [])
+    .sort((a, b) => a.at - b.at)
+    .slice(-500);
+  const violations = details
+    .flatMap((account) => account.violations || [])
+    .sort((a, b) => a.at - b.at)
+    .slice(-50);
+  const enforcementIdentity = status === "active" ? identity : selected.identity;
+  return {
+    ...selected,
+    status,
+    enforcementIdentity,
+    strikes: details.reduce((sum, account) => sum + Number(account.strikes || 0), 0),
+    suspensionCount: details.reduce((sum, account) => sum + Number(account.suspensionCount || 0), 0),
+    flaggedTotal: details.reduce((sum, account) => sum + Number(account.flaggedTotal || 0), 0),
+    warnings: details.reduce((sum, account) => sum + Number(account.warnings || 0), 0),
+    violations,
+    flaggedHistory,
+    linkedIdentities: memberIds
+  };
 }
 
 function buildAdminListRow(identity: string, records: UserRecord[], safetyByIdentity: Map<string, Awaited<ReturnType<typeof allSafetyAccounts>>[number]>) {
@@ -2445,17 +2469,36 @@ function buildAdminListRow(identity: string, records: UserRecord[], safetyByIden
 
 async function buildAdminListRows() {
   const [users, safetyAccounts] = await Promise.all([allUsers(), allSafetyAccounts()]);
+  const safetyByIdentity = new Map(safetyAccounts.map((account) => [account.identity, account]));
+  const safetyIdentities = new Set(safetyByIdentity.keys());
   const groups = new Map<string, UserRecord[]>();
   for (const user of users) {
+    if (isAnonymousZeroUseDashboardRecord(user, safetyIdentities)) continue;
     const identity = user.identity.startsWith("apple:")
       ? user.identity
       : user.apple?.sub ? `apple:${user.apple.sub}` : user.identity;
     groups.set(identity, [...(groups.get(identity) || []), user]);
   }
-  const safetyByIdentity = new Map(safetyAccounts.map((account) => [account.identity, account]));
   return [...groups.entries()]
     .map(([identity, records]) => buildAdminListRow(identity, records, safetyByIdentity))
     .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+}
+
+function isAnonymousZeroUseDashboardRecord(user: UserRecord, safetyIdentities: Set<string>): boolean {
+  const messages = Number(user.analytics?.textQuestions || 0) + Number(user.analytics?.voiceQuestions || 0);
+  const hasDisplayIdentity = !!String(user.apple?.name || user.apple?.email || user.device?.takiName || "").trim()
+    || !!ownerNameFromDeviceName(user.device?.name);
+  const hasValue = Number(user.revenueUsd || 0) > 0 || (user.purchases || []).length > 0;
+  return messages === 0 && !hasDisplayIdentity && !hasValue && !safetyIdentities.has(user.identity);
+}
+
+async function pruneAnonymousZeroUseDashboardRecords(): Promise<number> {
+  const [users, safetyAccounts] = await Promise.all([allUsers(), allSafetyAccounts()]);
+  const safetyIdentities = new Set(safetyAccounts.map((account) => account.identity));
+  const placeholders = users
+    .filter((user) => isAnonymousZeroUseDashboardRecord(user, safetyIdentities))
+    .map((user) => user.identity);
+  return removeUsersFromRegistry(placeholders);
 }
 
 // Account-level feed: linked devices roll into one customer, while detail pages
@@ -2544,14 +2587,27 @@ async function tickPersonalizedEngagement(): Promise<void> {
   if (engagementTickBusy || (!isPushConfigured() && !isEngagementEmailConfigured())) return;
   engagementTickBusy = true;
   try {
-    for (const identity of await canonicalAdminIdentities()) {
-      const account = await buildAdminAccount(identity);
+    const [users, safetyAccounts] = await Promise.all([allUsers(), allSafetyAccounts()]);
+    const safetyIdentities = new Set(safetyAccounts.map((account) => account.identity));
+    const groups = new Map<string, UserRecord[]>();
+    for (const record of users) {
+      if (isAnonymousZeroUseDashboardRecord(record, safetyIdentities)) continue;
+      const identity = record.identity.startsWith("apple:")
+        ? record.identity
+        : record.apple?.sub ? `apple:${record.apple.sub}` : record.identity;
+      groups.set(identity, [...(groups.get(identity) || []), record]);
+    }
+    for (const [identity, records] of groups) {
+      const user = combineAdminUsers(identity, records);
+      const deviceIds = records
+        .filter((record) => !record.identity.startsWith("apple:"))
+        .map((record) => record.identity);
       let sentPush = false;
-      if (isPushConfigured() && await shouldSendAutomatic(account.user, "push")) {
-        sentPush = (await sendPersonalizedEngagement(account.user, "push", account.deviceIds, "automatic")).ok;
+      if (isPushConfigured() && await shouldSendAutomatic(user, "push")) {
+        sentPush = (await sendPersonalizedEngagement(user, "push", deviceIds, "automatic")).ok;
       }
-      if (!sentPush && isEngagementEmailConfigured() && await shouldSendAutomatic(account.user, "email")) {
-        await sendPersonalizedEngagement(account.user, "email", account.deviceIds, "automatic");
+      if (!sentPush && isEngagementEmailConfigured() && await shouldSendAutomatic(user, "email")) {
+        await sendPersonalizedEngagement(user, "email", deviceIds, "automatic");
       }
     }
   } catch (error) {
@@ -2560,7 +2616,10 @@ async function tickPersonalizedEngagement(): Promise<void> {
     engagementTickBusy = false;
   }
 }
-setInterval(() => { void tickPersonalizedEngagement(); }, 60 * 60 * 1000);
+const firstEngagementTick = setTimeout(() => { void tickPersonalizedEngagement(); }, 90_000);
+firstEngagementTick.unref?.();
+const engagementInterval = setInterval(() => { void tickPersonalizedEngagement(); }, 60 * 60 * 1000);
+engagementInterval.unref?.();
 
 // Travel time for the commute Live Activity, by mode (driving w/ traffic,
 // walking, bicycling, transit) via Google Directions. 502 if no key/route so
@@ -2598,18 +2657,13 @@ function clientIp(req: any): string {
   return (xf.split(",")[0].trim() || req.ip || req.socket?.remoteAddress || "unknown");
 }
 
-// Safety gate: records the identity↔device↔IP association, blocks banned or
-// suspended accounts, and flags (and retains) messages that solicit clearly
-// illegal/harmful content — auto-suspending at the strike limit for human review.
-// Returns a result when the request must be stopped, else null. `block` is set
-// only for banned/suspended accounts (→ the app hard-blocks full-screen); a plain
-// message (no `block`) is a normal refusal (e.g. prompt-extraction).
+// Safety gate: records identity/device/IP context and blocks accounts whose
+// delayed suspension or admin enforcement is already active. New messages are
+// reviewed contextually in the background; the user is never shown a special
+// keyword/refusal response that reveals whether a strike was recorded.
 type GateResult = { message: string; block?: "banned" | "suspended" };
-async function safetyGate(identity: string, message: string, req: any, voiceMode = false): Promise<GateResult | null> {
-  // Prompt-extraction is refused for EVERYONE (even legacy clients with no id).
-  const isExtraction = looksLikePromptExtraction(message);
-  const extractionMessage = promptExtractionMessageForMode(voiceMode);
-  if (!identity) return isExtraction ? { message: extractionMessage } : null;
+async function safetyGate(identity: string, message: string, req: any, _voiceMode = false): Promise<GateResult | null> {
+  if (!identity) return null;
   const ip = clientIp(req);
   const dev = identity.startsWith("apple:") ? undefined : identity;
   try {
@@ -2624,17 +2678,7 @@ async function safetyGate(identity: string, message: string, req: any, voiceMode
     ]);
     if (banned || testRestricted) return { message: BANNED_MSG, block: "banned" };
     if (acct.status !== "active") return { message: SUSPENDED_MSG, block: "suspended" };
-    // Prompt/instruction extraction: never help, break character with a fixed
-    // reply, and count a strike (repeated attempts → suspension = "restriction").
-    if (isExtraction) {
-      const a = await recordViolation(identity, { text: String(message).slice(0, 2000), category: "prompt_extraction", at: Date.now(), ip, deviceId: dev });
-      return a.status !== "active" ? { message: SUSPENDED_MSG, block: "suspended" } : { message: extractionMessage };
-    }
-    const category = classifyHarm(message);
-    if (category) {
-      const a = await recordViolation(identity, { text: String(message).slice(0, 2000), category, at: Date.now(), ip, deviceId: dev });
-      if (a.status !== "active") return { message: SUSPENDED_MSG, block: "suspended" };
-    }
+    queueContextualSafetyReview(identity, message, { ip, deviceId: dev });
   } catch (e) {
     console.error("safetyGate error:", e);
   }
@@ -3240,6 +3284,9 @@ void storeDeleteCategory("connected_knowledge")
   .then(() => retireBannedIps())
   .then((retired) => { if (retired) console.log(`Retired ${retired} stale banned IP(s) from the ban list.`); })
   .catch((error) => { console.error("Could not retire stale banned IPs:", error); })
+  .then(() => pruneAnonymousZeroUseDashboardRecords())
+  .then((removed) => { if (removed) console.log(`Removed ${removed} anonymous zero-use dashboard record(s).`); })
+  .catch((error) => { console.error("Could not prune anonymous dashboard records:", error); })
   .finally(() => {
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`Taki AI server (planner-first, modular) listening on http://0.0.0.0:${PORT}`);
