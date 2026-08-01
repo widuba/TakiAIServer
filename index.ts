@@ -31,7 +31,7 @@ import { revokeAppleAuthorizationCode, verifyAppleIdentityToken } from "./src/ap
 import { purgeAppleAccount } from "./src/accountDeletion.js";
 import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, reinstate, terminateAndBan, unban, warnUser, suspendAccount, acknowledgeNotice, safetyDetailFor, allSafetyAccounts, retireBannedIps, retiredBannedIps, reviewQueue, linkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG } from "./src/safety.js";
 import { queueContextualSafetyReview } from "./src/safetyReview.js";
-import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, noteInteraction, noteChannelCost, noteSession, noteEngagementPreferences, noteBillingEvent, userForIdentity, identitiesForIp, allUsers, deleteUser, removeUsersFromRegistry, type UserRecord } from "./src/users.js";
+import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, noteInteraction, noteChannelCost, noteSession, noteEngagementPreferences, noteBillingEvent, userForIdentity, identitiesForIp, allUsers, deleteUser, type UserRecord } from "./src/users.js";
 import { TIERS } from "./src/credits.js";
 import { billableAudioDurationMs, transcribe, synthesize, splitTextForProgressiveSpeech, listVoices, isVoiceConfigured, PIRATE_MARSHAL_VOICE_ID, speechCharacterCount, shouldAskForVoiceRepeat, VOICE_REPEAT_PROMPT } from "./src/voice.js";
 import { extractDurableMemories } from "./src/userMemory.js";
@@ -2470,10 +2470,8 @@ function buildAdminListRow(identity: string, records: UserRecord[], safetyByIden
 async function buildAdminListRows() {
   const [users, safetyAccounts] = await Promise.all([allUsers(), allSafetyAccounts()]);
   const safetyByIdentity = new Map(safetyAccounts.map((account) => [account.identity, account]));
-  const safetyIdentities = new Set(safetyByIdentity.keys());
   const groups = new Map<string, UserRecord[]>();
   for (const user of users) {
-    if (isAnonymousZeroUseDashboardRecord(user, safetyIdentities)) continue;
     const identity = user.identity.startsWith("apple:")
       ? user.identity
       : user.apple?.sub ? `apple:${user.apple.sub}` : user.identity;
@@ -2482,26 +2480,6 @@ async function buildAdminListRows() {
   return [...groups.entries()]
     .map(([identity, records]) => buildAdminListRow(identity, records, safetyByIdentity))
     .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
-}
-
-function isAnonymousZeroUseDashboardRecord(user: UserRecord, safetyIdentities: Set<string>): boolean {
-  const messages = Number(user.analytics?.textQuestions || 0) + Number(user.analytics?.voiceQuestions || 0);
-  // This mirrors the dashboard display-name fallback exactly. Email, request
-  // heartbeats, credits, and purchases do not give the row a human-facing name;
-  // a zero-message row without one is still displayed as “Taki user”. Removing
-  // it from the registry does not delete any credit, purchase, or account data.
-  const hasDisplayIdentity = !!String(user.apple?.name || user.device?.takiName || "").trim()
-    || !!ownerNameFromDeviceName(user.device?.name);
-  return messages === 0 && !hasDisplayIdentity && !safetyIdentities.has(user.identity);
-}
-
-async function pruneAnonymousZeroUseDashboardRecords(): Promise<number> {
-  const [users, safetyAccounts] = await Promise.all([allUsers(), allSafetyAccounts()]);
-  const safetyIdentities = new Set(safetyAccounts.map((account) => account.identity));
-  const placeholders = users
-    .filter((user) => isAnonymousZeroUseDashboardRecord(user, safetyIdentities))
-    .map((user) => user.identity);
-  return removeUsersFromRegistry(placeholders);
 }
 
 // Account-level feed: linked devices roll into one customer, while detail pages
@@ -2590,11 +2568,9 @@ async function tickPersonalizedEngagement(): Promise<void> {
   if (engagementTickBusy || (!isPushConfigured() && !isEngagementEmailConfigured())) return;
   engagementTickBusy = true;
   try {
-    const [users, safetyAccounts] = await Promise.all([allUsers(), allSafetyAccounts()]);
-    const safetyIdentities = new Set(safetyAccounts.map((account) => account.identity));
+    const users = await allUsers();
     const groups = new Map<string, UserRecord[]>();
     for (const record of users) {
-      if (isAnonymousZeroUseDashboardRecord(record, safetyIdentities)) continue;
       const identity = record.identity.startsWith("apple:")
         ? record.identity
         : record.apple?.sub ? `apple:${record.apple.sub}` : record.identity;
@@ -3287,9 +3263,6 @@ void storeDeleteCategory("connected_knowledge")
   .then(() => retireBannedIps())
   .then((retired) => { if (retired) console.log(`Retired ${retired} stale banned IP(s) from the ban list.`); })
   .catch((error) => { console.error("Could not retire stale banned IPs:", error); })
-  .then(() => pruneAnonymousZeroUseDashboardRecords())
-  .then((removed) => { if (removed) console.log(`Removed ${removed} anonymous zero-use dashboard record(s).`); })
-  .catch((error) => { console.error("Could not prune anonymous dashboard records:", error); })
   .finally(() => {
     app.listen(PORT, "0.0.0.0", () => {
       console.log(`Taki AI server (planner-first, modular) listening on http://0.0.0.0:${PORT}`);
