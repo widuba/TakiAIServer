@@ -40,7 +40,7 @@ import { engagementSummary, isEngagementEmailConfigured, recordEngagementOpen, r
 import { backfillApplePromotionalSubscribers, enrollApplePromotionalSubscriber, promotionalSummary, sendPromotionalCampaign, unsubscribePromotionalEmail } from "./src/promotional.js";
 import { performFullReset, previewFullReset, type FullResetPreview } from "./src/fullReset.js";
 import { bypassResetGeneration, hasCurrentResetGeneration, RESET_EPOCH_HEADER } from "./src/resetGeneration.js";
-import { isKnownIdentity, markWebAuthenticated } from "./src/identity.js";
+import { isKnownIdentity, markWebAuthenticated, issueDeviceCredential, verifyDeviceCredential } from "./src/identity.js";
 import { googleWebClientId, isGoogleWebAuthConfigured, verifyGoogleIdToken } from "./src/webauth.js";
 import { isProductKnowledgeQuestion, productAnswerFor } from "./src/productKnowledge.js";
 import { readSyncedChats, syncChats } from "./src/chatSync.js";
@@ -874,7 +874,8 @@ app.post("/api/register-device", async (req, res) => {
     // the admin dashboard.
     await noteUser(deviceId, clientIp(req), String(req.headers?.["user-agent"] || ""));
     const credits = await creditSummary(deviceId);
-    res.json({ deviceId, credits });
+    const credential = await issueDeviceCredential(deviceId);
+    res.json({ deviceId, credential, credits });
   } catch (e) {
     console.error("register-device error:", e);
     res.status(502).json({ error: "could not register device" });
@@ -1086,16 +1087,18 @@ app.post("/api/account/acknowledge-notice", async (req, res) => {
   res.json({ ok: true });
 });
 
-// Account-backed conversation sync for iPhone, iPad, CarPlay, web, and tvOS.
+// Account-backed conversation sync for iPhone, iPad, CarPlay, and web.
 // Only text, source links, and chat metadata are retained; photos, files, and
 // device-only attachment previews never leave the originating device.
 app.get("/api/chats", async (req, res) => {
+  if (!(await verifyDeviceCredential(String(req.headers["x-taki-device-id"] || ""), String(req.headers["x-taki-device-credential"] || "")))) { res.status(401).json({ error: "This Taki installation needs to reconnect." }); return; }
   const identity = await requireCreditIdentity(req.query?.deviceId, res);
   if (!identity) return;
   res.json(await readSyncedChats(identity));
 });
 
 app.post("/api/chats/sync", async (req, res) => {
+  if (!(await verifyDeviceCredential(String(req.headers["x-taki-device-id"] || ""), String(req.headers["x-taki-device-credential"] || "")))) { res.status(401).json({ error: "This Taki installation needs to reconnect." }); return; }
   const identity = await requireCreditIdentity(req.body?.deviceId, res);
   if (!identity) return;
   const chats = Array.isArray(req.body?.chats) ? req.body.chats : [];
