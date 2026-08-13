@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isKnownIdentity } from "../src/identity.js";
+import { isKnownIdentity, issueDeviceCredential, verifyDeviceCredential } from "../src/identity.js";
 import { linkApple } from "../src/safety.js";
 import { storeDelete, storeSet } from "../src/store.js";
 
@@ -23,6 +23,24 @@ test("only issued devices and linked Apple accounts are accepted identities", as
       storeDelete(`devnum:used:${deviceId}`),
       storeDelete(`safety:applelink:${appleSub}`),
       storeDelete(`safety:devapple:${deviceId}`)
+    ]);
+  }
+});
+
+test("physical device access requires the issued installation credential", async () => {
+  const deviceId = `18${String(Date.now()).slice(-6)}`;
+  try {
+    await storeSet(`devnum:used:${deviceId}`, true);
+    const credential = await issueDeviceCredential(deviceId);
+    assert.equal(credential.length >= 32, true);
+    assert.equal(await verifyDeviceCredential(deviceId, credential), true);
+    assert.equal(await verifyDeviceCredential(deviceId, `${credential}x`), false);
+    assert.equal(await verifyDeviceCredential(deviceId, ""), false);
+    assert.equal(await verifyDeviceCredential("not-an-id", credential), false);
+  } finally {
+    await Promise.all([
+      storeDelete(`devnum:used:${deviceId}`),
+      storeDelete(`devicecredential:${deviceId}`)
     ]);
   }
 });

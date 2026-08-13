@@ -206,6 +206,53 @@ app.use((_req, res, next) => {
   next();
 });
 
+// A public eight-digit Account ID identifies an installation but is not an
+// authenticator. Physical-device API requests must also prove possession of
+// the per-install credential issued during registration. Registration, device
+// discovery, provider callbacks, web auth, and admin routes have their own
+// trust models and remain outside this guard.
+const DEVICE_AUTH_EXEMPT_PATHS = new Set([
+  "/api/register-device",
+  "/api/device/info",
+  "/api/web/auth/config",
+  "/api/web/auth/google",
+  "/api/web/auth/apple",
+  "/api/stripe/webhook",
+  "/api/iap/notifications"
+]);
+
+function requestPhysicalIdentities(req: express.Request): string[] {
+  const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
+  const query = req.query && typeof req.query === "object" ? req.query as Record<string, unknown> : {};
+  const values = [
+    req.headers["x-taki-device-id"], body.deviceId, body.physicalDeviceId,
+    body.identity, query.deviceId, query.identity
+  ];
+  return [...new Set(values
+    .flatMap((value) => Array.isArray(value) ? value : [value])
+    .map((value) => typeof value === "string" ? value.trim() : "")
+    .filter((value) => /^\d{8}$/.test(value)))];
+}
+
+app.use(async (req, res, next) => {
+  if (!req.path.startsWith("/api/") || DEVICE_AUTH_EXEMPT_PATHS.has(req.path) || req.path.startsWith("/api/admin/")) {
+    next();
+    return;
+  }
+  const identities = requestPhysicalIdentities(req);
+  if (identities.length === 0) {
+    next();
+    return;
+  }
+  const headerId = typeof req.headers["x-taki-device-id"] === "string" ? req.headers["x-taki-device-id"].trim() : "";
+  const credential = typeof req.headers["x-taki-device-credential"] === "string" ? req.headers["x-taki-device-credential"].trim() : "";
+  if (!/^\d{8}$/.test(headerId) || identities.some((identity) => identity !== headerId) || !(await verifyDeviceCredential(headerId, credential))) {
+    res.status(401).json({ error: "This Taki installation needs to reconnect securely." });
+    return;
+  }
+  next();
+});
+
 // --- Stripe (web credit top-ups). Gated on env; endpoints 503 when unset. ---
 const STRIPE_KEY = process.env.STRIPE_SECRET_KEY || "";
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || "";
