@@ -43,6 +43,7 @@ import {
   looksLikeCurrentRecommendationQuestion,
   looksLikePredictionQuestion,
   looksLikeLeaveTimeQuestion,
+  looksLikePersonalSupportRequest,
   looksLikeCountdownRequest,
   eventQueryFromLiveActivityMessage,
   detectTransportMode,
@@ -349,10 +350,49 @@ export function looksLikeInlineTransformationRequest(message: string): boolean {
 }
 
 export function looksLikeEmotionalSupportRequest(message: string): boolean {
+  return looksLikePersonalSupportRequest(message);
+}
+
+/**
+ * A medical question must never fall through to a device-writing parser. In
+ * particular, "what prescription medication dosage should I take" contains
+ * the habit word "medication" and used to become a `habit_action` with a false
+ * "Done." response. Keep the answer conservative and direct, with urgent
+ * escalation for symptom combinations that may need prompt evaluation.
+ */
+export function medicalGuidanceFor(message: string): string | null {
+  const m = String(message || "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!m) return null;
+  const medicalCue = /\b(?:rash|fever|temperature|pain|swelling|infection|symptom|symptoms|allergy|allergic|vomit(?:ing)?|bleeding|dizzy|dizziness|shortness of breath|breathless|medication|medicine|prescription|drug|antibiotic|dosage|dose|mg|milligram|treatment|cure|diagnos(?:e|is)|what should i take|can i take|is it safe to take)\b/.test(m);
+  if (!medicalCue) return null;
+  const urgent =
+    (/\b(?:rash|hives|swelling)\b/.test(m) && /\bfever\b/.test(m))
+    || /\b(?:trouble|difficulty|can'?t|cannot|shortness)\s+(?:breath|breathe|breathing)\b/.test(m)
+    || /\b(?:face|lip|tongue|throat)\s+swelling\b/.test(m)
+    || /\b(?:fainting|confusion|blue lips|severe bleeding|rapidly spreading)\b/.test(m);
+  const asksForAdvice = m.includes("?")
+    || /\b(?:what|which|how much|how many|should i|can i|could i|is it safe|recommend|prescribe|diagnos(?:e|is)|medical advice|help me with)\b/.test(m)
+    || /\b(?:treat|cure)\b.{0,60}\b(?:how|what|should|can|which)\b/.test(m);
+  if (!asksForAdvice && !urgent) return null;
+  if (urgent) {
+    return "A rash with a fever can need prompt medical evaluation. I can't diagnose this or prescribe a medication dose. Please contact a clinician or urgent care now; call emergency services immediately for trouble breathing, facial or throat swelling, confusion, fainting, severe bleeding, or a rapidly spreading rash.";
+  }
+  return "I can't diagnose a condition or prescribe a medication or dose. Please contact a licensed clinician or pharmacist for advice, especially before taking prescription medicine or combining treatments. If symptoms are severe, rapidly worsening, or you have trouble breathing, seek urgent medical care.";
+}
+
+/**
+ * Deterministic support copy prevents personal distress from being routed into
+ * current-information research. It is empathetic without diagnosing, and it
+ * checks immediate safety without assuming the user is suicidal.
+ */
+export function emotionalSupportGuidanceFor(message: string): string | null {
+  if (!looksLikeEmotionalSupportRequest(message)) return null;
   const m = message.toLowerCase();
-  const feeling = /\b(i(?:'m| am)\s+(?:overwhelmed|anxious|stressed|lonely|sad|scared|panicking|burned out|burnt out)|i feel\s+(?:overwhelmed|anxious|stressed|lonely|sad|scared|lost)|don'?t know where to start)\b/.test(m);
-  const support = /\b(talk to me|help me|calm|cope|what should i do|where (?:do i|should i) start|practical friend)\b/.test(m);
-  return feeling && support;
+  const immediateRisk = /\b(?:suicid|kill myself|end my life|hurt myself|self[- ]?harm|can't stay safe|cannot stay safe|want to die)\b/.test(m);
+  if (immediateRisk) {
+    return "I'm really sorry you're carrying this. If you might hurt yourself or can't stay safe, call or text 988 in the U.S. or Canada, contact your local crisis line, or call emergency services now; move away from anything you could use to hurt yourself and get a trusted person to stay with you. If you're safe right now, tell me what happened and we can take the next small step together.";
+  }
+  return "I'm sorry today feels this heavy. You don't have to solve everything at once: take one slow breath, get some water, and text or call someone you trust to say you could use company. If “I don't know what to do anymore” means you might hurt yourself or you don't feel safe, call or text 988 in the U.S. or Canada or contact local emergency services. Are you safe right now, or would you like to tell me what happened today?";
 }
 
 function directPending(
@@ -1214,6 +1254,14 @@ export async function planAssistantResponse(
     return answerPlan(emergencyGuidance, { lastIntent: "answer_only" });
   }
 
+  // Medical safety must win over habit/health/action parsers. This is placed
+  // before every device-writing route so a medication question can never be
+  // misread as a habit log or return a false completion claim.
+  const medicalGuidance = medicalGuidanceFor(state.message);
+  if (medicalGuidance) {
+    return answerPlan(medicalGuidance, { lastIntent: "answer_only" });
+  }
+
   const unsupportedFinancialAction = unsupportedFinancialActionAnswer(state.message);
   if (unsupportedFinancialAction) {
     return answerPlan(unsupportedFinancialAction, { lastIntent: "answer_only" });
@@ -1242,6 +1290,8 @@ export async function planAssistantResponse(
     || looksLikeInlineTransformationRequest(state.message)
     || looksLikeEmotionalSupportRequest(state.message)
   ) {
+    const supportGuidance = emotionalSupportGuidanceFor(state.message);
+    if (supportGuidance) return answerPlan(supportGuidance, { lastIntent: "answer_only" });
     const answer = await getGeneralAnswer(state, onStableVoiceText);
     return answerPlan(answer.text, { lastIntent: "answer_only" }, answer.sources);
   }

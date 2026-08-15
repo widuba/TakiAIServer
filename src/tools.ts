@@ -2198,7 +2198,10 @@ export function looksLikeFreshFactQuestion(message: string) {
   // “I’m overwhelmed today—help me” is personal support, not a request for a
   // current public fact. Web verification here is both slow and emotionally
   // inappropriate.
-  if (/\b(i(?:'m| am)|i feel)\s+(?:overwhelmed|anxious|stressed|lonely|sad|scared|lost|panicking|burned out|burnt out)\b/.test(m)) {
+  // Personal distress is not a current-facts question, even when it contains
+  // date words such as "today". Keep it out of grounded-search fallback copy;
+  // the planner gives it an empathetic support response instead.
+  if (looksLikePersonalSupportRequest(m)) {
     return false;
   }
 
@@ -2235,6 +2238,25 @@ export function looksLikeFreshFactQuestion(message: string) {
   if (recency && asksForInformation) return true;
   if (mutableOfficeholder || developingNews || mutableLawOrRates || mutableTravel || mutableGuidanceOrSafety || mutableAvailability) return true;
   return false;
+}
+
+/**
+ * Detect a user asking for emotional support rather than factual research.
+ * This intentionally covers natural phrasing such as "I am feeling incredibly
+ * lonely" and "I don't know what to do anymore"; the older detector only
+ * matched "I am lonely" and sent these messages through the web verifier.
+ */
+export function looksLikePersonalSupportRequest(message: string): boolean {
+  const m = String(message || "").toLowerCase().replace(/\s+/g, " ").trim();
+  if (!m) return false;
+  const distress =
+    /\b(?:i(?:'m| am)\s+(?:feeling\s+)?(?:really\s+|incredibly\s+|so\s+|very\s+)?(?:overwhelmed|anxious|stressed|lonely|sad|scared|lost|panicking|burned out|burnt out|hopeless)|i feel\s+(?:really\s+|incredibly\s+|so\s+|very\s+)?(?:overwhelmed|anxious|stressed|lonely|sad|scared|lost|panicking|burned out|burnt out|hopeless)|nothing\s+(?:is|seems)\s+going\s+right|i\s+don'?t\s+know\s+what\s+to\s+do(?:\s+anymore)?|i\s+can'?t\s+(?:cope|handle this|do this|stay safe)|i\s+(?:want|plan)\s+to\s+(?:hurt myself|die|end my life)|i\s+feel\s+alone)\b/.test(m);
+  if (!distress) return false;
+  // A direct distress statement is enough to offer support. These extra cues
+  // make the intent explicit for longer mixed messages without requiring a
+  // particular question shape.
+  return /\b(?:help me|talk to me|what should i do|what do i do|where do i start|don't know what to do|anymore|today|right now|please listen|practical friend|calm me|calm down|cope)\b/.test(m)
+    || distress;
 }
 
 // An explicit request to use the public web always wins over model-memory
