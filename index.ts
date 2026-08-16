@@ -51,6 +51,11 @@ import { TurnReplayCache } from "./src/turnReplay.js";
 // Render. (The purchase-simulating grant endpoint was removed when real
 // StoreKit IAP shipped — grants only happen via verified transactions now.)
 const ADMIN_SECRET = (process.env.ADMIN_SECRET || "").trim();
+// Browser checkout uses a short-lived signed handoff. Keep this secret
+// available before the device-auth middleware so a page that still has an
+// older cached script can present a valid handoff token alongside its legacy
+// Account ID without being mistaken for an uncredentialed physical device.
+const PURCHASE_LINK_SECRET = process.env.PURCHASE_LINK_SECRET || process.env.STRIPE_WEBHOOK_SECRET || process.env.STRIPE_SECRET_KEY || "";
 
 type PendingVoiceSynthesis = { deviceId: string; included: boolean; expiresAt: number };
 const pendingVoiceSyntheses = new Map<string, PendingVoiceSynthesis>();
@@ -226,6 +231,21 @@ app.use(async (req, res, next) => {
     return;
   }
   const identities = requestPhysicalIdentities(req);
+  const expectedHandoffPurpose = req.path === "/api/plans/checkout"
+    ? "checkout" as const
+    : req.path === "/api/credits/checkout"
+      ? undefined
+      : null;
+  const handoff = expectedHandoffPurpose !== null
+    ? verifyPurchaseLink(req.body?.handoffToken, expectedHandoffPurpose)
+    : null;
+  // A signed browser handoff is sufficient authorization for checkout. If a
+  // legacy page also sends the raw ID, it must agree with the signed identity.
+  // Invalid/missing tokens still take the normal device-credential path.
+  if (handoff && identities.every((identity) => identity === handoff.identity)) {
+    next();
+    return;
+  }
   if (identities.length === 0) {
     next();
     return;
@@ -244,7 +264,6 @@ const STRIPE_KEY = process.env.STRIPE_SECRET_KEY || "";
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET || "";
 const WEB_BASE_URL = process.env.WEB_BASE_URL || "https://takiai.app";
 const stripe = STRIPE_KEY ? new Stripe(STRIPE_KEY) : null;
-const PURCHASE_LINK_SECRET = process.env.PURCHASE_LINK_SECRET || STRIPE_WEBHOOK_SECRET || STRIPE_KEY;
 
 type PurchaseLinkPayload = { identity: string; exp: number; nonce: string; purpose: "credits" | "checkout" };
 function signPurchaseLink(payload: PurchaseLinkPayload): string {
@@ -253,7 +272,7 @@ function signPurchaseLink(payload: PurchaseLinkPayload): string {
   const signature = createHmac("sha256", PURCHASE_LINK_SECRET).update(body).digest("base64url");
   return `${body}.${signature}`;
 }
-function verifyPurchaseLink(token: unknown): PurchaseLinkPayload | null {
+function verifyPurchaseLink(token: unknown, expectedPurpose?: PurchaseLinkPayload["purpose"]): PurchaseLinkPayload | null {
   if (!PURCHASE_LINK_SECRET || typeof token !== "string") return null;
   const [body, suppliedSignature] = token.split(".");
   if (!body || !suppliedSignature) return null;
@@ -263,7 +282,7 @@ function verifyPurchaseLink(token: unknown): PurchaseLinkPayload | null {
   if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return null;
   try {
     const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as PurchaseLinkPayload;
-    if (!(payload.purpose === "credits" || payload.purpose === "checkout") || !payload.identity || payload.exp < Date.now()) return null;
+    if (!(payload.purpose === "credits" || payload.purpose === "checkout") || (expectedPurpose && payload.purpose !== expectedPurpose) || !payload.identity || payload.exp < Date.now()) return null;
     return payload;
   } catch { return null; }
 }
@@ -1332,7 +1351,7 @@ app.post("/api/credits/purchase-link", async (req, res) => {
 });
 
 app.post("/api/credits/handoff", async (req, res) => {
-  const payload = verifyPurchaseLink(req.body?.token);
+  const payload = verifyPurchaseLink(req.body?.token, "credits");
   if (!payload) { res.status(401).json({ valid: false, reason: "This purchase link expired. Open Membership in Taki and try again." }); return; }
   const account = await validateTopupAccount(payload.identity);
   if (!account.valid) { res.status(400).json(publicPurchaseAccount(account)); return; }
@@ -1459,7 +1478,7 @@ async function cancelWebSubscriptionsForDeletion(identity: string): Promise<void
 
 app.post("/api/plans/checkout", async (req, res) => {
   if (!stripe) { res.status(503).json({ error: "subscriptions are not available yet" }); return; }
-  const handoff = verifyPurchaseLink(req.body?.handoffToken);
+  const handoff = verifyPurchaseLink(req.body?.handoffToken, "checkout");
   const publicId = handoff?.identity || (typeof req.body?.identity === "string" ? normalizeTopupIdentity(req.body.identity) : "");
   const tier = String(req.body?.tier || "") as Tier;
   if (!(["plus", "plus_voice", "pro"] as string[]).includes(tier)) { res.status(400).json({ error: "choose a valid plan" }); return; }
