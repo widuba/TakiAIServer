@@ -41,6 +41,7 @@ import { backfillApplePromotionalSubscribers, enrollApplePromotionalSubscriber, 
 import { performFullReset, previewFullReset, type FullResetPreview } from "./src/fullReset.js";
 import { bypassResetGeneration, hasCurrentResetGeneration, RESET_EPOCH_HEADER } from "./src/resetGeneration.js";
 import { isKnownIdentity, markWebAuthenticated, issueDeviceCredential, verifyDeviceCredential } from "./src/identity.js";
+import { bypassDeviceAuth } from "./src/deviceAuth.js";
 import { googleWebClientId, isGoogleWebAuthConfigured, verifyGoogleIdToken } from "./src/webauth.js";
 import { isProductKnowledgeQuestion, productAnswerFor } from "./src/productKnowledge.js";
 import { readSyncedChats, syncChats } from "./src/chatSync.js";
@@ -206,21 +207,6 @@ app.use((_req, res, next) => {
   next();
 });
 
-// A public eight-digit Account ID identifies an installation but is not an
-// authenticator. Physical-device API requests must also prove possession of
-// the per-install credential issued during registration. Registration, device
-// discovery, provider callbacks, web auth, and admin routes have their own
-// trust models and remain outside this guard.
-const DEVICE_AUTH_EXEMPT_PATHS = new Set([
-  "/api/register-device",
-  "/api/device/info",
-  "/api/web/auth/config",
-  "/api/web/auth/google",
-  "/api/web/auth/apple",
-  "/api/stripe/webhook",
-  "/api/iap/notifications"
-]);
-
 function requestPhysicalIdentities(req: express.Request): string[] {
   const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
   const query = req.query && typeof req.query === "object" ? req.query as Record<string, unknown> : {};
@@ -235,7 +221,7 @@ function requestPhysicalIdentities(req: express.Request): string[] {
 }
 
 app.use(async (req, res, next) => {
-  if (!req.path.startsWith("/api/") || DEVICE_AUTH_EXEMPT_PATHS.has(req.path) || req.path.startsWith("/api/admin/")) {
+  if (!req.path.startsWith("/api/") || bypassDeviceAuth(req.path)) {
     next();
     return;
   }

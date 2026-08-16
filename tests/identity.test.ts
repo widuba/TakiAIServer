@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isKnownIdentity, issueDeviceCredential, verifyDeviceCredential } from "../src/identity.js";
+import { bypassDeviceAuth } from "../src/deviceAuth.js";
 import { linkApple } from "../src/safety.js";
 import { storeDelete, storeSet } from "../src/store.js";
 
@@ -43,4 +44,18 @@ test("physical device access requires the issued installation credential", async
       storeDelete(`devicecredential:${deviceId}`)
     ]);
   }
+});
+
+test("browser checkout and public account lookup do not require a device credential", () => {
+  for (const path of [
+    "/api/credits/purchase-link",
+    "/api/credits/handoff",
+    "/api/credits/account-check",
+    "/api/credits/checkout",
+    "/api/plans/checkout"
+  ]) {
+    assert.equal(bypassDeviceAuth(path), true, path);
+  }
+  assert.equal(bypassDeviceAuth("/api/assistant"), false);
+  assert.equal(bypassDeviceAuth("/api/admin/full-reset"), true);
 });
