@@ -2221,12 +2221,18 @@ app.post("/api/admin/full-reset", async (req, res) => {
   try {
     fullResetInProgress = true;
     await waitForOtherRequests();
+    // The preview is informational; it is not a lock on mutable account
+    // values. Devices continue to send analytics/profile heartbeats while an
+    // administrator reads the confirmation dialogs, so comparing the entire
+    // JSON snapshot here made an intentional wipe fail with a false
+    // "Production data changed" error. Once fullResetInProgress is set, the
+    // request gate above blocks new app traffic. Re-enumerate the authoritative
+    // store under that lock and delete exactly what exists at commit time.
+    // The admin secret, short-lived preview token, exact phrase, and final
+    // confirmation still protect the destructive operation.
     const current = await fullResetPreviewWithStripe();
     if (current.fingerprint !== pending.fingerprint) {
-      fullResetInProgress = false;
-      fullResetPreviews.delete(previewToken);
-      res.status(409).json({ error: "Production data changed after the preview. Review a fresh preview before resetting." });
-      return;
+      console.info("Full reset preview changed before confirmation; using the locked current snapshot.");
     }
     if (current.activeStripeSubscriptionIds.length && req.body?.cancelStripeSubscriptions !== true) {
       fullResetInProgress = false;
