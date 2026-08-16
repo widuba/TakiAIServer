@@ -246,7 +246,7 @@ const WEB_BASE_URL = process.env.WEB_BASE_URL || "https://takiai.app";
 const stripe = STRIPE_KEY ? new Stripe(STRIPE_KEY) : null;
 const PURCHASE_LINK_SECRET = process.env.PURCHASE_LINK_SECRET || STRIPE_WEBHOOK_SECRET || STRIPE_KEY;
 
-type PurchaseLinkPayload = { identity: string; exp: number; nonce: string; purpose: "credits" };
+type PurchaseLinkPayload = { identity: string; exp: number; nonce: string; purpose: "credits" | "checkout" };
 function signPurchaseLink(payload: PurchaseLinkPayload): string {
   if (!PURCHASE_LINK_SECRET) return "";
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
@@ -263,7 +263,7 @@ function verifyPurchaseLink(token: unknown): PurchaseLinkPayload | null {
   if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return null;
   try {
     const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as PurchaseLinkPayload;
-    if (payload.purpose !== "credits" || !payload.identity || payload.exp < Date.now()) return null;
+    if (!(payload.purpose === "credits" || payload.purpose === "checkout") || !payload.identity || payload.exp < Date.now()) return null;
     return payload;
   } catch { return null; }
 }
@@ -1299,7 +1299,7 @@ async function validateTopupAccount(identity: string): Promise<PurchaseAccount> 
   };
 }
 
-function publicPurchaseAccount(v: PurchaseAccount) {
+function publicPurchaseAccount(v: PurchaseAccount, checkoutToken = "") {
   return {
     valid: v.valid,
     reason: v.reason || "",
@@ -1312,7 +1312,8 @@ function publicPurchaseAccount(v: PurchaseAccount) {
     devices: v.devices,
     min: CREDIT_TOPUP_MIN,
     max: CREDIT_TOPUP_MAX,
-    centsPerCredit: topupCentsPerCredit(v.tier)
+    centsPerCredit: topupCentsPerCredit(v.tier),
+    ...(checkoutToken ? { checkoutToken } : {})
   };
 }
 
@@ -1358,7 +1359,10 @@ app.post("/api/credits/account-check", async (req, res) => {
   const identity = typeof req.body?.identity === "string" ? normalizeTopupIdentity(req.body.identity) : "";
   if (!identity) { res.status(400).json({ valid: false, reason: "Enter your Account ID." }); return; }
   const v = await validateTopupAccount(identity);
-  res.json(publicPurchaseAccount(v));
+  const checkoutToken = v.valid && PURCHASE_LINK_SECRET
+    ? signPurchaseLink({ identity: v.publicId, exp: Date.now() + 10 * 60_000, nonce: randomUUID(), purpose: "checkout" })
+    : "";
+  res.json(publicPurchaseAccount(v, checkoutToken));
 });
 
 // Step 2: start a checkout for `credits` credits toward `identity`. Re-validates
@@ -1455,7 +1459,8 @@ async function cancelWebSubscriptionsForDeletion(identity: string): Promise<void
 
 app.post("/api/plans/checkout", async (req, res) => {
   if (!stripe) { res.status(503).json({ error: "subscriptions are not available yet" }); return; }
-  const publicId = typeof req.body?.identity === "string" ? normalizeTopupIdentity(req.body.identity) : "";
+  const handoff = verifyPurchaseLink(req.body?.handoffToken);
+  const publicId = handoff?.identity || (typeof req.body?.identity === "string" ? normalizeTopupIdentity(req.body.identity) : "");
   const tier = String(req.body?.tier || "") as Tier;
   if (!(["plus", "plus_voice", "pro"] as string[]).includes(tier)) { res.status(400).json({ error: "choose a valid plan" }); return; }
   const account = await validateTopupAccount(publicId);

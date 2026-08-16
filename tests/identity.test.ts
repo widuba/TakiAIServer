@@ -48,13 +48,17 @@ test("physical device access requires the issued installation credential", async
 
 test("browser checkout and public account lookup do not require a device credential", () => {
   for (const path of [
-    "/api/credits/purchase-link",
     "/api/credits/handoff",
-    "/api/credits/account-check",
+    "/api/credits/account-check"
+  ]) {
+    assert.equal(bypassDeviceAuth(path), true, path);
+  }
+  for (const path of [
+    "/api/credits/purchase-link",
     "/api/credits/checkout",
     "/api/plans/checkout"
   ]) {
-    assert.equal(bypassDeviceAuth(path), true, path);
+    assert.equal(bypassDeviceAuth(path), false, path);
   }
   assert.equal(bypassDeviceAuth("/api/assistant"), false);
   assert.equal(bypassDeviceAuth("/api/admin/full-reset"), true);
