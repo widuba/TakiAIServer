@@ -26,6 +26,15 @@ Every request uses the existing variable AI Credit calculation. Voice additional
 - Refund/revocation removes unused subscription AI grants and Voice Credits but preserves purchased top-ups.
 - Events with an older period end cannot overwrite a newer entitlement.
 
+### Admin credit grants
+
+Authenticated operators can select an account in `/admin` and use **Add
+credits**. The server accepts whole-number grants from 1 through 1,000,000 via
+`POST /api/admin/credits/grant`, keeps the membership tier unchanged, applies
+the normal 90-day expiry and usage-window rules, and records the amount, reason,
+expiry, and post-grant balance in the account ledger. The route requires the
+same `ADMIN_SECRET` used by the dashboard and refuses unknown account identities.
+
 Legacy accounts migrate lazily and transactionally on first ledger access. Existing AI grants and purchased top-ups are not changed. A legacy `plus_voice` account remains internally `plus_voice`, displays as Premium, and receives `max(existing voice balance, 300 - legacy voice usage)` Voice Credits for its current cycle.
 
 ## Environment and deployment

@@ -23,7 +23,7 @@ import { extractFlightCode, normalizeTrackerKind } from "./src/entityClassifier.
 import { clearPushToken, getPushToken, setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, clearAlertsForReset, type Alert } from "./src/alerts.js";
 import { isDurable, storeDelete, storeDeleteCategory, storeGet, storeSet } from "./src/store.js";
-import { summary as creditSummary, chargeUsageUsd, InsufficientCreditsError, reset as resetCredits, tierCatalog, grantForTransaction, activateSubscriptionTier, updateSubscriptionStatus, grantForConsumableTransaction, grantWebTopup, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, CREDIT_USD, type Tier } from "./src/credits.js";
+import { summary as creditSummary, chargeUsageUsd, InsufficientCreditsError, reset as resetCredits, tierCatalog, grantForTransaction, activateSubscriptionTier, updateSubscriptionStatus, grantForConsumableTransaction, grantWebTopup, grantAdminCredits, adminCreditAdjustments, MAX_ADMIN_CREDIT_GRANT, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, CREDIT_USD, type Tier } from "./src/credits.js";
 import { measureUsage, sttCostUsd, totalUsageUsd, ttsCostUsd } from "./src/metering.js";
 import { decideAssistantCharge, planCorrectionSynthesis, usageBlockFor, usageBlockedPayload, voiceTurnEstimateCredits } from "./src/usage.js";
 import { verifyTransaction, verifyCreditTransaction, claimCreditTransaction, transferCreditTransaction, rebindCreditTransactions, linkTransactionIdentity, transferSubscriptionIdentity, claimSubscriptionPeriod, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
@@ -2332,7 +2332,10 @@ async function buildAdminAccount(requestedIdentity: string) {
   const memberIds = [...new Set([identity, ...deviceIds])];
   const records = await Promise.all(memberIds.map(userForIdentity));
   const user = combineAdminUsers(identity, records);
-  const credit = await creditSummary(identity);
+  const [credit, creditAdjustments] = await Promise.all([
+    creditSummary(identity),
+    adminCreditAdjustments(identity)
+  ]);
   user.tier = credit.tier;
   const safetyAccounts = await Promise.all(memberIds.map(getSafetyAccount));
   const status = safetyAccounts.some((account) => account.status === "terminated")
@@ -2415,6 +2418,7 @@ async function buildAdminAccount(requestedIdentity: string) {
     detail: {
       ...common,
       credits: credit,
+      creditAdjustments,
       featureUsage: user.analytics.featureUsage,
       recentQuestions: user.analytics.recentQuestions,
       activeDays: user.activeDays,
@@ -2606,6 +2610,51 @@ app.post("/api/admin/account", async (req, res) => {
   const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
   if (!identity) { res.status(400).json({ error: "identity required" }); return; }
   res.json({ account: (await buildAdminAccount(identity)).detail });
+});
+
+// Add a one-time credit grant from the authenticated admin dashboard. The
+// account identity is canonicalized first so a device selection credits the
+// linked Apple account rather than creating a parallel balance. Requiring a
+// known identity also prevents a typo from silently creating a new account.
+app.post("/api/admin/credits/grant", async (req, res) => {
+  if (!requireAdminSecret(req.body?.secret, res)) return;
+  const requestedIdentity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  if (!requestedIdentity) { res.status(400).json({ error: "identity required" }); return; }
+  const amountValue = typeof req.body?.amount === "number"
+    ? req.body.amount
+    : typeof req.body?.amount === "string" && /^\d+$/.test(req.body.amount.trim())
+      ? Number(req.body.amount.trim())
+      : NaN;
+  if (!Number.isSafeInteger(amountValue) || amountValue < 1 || amountValue > MAX_ADMIN_CREDIT_GRANT) {
+    res.status(400).json({ error: `Credits must be a whole number from 1 to ${MAX_ADMIN_CREDIT_GRANT.toLocaleString()}.` });
+    return;
+  }
+  if (!/^(?:\d{8}|(?:apple|google):[^\s]{1,240})$/.test(requestedIdentity)) {
+    res.status(400).json({ error: "invalid account identity" });
+    return;
+  }
+  try {
+    const identity = await canonicalAccountIdentity(requestedIdentity);
+    if (!(await isKnownIdentity(requestedIdentity)) && !(await isKnownIdentity(identity))) {
+      res.status(404).json({ error: "account not found" });
+      return;
+    }
+    const reason = typeof req.body?.reason === "string" ? req.body.reason : "Administrative credit grant";
+    const result = await grantAdminCredits(identity, amountValue, reason);
+    res.set("Cache-Control", "no-store");
+    res.status(201).json({
+      ok: true,
+      identity,
+      amount: result.amount,
+      reason: result.reason,
+      expiresAt: result.expiresAt,
+      balance: result.summary.balance,
+      credits: result.summary
+    });
+  } catch (error) {
+    console.error("Admin credit grant failed:", error);
+    res.status(503).json({ error: "Credits could not be added. Nothing was changed." });
+  }
 });
 
 app.post("/api/admin/engagement-preview", async (req, res) => {

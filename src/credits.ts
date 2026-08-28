@@ -132,6 +132,18 @@ export interface CreditUsageTransaction {
   reversedAt?: number;
 }
 
+// Manual credit grants are kept on the same durable account record as the
+// balance. This gives the dashboard a reliable audit trail instead of relying
+// on transient server logs or a second, eventually-consistent store.
+export interface AdminCreditAdjustment {
+  id: string;
+  amount: number;
+  reason: string;
+  grantedAt: number;
+  expiresAt: number;
+  balanceAfter: number;
+}
+
 // Minimum balance required to ask anything (cut users off before they hit 0,
 // so a request can't overspend into a negative balance).
 export const MIN_REQUEST_CREDITS = 1;
@@ -148,6 +160,7 @@ export interface CreditAccount {
   productId?: string;
   grantLedger?: CreditGrantAudit[];
   usageLedger?: CreditUsageTransaction[];
+  adminAdjustments?: AdminCreditAdjustment[];
   starterGiven?: boolean;
   // UTC month ("YYYY-MM") of the free tier's last recurring allotment, so the
   // 500 free credits + free-voice count refresh once per month, not every load.
@@ -234,6 +247,10 @@ function normalizeAccount(acct: CreditAccount, deviceId: string): CreditAccount 
   if (!Array.isArray(acct.grants)) acct.grants = [];
   if (!Array.isArray(acct.grantLedger)) acct.grantLedger = [];
   if (!Array.isArray(acct.usageLedger)) acct.usageLedger = [];
+  if (!Array.isArray(acct.adminAdjustments)) acct.adminAdjustments = [];
+  acct.adminAdjustments = acct.adminAdjustments
+    .filter((adjustment) => adjustment && typeof adjustment === "object")
+    .slice(-200);
   if ((acct.schemaVersion || 0) < 2) {
     const alreadyUsed = Math.max(0, Math.floor(acct.voiceCycleCount || 0));
     const migratedRemaining = Math.max(0, TIERS[acct.tier].voiceCreditsPerCycle - alreadyUsed);
@@ -657,6 +674,65 @@ export async function grantCredits(identity: string, amount: number, source: str
   });
 }
 
+export const MAX_ADMIN_CREDIT_GRANT = 1_000_000;
+
+export interface AdminCreditGrantResult {
+  granted: boolean;
+  identity: string;
+  amount: number;
+  reason: string;
+  expiresAt: number | null;
+  summary: CreditSummary;
+}
+
+// Add a one-time, non-subscription credit grant from the protected admin
+// dashboard. It follows the same 90-day expiry and usage-window rules as a
+// purchased top-up, but never changes the user's membership tier. The reason
+// and resulting balance are written atomically with the grant for auditing.
+export async function grantAdminCredits(
+  identity: string,
+  amount: number,
+  reason = "Administrative credit grant"
+): Promise<AdminCreditGrantResult> {
+  const normalizedAmount = Number(amount);
+  if (!Number.isSafeInteger(normalizedAmount) || normalizedAmount < 1 || normalizedAmount > MAX_ADMIN_CREDIT_GRANT) {
+    throw new Error(`Credits must be a whole number from 1 to ${MAX_ADMIN_CREDIT_GRANT.toLocaleString()}.`);
+  }
+  const normalizedReason = String(reason || "Administrative credit grant")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 240) || "Administrative credit grant";
+  return updateAccount(identity, async (acct) => {
+    ensureFreeCycle(acct);
+    const grant = addGrant(acct, "topup:admin", normalizedAmount);
+    if (!grant) throw new Error("Credits could not be added.");
+    acct.topupAllowances = acct.topupAllowances || [];
+    acct.topupAllowances.push({ id: grant.id, amount: grant.amount, expiresAt: grant.expiresAt });
+    acct.hasPurchasedCredits = true;
+    acct.adminAdjustments = [...(acct.adminAdjustments || []), {
+      id: grant.id,
+      amount: grant.amount,
+      reason: normalizedReason,
+      grantedAt: grant.grantedAt,
+      expiresAt: grant.expiresAt,
+      balanceAfter: balanceOf(acct)
+    }].slice(-200);
+    return {
+      granted: true,
+      identity,
+      amount: grant.amount,
+      reason: normalizedReason,
+      expiresAt: grant.expiresAt,
+      summary: summarize(acct)
+    };
+  });
+}
+
+export async function adminCreditAdjustments(identity: string): Promise<AdminCreditAdjustment[]> {
+  const acct = await load(identity);
+  return [...(acct.adminAdjustments || [])].sort((a, b) => b.grantedAt - a.grantedAt).slice(0, 200);
+}
+
 export async function grantWebTopup(
   identity: string,
   amount: number,
@@ -1015,6 +1091,9 @@ export async function mergeCredits(
     to.processedWebTopups = [...(to.processedWebTopups || []), ...(from.processedWebTopups || [])]
       .filter((id, index, all) => all.indexOf(id) === index)
       .slice(-500);
+    to.adminAdjustments = [...(to.adminAdjustments || []), ...(from.adminAdjustments || [])]
+      .sort((a, b) => a.grantedAt - b.grantedAt)
+      .slice(-200);
     to.voiceCount = Math.max(0, to.voiceCount || 0) + Math.max(0, from.voiceCount || 0);
     to.voiceCycleCount = Math.max(to.voiceCycleCount || 0, from.voiceCycleCount || 0);
     to.hasPurchasedCredits = to.hasPurchasedCredits === true || from.hasPurchasedCredits === true

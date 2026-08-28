@@ -107,6 +107,29 @@
       try { await post(path, {identity, ...(extra||{})}); await openAccount(identity); await load(); }
       catch (error) { alert(error.message); }
     }
+    async function addCredits(identity) {
+      const amount = Number($("adminCreditAmount")?.value);
+      const reason = $("adminCreditReason")?.value.trim() || "Administrative credit grant";
+      const status = $("adminCreditStatus");
+      if (!Number.isSafeInteger(amount) || amount < 1 || amount > 1000000) {
+        if (status) status.textContent = "Enter a whole number from 1 to 1,000,000.";
+        return;
+      }
+      if (!confirm(`Add ${num(amount)} AI Credits to ${identity}? These credits expire in 90 days.`)) return;
+      const button = $("adminCreditSubmit");
+      if (button) button.disabled = true;
+      if (status) status.textContent = "Adding credits...";
+      try {
+        const result = await post("/api/admin/credits/grant", {identity, amount, reason});
+        await openAccount(identity);
+        await load();
+        alert(`${num(result.amount)} AI Credits added. New balance: ${num(result.balance)}.`);
+      } catch (error) {
+        if (status) status.textContent = error.message;
+      } finally {
+        if (button) button.disabled = false;
+      }
+    }
     function flaggedRows(list) {
       const rows = (list || []).slice().reverse();
       return rows.length
@@ -169,17 +192,19 @@
     function renderDetail(a) {
       const e=a.engagement||{}; const push=e.recommendedPush||{}; const email=e.recommendedEmail||{}; const daily=a.credits?.daily||{}; const monthly=a.credits?.monthly||{};
       const purchases=(a.purchases||[]).map((p)=>`<tr><td>${date(p.at)}</td><td>${esc(p.kind.replaceAll("_"," "))}</td><td>${esc(p.tier||"")}</td><td>${usd(p.amountUsd)}</td></tr>`).join("")||`<tr><td colspan="4" class="subtle">No purchases recorded.</td></tr>`;
+      const creditAdjustments=(a.creditAdjustments||[]).map((v)=>`<tr><td>${date(v.grantedAt)}</td><td>${num(v.amount)}</td><td>${esc(v.reason)}</td><td>${date(v.expiresAt)}</td><td>${num(v.balanceAfter)}</td></tr>`).join("")||`<tr><td colspan="5" class="subtle">No manual credit grants.</td></tr>`;
       const devices=(a.devices||[]).map((d)=>`<tr><td>${esc(d.model)}</td><td>${esc(d.name||d.takiName||"")}</td><td>${esc(d.id)}</td><td>${date(d.lastSeenAt)}</td></tr>`).join("")||`<tr><td colspan="4" class="subtle">No device details recorded.</td></tr>`;
       const campaigns=(e.recentCampaigns||[]).map((c)=>`<tr><td>${date(c.sentAt)}</td><td>${esc(c.channel)} · ${esc(c.category)}</td><td>${esc(c.status)}</td><td>${c.openedAt?`Opened · ${num(c.sessionSeconds||0)}s`:"--"}</td></tr>`).join("")||`<tr><td colspan="4" class="subtle">No campaigns sent.</td></tr>`;
       $("detail").innerHTML = `
         <div class="detail-header"><div><h1>${esc(a.displayName)}</h1><p>${esc(a.identity)}${a.email?` · ${esc(a.email)}`:""}</p></div><div class="spacer"></div><span class="badge ${esc(a.segment)}">${esc(a.segment.replaceAll("_"," "))}</span></div>
         <section class="section"><div class="grid">${dataBox("Plan",a.tier.replace("_"," "))}${dataBox("Credits",num(a.balance))}${dataBox("Questions",num(a.totalQuestions))}${dataBox("30-day active days",num(a.activeDays30))}${dataBox("Sessions",num(a.sessions))}${dataBox("Average session",`${num(a.averageSessionSeconds)} sec`)}${dataBox("Gross revenue",usd(a.grossRevenueUsd))}${dataBox("Net revenue",usd(a.netRevenueUsd))}${dataBox("Owner cost",usd(a.costUsd))}${dataBox("Profit",usd(a.profitUsd))}</div></section>
+        <section class="section"><h2>Add credits</h2><p class="campaign-note">Grant a one-time credit balance adjustment without changing the membership tier. Grants expire after 90 days and are recorded in the account audit trail.</p><div class="two"><label class="field">AI Credits<input id="adminCreditAmount" type="number" min="1" max="1000000" step="1" placeholder="e.g. 1,000"></label><label class="field">Reason (optional)<input id="adminCreditReason" maxlength="240" placeholder="Goodwill, support correction, beta reward"></label></div><div class="actions"><button id="adminCreditSubmit" class="primary">Add credits</button></div><div id="adminCreditStatus" class="campaign-status" aria-live="polite"></div><h2 style="margin-top:20px">Manual grant history</h2><table class="plain-table"><thead><tr><th>Granted</th><th>Credits</th><th>Reason</th><th>Expires</th><th>Balance after</th></tr></thead><tbody>${creditAdjustments}</tbody></table></section>
         <section class="section"><h2>Usage and owner cost</h2><div class="grid">${dataBox("Text questions",num(a.textQuestions))}${dataBox("Text cost",usd(a.textCostUsd,4))}${dataBox("Voice questions",num(a.voiceQuestions))}${dataBox("Voice cost",usd(a.voiceCostUsd,4))}</div>${a.legacyUnallocatedCostUsd?`<p class="subtle">${usd(a.legacyUnallocatedCostUsd,4)} of older metered usage predates channel attribution.</p>`:""}<div class="two" style="margin-top:16px"><div><b>Daily credits</b>${usageBar(daily.used,daily.limit)}</div><div><b>Monthly credits</b>${usageBar(monthly.used,monthly.limit)}</div></div></section>
         <section class="section"><h2>Feature use</h2>${featureRows(a.featureUsage)}</section>
         <section class="section"><h2>Personalized engagement</h2><div class="consent"><span class="badge ${a.engagementPreferences.pushEnabled?"on":"off"}">Push ${a.engagementPreferences.pushEnabled?"enabled":"off"}</span><span class="badge ${a.engagementPreferences.emailEnabled?"on":"off"}">Email ${a.engagementPreferences.emailEnabled?"enabled":"off"}</span><span class="badge">Interests: ${esc((a.engagementPreferences.interests||[]).join(", ")||"none")}</span></div><div class="two"><div><div class="recommendation"><b>Next push: ${esc(push.title||"")}</b><p>${esc(push.body||"")}</p><small>${esc(push.reason||"")}</small></div><div class="actions"><button id="sendPush" ${a.engagementPreferences.pushEnabled?"":"disabled"}>Send recommended push</button></div></div><div><div class="recommendation"><b>Next email: ${esc(email.title||"")}</b><p>${esc(email.body||"")}</p><small>${esc(email.reason||"")}</small></div><div class="actions"><button id="sendEmail" ${a.engagementPreferences.emailEnabled?"":"disabled"}>Send recommended email</button></div></div></div><table class="plain-table" style="margin-top:18px"><thead><tr><th>Category</th><th>Channel</th><th>Sent</th><th>Opened</th><th>Response</th><th>Avg session</th></tr></thead><tbody>${performanceRows(e.performance)}</tbody></table><h2 style="margin-top:20px">Campaign history</h2><table class="plain-table"><thead><tr><th>Sent</th><th>Type</th><th>Status</th><th>Response</th></tr></thead><tbody>${campaigns}</tbody></table></section>
         <section class="section"><h2>Purchases</h2><table class="plain-table"><thead><tr><th>Date</th><th>Type</th><th>Tier</th><th>Gross</th></tr></thead><tbody>${purchases}</tbody></table></section>
         <section class="section"><h2>Devices and safety</h2><div class="grid">${dataBox("First seen",date(a.firstSeenAt))}${dataBox("Last seen",date(a.lastSeenAt))}</div>${safetyControls(a)}<table class="plain-table" style="margin-top:16px"><thead><tr><th>Model</th><th>Name</th><th>ID</th><th>Last seen</th></tr></thead><tbody>${devices}</tbody></table><p class="subtle">Linked identities: ${esc((a.linkedIdentities||[]).join(", "))}<br>Observed IP addresses: ${num((a.ips||[]).length)} · Potentially associated accounts (shared IP only): ${esc((a.ipNeighbors||[]).join(", ")||"none")}</p><p class="subtle">Shared IP information is context only and is never used to suspend, terminate, or restrict an account.</p></section>`;
-      $("sendPush")?.addEventListener("click",()=>sendCampaign(a.identity,"push")); $("sendEmail")?.addEventListener("click",()=>sendCampaign(a.identity,"email"));
+      $("adminCreditSubmit")?.addEventListener("click",()=>addCredits(a.identity)); $("sendPush")?.addEventListener("click",()=>sendCampaign(a.identity,"push")); $("sendEmail")?.addEventListener("click",()=>sendCampaign(a.identity,"email"));
     }
     async function sendCampaign(identity,channel){if(!confirm(`Send the recommended ${channel} to this account now?`))return;try{const result=await post("/api/admin/engagement-send",{identity,channel});alert(result.ok?`${channel} sent.`:(result.reason||"Send failed."));await openAccount(identity)}catch(error){alert(error.message)}}
     async function runFullReset(){
