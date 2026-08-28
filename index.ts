@@ -2537,9 +2537,34 @@ function buildAdminListRow(identity: string, records: UserRecord[], safetyByIden
   };
 }
 
-async function buildAdminListRows() {
-  const [users, safetyAccounts] = await Promise.all([allUsers(), allSafetyAccounts()]);
+function isUnclaimedLowActivityUser(user: UserRecord): boolean {
+  const messageCount = Number(user.analytics?.textQuestions || 0) + Number(user.analytics?.voiceQuestions || 0);
+  const hasHumanName = Boolean(
+    String(user.apple?.name || "").trim()
+    || String(user.apple?.email || "").trim()
+    || String(user.apple?.sub || "").trim()
+    || String(user.device?.takiName || "").trim()
+    || ownerNameFromDeviceName(user.device?.name)
+  );
+  const hasMeaningfulAccountActivity = user.tier !== "free"
+    || Number(user.revenueUsd || 0) > 0
+    || (user.purchases || []).length > 0
+    || user.engagement?.pushEnabled === true
+    || user.engagement?.emailEnabled === true;
+  // These records are retained for account recovery and can be revealed with
+  // the dashboard toggle, but they should not bury real customers in the
+  // default list. A user-supplied name, verified provider identity, purchase,
+  // paid tier, or explicit notification opt-in always keeps the row visible.
+  return !hasHumanName && !hasMeaningfulAccountActivity && messageCount <= 2;
+}
+
+async function buildAdminListRows(includeUnclaimed = false) {
+  const [allRecords, safetyAccounts] = await Promise.all([allUsers(), allSafetyAccounts()]);
   const safetyByIdentity = new Map(safetyAccounts.map((account) => [account.identity, account]));
+  const safetyIdentities = new Set(safetyByIdentity.keys());
+  const users = includeUnclaimed
+    ? allRecords
+    : allRecords.filter((user) => !isUnclaimedLowActivityUser(user) || safetyIdentities.has(user.identity));
   const groups = new Map<string, UserRecord[]>();
   for (const user of users) {
     const identity = user.identity.startsWith("apple:")
@@ -2547,9 +2572,12 @@ async function buildAdminListRows() {
       : user.apple?.sub ? `apple:${user.apple.sub}` : user.identity;
     groups.set(identity, [...(groups.get(identity) || []), user]);
   }
-  return [...groups.entries()]
-    .map(([identity, records]) => buildAdminListRow(identity, records, safetyByIdentity))
-    .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+  return {
+    rows: [...groups.entries()]
+      .map(([identity, records]) => buildAdminListRow(identity, records, safetyByIdentity))
+      .sort((a, b) => b.lastSeenAt - a.lastSeenAt),
+    hiddenUnclaimed: allRecords.length - users.length
+  };
 }
 
 // Account-level feed: linked devices roll into one customer, while detail pages
@@ -2557,7 +2585,8 @@ async function buildAdminListRows() {
 app.post("/api/admin/users", async (req, res) => {
   if (!requireAdminSecret(req.body?.secret, res)) return;
   try {
-    const rows = await buildAdminListRows();
+    const list = await buildAdminListRows(req.body?.includeUnclaimed === true);
+    const rows = list.rows;
     const totals = rows.reduce((total, row) => ({
       users: total.users + 1,
       highValue: total.highValue + (row.highValue ? 1 : 0),
@@ -2568,7 +2597,7 @@ app.post("/api/admin/users", async (req, res) => {
       profit: total.profit + row.profitUsd
     }), { users: 0, highValue: 0, questions: 0, gross: 0, net: 0, cost: 0, profit: 0 });
     res.set("Cache-Control", "no-store");
-    res.json({ users: rows, totals: Object.fromEntries(Object.entries(totals).map(([key, value]) => [key, typeof value === "number" ? money(value) : value])), emailConfigured: isEngagementEmailConfigured(), pushConfigured: isPushConfigured() });
+    res.json({ users: rows, hiddenUnclaimed: list.hiddenUnclaimed, totals: Object.fromEntries(Object.entries(totals).map(([key, value]) => [key, typeof value === "number" ? money(value) : value])), emailConfigured: isEngagementEmailConfigured(), pushConfigured: isPushConfigured() });
   } catch (error) {
     console.error("Admin account list failed:", error);
     res.status(503).json({ error: "The account list could not load. Try Refresh in a moment." });
@@ -2666,16 +2695,60 @@ app.post("/api/admin/engagement-preview", async (req, res) => {
   res.json({ preview: await recommendedEngagement(account.user, channel), enabled: channel === "push" ? account.user.engagement.pushEnabled : account.user.engagement.emailEnabled });
 });
 
+function engagementDeliveryFailure(channel: EngagementChannel, reason: string): { status: number; error: string } {
+  const normalized = reason.trim();
+  if (/no registered push token/i.test(normalized)) {
+    return {
+      status: 409,
+      error: "This account has no registered push token. Have the user allow notifications and open Taki once before sending."
+    };
+  }
+  if (/no connected email|no recipient email/i.test(normalized)) {
+    return {
+      status: 409,
+      error: "This account has no connected email address for personalized messages."
+    };
+  }
+  if (/not configured/i.test(normalized)) {
+    return {
+      status: 503,
+      error: channel === "push"
+        ? "Push notifications are not configured on the server."
+        : "Email notifications are not configured on the server."
+    };
+  }
+  if (/BadDeviceToken|Unregistered|ExpiredProviderToken/i.test(normalized)) {
+    return {
+      status: 502,
+      error: "Apple rejected this device's notification token. Have the user reopen Taki and allow notifications again."
+    };
+  }
+  if (/timed out|ECONN|ENET|socket|fetch failed|connect/i.test(normalized)) {
+    return {
+      status: 503,
+      error: "The notification provider could not be reached. Try again shortly."
+    };
+  }
+  return { status: 502, error: normalized || `The ${channel} notification could not be delivered.` };
+}
+
 app.post("/api/admin/engagement-send", async (req, res) => {
-  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
+  if (!requireAdminSecret(req.body?.secret, res)) return;
   const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
   const channel: EngagementChannel = req.body?.channel === "email" ? "email" : "push";
   if (!identity) { res.status(400).json({ error: "identity required" }); return; }
-  const account = await buildAdminAccount(identity);
-  const enabled = channel === "push" ? account.user.engagement.pushEnabled : account.user.engagement.emailEnabled;
-  if (!enabled) { res.status(409).json({ error: `The user has not enabled personalized ${channel}.` }); return; }
-  const result = await sendPersonalizedEngagement(account.user, channel, account.deviceIds, "admin");
-  res.status(result.ok ? 200 : 502).json(result);
+  try {
+    const account = await buildAdminAccount(identity);
+    const enabled = channel === "push" ? account.user.engagement.pushEnabled : account.user.engagement.emailEnabled;
+    if (!enabled) { res.status(409).json({ error: `The user has not enabled personalized ${channel}.` }); return; }
+    const result = await sendPersonalizedEngagement(account.user, channel, account.deviceIds, "admin");
+    if (result.ok) { res.json(result); return; }
+    const failure = engagementDeliveryFailure(channel, result.reason || result.campaign.error || "");
+    res.status(failure.status).json({ ...result, error: failure.error });
+  } catch (error) {
+    console.error("Admin engagement send failed:", error);
+    res.status(503).json({ error: "The notification could not be sent. Try again shortly." });
+  }
 });
 
 let engagementTickBusy = false;
@@ -2683,7 +2756,10 @@ async function tickPersonalizedEngagement(): Promise<void> {
   if (engagementTickBusy || (!isPushConfigured() && !isEngagementEmailConfigured())) return;
   engagementTickBusy = true;
   try {
-    const users = await allUsers();
+    // Fresh anonymous installs are retained for recovery, but should not enter
+    // the proactive-engagement loop until they have either identified
+    // themselves, opted in, paid, or meaningfully used Taki.
+    const users = (await allUsers()).filter((user) => !isUnclaimedLowActivityUser(user));
     const groups = new Map<string, UserRecord[]>();
     for (const record of users) {
       const identity = record.identity.startsWith("apple:")

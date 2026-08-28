@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { getPushToken } from "./nudges.js";
-import { sendPush } from "./push.js";
+import { clearPushToken, getPushToken } from "./nudges.js";
+import { forgetToken, sendPush } from "./push.js";
 import { storeGet, storeSet } from "./store.js";
 import type { UserRecord } from "./users.js";
 
@@ -278,7 +278,8 @@ export async function sendPersonalizedEngagement(
   };
 
   if (channel === "push") {
-    const tokens = [...new Set((await Promise.all(deviceIds.map(getPushToken))).filter(Boolean))];
+    const registrations = (await Promise.all(deviceIds.map(async (deviceId) => ({ deviceId, token: await getPushToken(deviceId) })))).filter((entry) => entry.token);
+    const tokens = [...new Set(registrations.map((entry) => entry.token))];
     if (!tokens.length) {
       campaign.error = "No registered push token";
       await saveCampaign(campaign, false);
@@ -290,6 +291,16 @@ export async function sendPersonalizedEngagement(
       threadId: "taki-helpful-updates",
       data: { engagementCampaign: campaign.id, engagementCategory: campaign.category }
     })));
+    // Remove tokens Apple has definitively invalidated. Otherwise every manual
+    // send would keep retrying the same stale token and report a misleading
+    // generic gateway error until the device happened to register again.
+    for (const result of results) {
+      if (result.status !== 410 && !/BadDeviceToken|Unregistered|ExpiredProviderToken/i.test(result.reason || "")) continue;
+      for (const registration of registrations.filter((entry) => entry.token === result.token)) {
+        try { await clearPushToken(registration.deviceId); } catch { /* best effort */ }
+      }
+      forgetToken(result.token);
+    }
     const delivered = results.some((result) => result.ok);
     campaign.status = delivered ? "sent" : "failed";
     campaign.error = delivered ? undefined : results.map((result) => result.reason).filter(Boolean).join(", ") || "Push failed";

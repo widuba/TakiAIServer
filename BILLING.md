@@ -35,6 +35,13 @@ the normal 90-day expiry and usage-window rules, and records the amount, reason,
 expiry, and post-grant balance in the account ledger. The route requires the
 same `ADMIN_SECRET` used by the dashboard and refuses unknown account identities.
 
+The account list hides unclaimed low-activity free installations by default so
+anonymous device registrations do not bury real customers under the fallback
+name “Taki user”. Use **Show unclaimed low-activity accounts** when you need to
+inspect or credit one; these records are retained, not deleted. Failed push or
+email sends return an actionable provider error (including missing tokens and
+stale APNs tokens) instead of an opaque dashboard 502.
+
 Legacy accounts migrate lazily and transactionally on first ledger access. Existing AI grants and purchased top-ups are not changed. A legacy `plus_voice` account remains internally `plus_voice`, displays as Premium, and receives `max(existing voice balance, 300 - legacy voice usage)` Voice Credits for its current cycle.
 
 ## Environment and deployment
