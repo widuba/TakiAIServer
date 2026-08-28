@@ -2,7 +2,7 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { SignedDataVerifier, Environment } from "@apple/app-store-server-library";
 import { IN_APP_CREDIT_PRODUCTS, type Tier } from "./credits.js";
-import { storeGet, storeSet } from "./store.js";
+import { storeGet, storeUpdate } from "./store.js";
 
 /* ============================================================================
  * Apple In-App Purchase (StoreKit 2) — verify + map the signed transaction.
@@ -21,10 +21,22 @@ import { storeGet, storeSet } from "./store.js";
  * ==========================================================================*/
 
 const BUNDLE_ID = process.env.APNS_BUNDLE_ID || "com.davidwiduba.takiai";
-const ALLOW_UNVERIFIED = process.env.IAP_ALLOW_UNVERIFIED === "1";
+// Local StoreKit transactions are intentionally opt-in.  A payload that says
+// `environment: Xcode` is not proof of an Apple purchase and must never be
+// accepted merely because the server is running without NODE_ENV set (which is
+// common on hosted Node deployments).
+const NON_PRODUCTION = process.env.NODE_ENV !== "production";
+const ALLOW_LOCAL_TRANSACTIONS = process.env.IAP_ALLOW_LOCAL_TESTING === "1" && NON_PRODUCTION;
+const ALLOW_UNVERIFIED = process.env.IAP_ALLOW_UNVERIFIED === "1"
+  && process.env.IAP_UNVERIFIED_ENV === "development"
+  && NON_PRODUCTION;
 // Required by Apple's library to verify PRODUCTION transactions (the app's
 // numeric Apple ID from App Store Connect). Sandbox doesn't need it.
-const APP_APPLE_ID = process.env.APP_APPLE_ID ? Number(process.env.APP_APPLE_ID) : undefined;
+const configuredAppleId = Number(process.env.APP_APPLE_ID || "");
+const APP_APPLE_ID = Number.isSafeInteger(configuredAppleId) && configuredAppleId > 0
+  ? configuredAppleId
+  : undefined;
+const MAX_SIGNED_PAYLOAD_LENGTH = 64 * 1024;
 
 // Product id (App Store Connect) -> credits tier. Create these exact ids as
 // auto-renewable subscriptions in one group ("Taki Membership").
@@ -95,8 +107,9 @@ function verifierFor(env: Environment): SignedDataVerifier | null {
 }
 
 function decodePayload(jws: string): any | null {
+  if (typeof jws !== "string" || jws.length === 0 || jws.length > MAX_SIGNED_PAYLOAD_LENGTH) return null;
   const parts = jws.split(".");
-  if (parts.length !== 3) return null;
+  if (parts.length !== 3 || parts.some((part) => !part || !/^[A-Za-z0-9_-]+$/.test(part))) return null;
   try {
     return JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
   } catch {
@@ -104,16 +117,25 @@ function decodePayload(jws: string): any | null {
   }
 }
 
-function toTxInfo(payload: any): TxInfo | null {
+function toTxInfo(payload: any, options: { allowRevoked?: boolean } = {}): TxInfo | null {
   const productId = String(payload?.productId || "");
   const tier = PRODUCT_TO_TIER[productId];
   if (!tier) return null;
-  if (payload.bundleId && payload.bundleId !== BUNDLE_ID) return null;
+  // Apple always includes bundleId in a verified transaction.  Treat a missing
+  // value as invalid rather than accepting an attacker-controlled partial JSON
+  // payload.
+  if (payload.bundleId !== BUNDLE_ID) return null;
   const transactionId = String(payload.transactionId || "");
+  if (!/^[A-Za-z0-9._:-]{1,256}$/.test(transactionId)) return null;
   const originalTransactionId = String(payload.originalTransactionId || transactionId);
-  const expiresDate = typeof payload.expiresDate === "number" ? payload.expiresDate : undefined;
-  const purchaseDate = typeof payload.purchaseDate === "number" ? payload.purchaseDate : undefined;
-  const revocationDate = typeof payload.revocationDate === "number" ? payload.revocationDate : undefined;
+  if (!/^[A-Za-z0-9._:-]{1,256}$/.test(originalTransactionId)) return null;
+  const expiresDate = typeof payload.expiresDate === "number" && Number.isFinite(payload.expiresDate) ? payload.expiresDate : undefined;
+  const purchaseDate = typeof payload.purchaseDate === "number" && Number.isFinite(payload.purchaseDate) ? payload.purchaseDate : undefined;
+  const revocationDate = typeof payload.revocationDate === "number" && Number.isFinite(payload.revocationDate) ? payload.revocationDate : undefined;
+  // A revoked/refunded transaction is not an active entitlement.  It may still
+  // be delivered in a restore snapshot or notification, but it must not reach a
+  // grant path.
+  if (!options.allowRevoked && revocationDate !== undefined && revocationDate > 0) return null;
   return {
     productId, transactionId, originalTransactionId, purchaseDate, expiresDate, revocationDate,
     environment: payload.environment, bundleId: payload.bundleId, tier,
@@ -126,8 +148,10 @@ async function verifiedTransactionPayload(jws: string): Promise<any | null> {
   if (!peek) return null;
   const env = String(peek.environment || "");
 
-  // Local Xcode / LocalTesting: no Apple-signed chain to verify — decode only.
+  // Local Xcode / LocalTesting is only valid when an operator explicitly opts in
+  // for a non-production test process.  Never trust this marker by itself.
   if (env === "Xcode" || env === "LocalTesting") {
+    if (!ALLOW_LOCAL_TRANSACTIONS) return null;
     return peek;
   }
 
@@ -165,8 +189,9 @@ export async function verifyCreditTransaction(jws: string): Promise<CreditTxInfo
   const productId = String(payload.productId || "");
   const pack = IN_APP_CREDIT_PRODUCTS[productId];
   const transactionId = String(payload.transactionId || "");
-  if (!pack || !transactionId) return null;
-  if (payload.bundleId && payload.bundleId !== BUNDLE_ID) return null;
+  if (!pack || !/^[A-Za-z0-9._:-]{1,256}$/.test(transactionId)) return null;
+  if (payload.bundleId !== BUNDLE_ID) return null;
+  if (typeof payload.revocationDate === "number" && payload.revocationDate > 0) return null;
   return {
     productId,
     transactionId,
@@ -184,21 +209,23 @@ const safeIdentity = (identity: string) => identity.replace(/[^a-zA-Z0-9_-]/g, "
 // Consumables are bearer receipts, so account-level idempotency is not enough:
 // the same signed transaction must never be grantable to two different users.
 export function claimCreditTransaction(transactionId: string, identity: string): Promise<CreditClaimResult> {
-  if (!transactionId || !identity) return Promise.resolve("conflict");
+  if (!/^[A-Za-z0-9._:-]{1,256}$/.test(transactionId) || !identity) return Promise.resolve("conflict");
   const prior = creditClaimChains.get(transactionId) || Promise.resolve();
   const current = prior.then(async () => {
     const key = `iapcredit:${transactionId}`;
-    const existing = await storeGet<{ identity: string }>(key, { identity: "" });
-    if (existing.identity && existing.identity !== identity) return "conflict";
-    if (existing.identity === identity) return "existing";
-    await storeSet(key, { identity });
+    const result = await storeUpdate<{ identity: string }, CreditClaimResult>(key, { identity: "" }, (existing) => {
+      if (existing.identity && existing.identity !== identity) return { value: existing, result: "conflict" };
+      if (existing.identity === identity) return { value: existing, result: "existing" };
+      return { value: { identity }, result: "claimed" };
+    });
+    if (result === "conflict") return result;
     const reverseKey = `iapcreditidentity:${safeIdentity(identity)}`;
-    const reverse = await storeGet<{ transactionIds: string[] }>(reverseKey, { transactionIds: [] });
-    if (!reverse.transactionIds.includes(transactionId)) {
-      reverse.transactionIds.push(transactionId);
-      await storeSet(reverseKey, { transactionIds: reverse.transactionIds.slice(-1000) });
-    }
-    return "claimed";
+    await storeUpdate<{ transactionIds: string[] }, void>(reverseKey, { transactionIds: [] }, (reverse) => {
+      const transactionIds = Array.isArray(reverse.transactionIds) ? reverse.transactionIds : [];
+      if (!transactionIds.includes(transactionId)) transactionIds.push(transactionId);
+      return { value: { transactionIds: transactionIds.slice(-1000) }, result: undefined };
+    });
+    return result;
   });
   creditClaimChains.set(transactionId, current.then(() => undefined, () => undefined));
   return current;
@@ -210,26 +237,29 @@ export function claimCreditTransaction(transactionId: string, identity: string):
 // the user with "already linked to another account". Moves ownership only; the
 // per-identity grant idempotency still prevents double-crediting.
 export async function transferCreditTransaction(transactionId: string, identity: string): Promise<void> {
-  if (!transactionId || !identity) return;
+  if (!/^[A-Za-z0-9._:-]{1,256}$/.test(transactionId) || !identity) return;
   const prior = creditClaimChains.get(transactionId) || Promise.resolve();
   const current = prior.then(async () => {
     const key = `iapcredit:${transactionId}`;
-    const existing = await storeGet<{ identity: string }>(key, { identity: "" });
-    if (existing.identity === identity) return;
+    const change = await storeUpdate<{ identity: string }, { previous: string; alreadyOwned: boolean }>(key, { identity: "" }, (existing) => {
+      if (existing.identity === identity) return { value: existing, result: { previous: identity, alreadyOwned: true } };
+      return { value: { identity }, result: { previous: existing.identity || "", alreadyOwned: false } };
+    });
+    if (change.alreadyOwned) return;
     // Drop the transaction from the previous owner's reverse index.
-    if (existing.identity) {
-      const oldKey = `iapcreditidentity:${safeIdentity(existing.identity)}`;
-      const old = await storeGet<{ transactionIds: string[] }>(oldKey, { transactionIds: [] });
-      const filtered = old.transactionIds.filter((t) => t !== transactionId);
-      if (filtered.length !== old.transactionIds.length) await storeSet(oldKey, { transactionIds: filtered });
+    if (change.previous) {
+      const oldKey = `iapcreditidentity:${safeIdentity(change.previous)}`;
+      await storeUpdate<{ transactionIds: string[] }, void>(oldKey, { transactionIds: [] }, (stored) => ({
+        value: { transactionIds: (Array.isArray(stored.transactionIds) ? stored.transactionIds : []).filter((t) => t !== transactionId) },
+        result: undefined
+      }));
     }
-    await storeSet(key, { identity });
     const reverseKey = `iapcreditidentity:${safeIdentity(identity)}`;
-    const reverse = await storeGet<{ transactionIds: string[] }>(reverseKey, { transactionIds: [] });
-    if (!reverse.transactionIds.includes(transactionId)) {
-      reverse.transactionIds.push(transactionId);
-      await storeSet(reverseKey, { transactionIds: reverse.transactionIds.slice(-1000) });
-    }
+    await storeUpdate<{ transactionIds: string[] }, void>(reverseKey, { transactionIds: [] }, (stored) => {
+      const transactionIds = Array.isArray(stored.transactionIds) ? stored.transactionIds : [];
+      if (!transactionIds.includes(transactionId)) transactionIds.push(transactionId);
+      return { value: { transactionIds: transactionIds.slice(-1000) }, result: undefined };
+    });
   });
   creditClaimChains.set(transactionId, current.then(() => undefined, () => undefined));
   return current;
@@ -242,19 +272,24 @@ export async function rebindCreditTransactions(fromIdentity: string, toIdentity:
   if (!fromIdentity || !toIdentity || fromIdentity === toIdentity) return;
   const fromKey = `iapcreditidentity:${safeIdentity(fromIdentity)}`;
   const toKey = `iapcreditidentity:${safeIdentity(toIdentity)}`;
-  const from = await storeGet<{ transactionIds: string[] }>(fromKey, { transactionIds: [] });
-  if (!from.transactionIds.length) return;
-  const to = await storeGet<{ transactionIds: string[] }>(toKey, { transactionIds: [] });
-  for (const transactionId of from.transactionIds) {
+  const transactionIds = await storeUpdate<{ transactionIds: string[] }, string[]>(fromKey, { transactionIds: [] }, (stored) => {
+    const ids = Array.isArray(stored.transactionIds) ? stored.transactionIds : [];
+    return { value: { transactionIds: [] }, result: ids };
+  });
+  if (!transactionIds.length) return;
+  for (const transactionId of transactionIds) {
     const key = `iapcredit:${transactionId}`;
-    const owner = await storeGet<{ identity: string }>(key, { identity: "" });
-    if (!owner.identity || owner.identity === fromIdentity) {
-      await storeSet(key, { identity: toIdentity });
-      if (!to.transactionIds.includes(transactionId)) to.transactionIds.push(transactionId);
-    }
+    const moved = await storeUpdate<{ identity: string }, boolean>(key, { identity: "" }, (owner) => {
+      if (owner.identity && owner.identity !== fromIdentity) return { value: owner, result: false };
+      return { value: { identity: toIdentity }, result: true };
+    });
+    if (!moved) continue;
+    await storeUpdate<{ transactionIds: string[] }, void>(toKey, { transactionIds: [] }, (stored) => {
+      const ids = Array.isArray(stored.transactionIds) ? stored.transactionIds : [];
+      if (!ids.includes(transactionId)) ids.push(transactionId);
+      return { value: { transactionIds: ids.slice(-1000) }, result: undefined };
+    });
   }
-  await storeSet(toKey, { transactionIds: to.transactionIds.slice(-1000) });
-  await storeSet(fromKey, { transactionIds: [] });
 }
 
 /* ---- Ownership map + App Store Server Notifications --------------------- */
@@ -262,20 +297,26 @@ export async function rebindCreditTransactions(fromIdentity: string, toIdentity:
 // by our app identity — so at purchase time we remember which identity owns each
 // subscription, and look it up when a renewal/refund notification arrives.
 export function linkTransactionIdentity(originalTransactionId: string, identity: string): Promise<CreditClaimResult> {
-  if (!originalTransactionId || !identity) return Promise.resolve("conflict");
+  if (!/^[A-Za-z0-9._:-]{1,256}$/.test(originalTransactionId) || !identity) return Promise.resolve("conflict");
   const prior = subscriptionClaimChains.get(originalTransactionId) || Promise.resolve();
   const current = prior.then(async () => {
-    const existing = await storeGet<{ identity: string; role?: "primary" | "secondary" }>(`iapmap:${originalTransactionId}`, { identity: "" });
-    if (existing.identity && existing.identity !== identity) return "conflict";
-    if (existing.identity === identity) return "existing";
-    await storeSet(`iapmap:${originalTransactionId}`, { identity, role: existing.role });
+    const result = await storeUpdate<{ identity: string; role?: "primary" | "secondary" }, CreditClaimResult>(
+      `iapmap:${originalTransactionId}`,
+      { identity: "" },
+      (existing) => {
+        if (existing.identity && existing.identity !== identity) return { value: existing, result: "conflict" };
+        if (existing.identity === identity) return { value: existing, result: "existing" };
+        return { value: { identity, role: existing.role }, result: "claimed" };
+      }
+    );
+    if (result === "conflict") return result;
     const reverseKey = `iapidentity:${identity.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
-    const reverse = await storeGet<{ transactionIds: string[] }>(reverseKey, { transactionIds: [] });
-    if (!reverse.transactionIds.includes(originalTransactionId)) {
-      reverse.transactionIds.push(originalTransactionId);
-      await storeSet(reverseKey, reverse);
-    }
-    return "claimed";
+    await storeUpdate<{ transactionIds: string[] }, void>(reverseKey, { transactionIds: [] }, (reverse) => {
+      const transactionIds = Array.isArray(reverse.transactionIds) ? reverse.transactionIds : [];
+      if (!transactionIds.includes(originalTransactionId)) transactionIds.push(originalTransactionId);
+      return { value: { transactionIds }, result: undefined };
+    });
+    return result;
   });
   subscriptionClaimChains.set(originalTransactionId, current.then(() => undefined, () => undefined));
   return current;
@@ -288,22 +329,27 @@ export function linkTransactionIdentity(originalTransactionId: string, identity:
 // account" bug on a fresh phone. Per-period dedup (claimSubscriptionPeriod)
 // still stops the same billing cycle from granting credits to two identities.
 export async function transferSubscriptionIdentity(originalTransactionId: string, identity: string): Promise<void> {
-  if (!originalTransactionId || !identity) return;
+  if (!/^[A-Za-z0-9._:-]{1,256}$/.test(originalTransactionId) || !identity) return;
   const prior = subscriptionClaimChains.get(originalTransactionId) || Promise.resolve();
   const current = prior.then(async () => {
-    const existing = await storeGet<{ identity: string; role?: "primary" | "secondary" }>(`iapmap:${originalTransactionId}`, { identity: "" });
+    const existing = await storeUpdate<{ identity: string; role?: "primary" | "secondary" }, { identity: string; role?: "primary" | "secondary" }>(
+      `iapmap:${originalTransactionId}`,
+      { identity: "" },
+      (stored) => ({ value: { identity, role: stored.role || "primary" }, result: { identity: stored.identity || "", role: stored.role } })
+    );
     if (existing.identity && existing.identity !== identity) {
       const oldKey = `iapidentity:${existing.identity.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
-      const old = await storeGet<{ transactionIds: string[] }>(oldKey, { transactionIds: [] });
-      await storeSet(oldKey, { transactionIds: old.transactionIds.filter((id) => id !== originalTransactionId) });
+      await storeUpdate<{ transactionIds: string[] }, void>(oldKey, { transactionIds: [] }, (stored) => ({
+        value: { transactionIds: (Array.isArray(stored.transactionIds) ? stored.transactionIds : []).filter((id) => id !== originalTransactionId) },
+        result: undefined
+      }));
     }
-    await storeSet(`iapmap:${originalTransactionId}`, { identity, role: existing.role || "primary" });
     const reverseKey = `iapidentity:${identity.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
-    const reverse = await storeGet<{ transactionIds: string[] }>(reverseKey, { transactionIds: [] });
-    if (!reverse.transactionIds.includes(originalTransactionId)) {
-      reverse.transactionIds.push(originalTransactionId);
-      await storeSet(reverseKey, reverse);
-    }
+    await storeUpdate<{ transactionIds: string[] }, void>(reverseKey, { transactionIds: [] }, (stored) => {
+      const transactionIds = Array.isArray(stored.transactionIds) ? stored.transactionIds : [];
+      if (!transactionIds.includes(originalTransactionId)) transactionIds.push(originalTransactionId);
+      return { value: { transactionIds }, result: undefined };
+    });
   });
   subscriptionClaimChains.set(originalTransactionId, current.then(() => undefined, () => undefined));
   return current;
@@ -314,14 +360,51 @@ export async function transferSubscriptionIdentity(originalTransactionId: string
 // time a period is seen and false afterward, so credits for one cycle land on
 // exactly one identity even across device transfers.
 const periodClaimChains = new Map<string, Promise<void>>();
+const PERIOD_CLAIM_TTL_MS = 10 * 60_000;
 export function claimSubscriptionPeriod(periodKey: string): Promise<boolean> {
   if (!periodKey) return Promise.resolve(true);
   const prior = periodClaimChains.get(periodKey) || Promise.resolve();
   const current = prior.then(async () => {
     const key = `iapperiod:${periodKey}`;
-    if (await storeGet<boolean>(key, false)) return false;
-    await storeSet(key, true);
-    return true;
+    return storeUpdate<unknown, boolean>(key, false, (claimed) => {
+      const now = Date.now();
+      // A claim is normally permanent because grantForTransaction records its
+      // own idempotency key. If the process dies after claiming but before the
+      // grant write, allow a later retry to recover instead of losing a cycle.
+      const claimedAt = claimed && typeof claimed === "object"
+        ? Number((claimed as { claimedAt?: unknown }).claimedAt || 0)
+        : claimed === true ? Number.POSITIVE_INFINITY : 0;
+      if (claimedAt === Number.POSITIVE_INFINITY || (claimedAt > 0 && now - claimedAt < PERIOD_CLAIM_TTL_MS)) {
+        return { value: claimed, result: false };
+      }
+      return { value: { claimedAt: now }, result: true };
+    });
+  });
+  periodClaimChains.set(periodKey, current.then(() => undefined, () => undefined));
+  return current;
+}
+
+/**
+ * Release a period reservation when the ledger grant could not be committed.
+ * The reservation is deliberately short-lived to recover from a process crash,
+ * but an immediate release avoids losing a renewal when a transient database
+ * error happens between the claim and the account write.
+ */
+export function releaseSubscriptionPeriod(periodKey: string): Promise<void> {
+  if (!periodKey) return Promise.resolve();
+  const prior = periodClaimChains.get(periodKey) || Promise.resolve();
+  const current = prior.then(async () => {
+    const key = `iapperiod:${periodKey}`;
+    await storeUpdate<unknown, void>(key, false, (claimed) => {
+      if (claimed === true) return { value: claimed, result: undefined };
+      // A failed grant owns the fresh reservation and must release it
+      // immediately.  Leaving it in place until the ten-minute recovery TTL
+      // made a transient ledger/database error permanently look like a
+      // successful grant to subsequent retries.  Old, already-expired claims
+      // are simply cleared as well; the next verified transaction can safely
+      // claim the period again.
+      return { value: false, result: undefined };
+    });
   });
   periodClaimChains.set(periodKey, current.then(() => undefined, () => undefined));
   return current;
@@ -343,20 +426,24 @@ export async function setTransactionRole(
   role: "primary" | "secondary"
 ): Promise<void> {
   if (!originalTransactionId || !identity) return;
-  const prior = await storeGet<{ identity: string; role?: "primary" | "secondary" }>(
+  const prior = await storeUpdate<{ identity: string; role?: "primary" | "secondary" }, { identity: string }>(
     `iapmap:${originalTransactionId}`,
-    { identity: "" }
+    { identity: "" },
+    (stored) => ({ value: { identity, role }, result: { identity: String(stored?.identity || "") } })
   );
-  await storeSet(`iapmap:${originalTransactionId}`, { identity, role });
   if (prior.identity && prior.identity !== identity) {
     const priorKey = `iapidentity:${prior.identity.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
-    const priorReverse = await storeGet<{ transactionIds: string[] }>(priorKey, { transactionIds: [] });
-    await storeSet(priorKey, { transactionIds: priorReverse.transactionIds.filter((id) => id !== originalTransactionId) });
+    await storeUpdate<{ transactionIds: string[] }, void>(priorKey, { transactionIds: [] }, (stored) => ({
+      value: { transactionIds: (Array.isArray(stored.transactionIds) ? stored.transactionIds : []).filter((id) => id !== originalTransactionId) },
+      result: undefined
+    }));
   }
   const reverseKey = `iapidentity:${identity.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
-  const reverse = await storeGet<{ transactionIds: string[] }>(reverseKey, { transactionIds: [] });
-  if (!reverse.transactionIds.includes(originalTransactionId)) reverse.transactionIds.push(originalTransactionId);
-  await storeSet(reverseKey, reverse);
+  await storeUpdate<{ transactionIds: string[] }, void>(reverseKey, { transactionIds: [] }, (stored) => {
+    const transactionIds = Array.isArray(stored.transactionIds) ? stored.transactionIds : [];
+    if (!transactionIds.includes(originalTransactionId)) transactionIds.push(originalTransactionId);
+    return { value: { transactionIds: transactionIds.slice(-1000) }, result: undefined };
+  });
 }
 
 export async function getTransactionBinding(originalTransactionId: string): Promise<{
@@ -379,13 +466,15 @@ export async function primarySubscriptionForIdentity(identity: string): Promise<
 }
 
 export async function claimPrimarySubscription(identity: string, originalTransactionId: string): Promise<"primary" | "secondary"> {
-  const existing = await primarySubscriptionForIdentity(identity);
-  if (!existing) {
-    await storeSet(primaryKey(identity), { originalTransactionId });
-    await setTransactionRole(originalTransactionId, identity, "primary");
-    return "primary";
-  }
-  const role = existing === originalTransactionId ? "primary" : "secondary";
+  const role = await storeUpdate<{ originalTransactionId: string }, "primary" | "secondary">(
+    primaryKey(identity),
+    { originalTransactionId: "" },
+    (stored) => {
+      const existing = String(stored?.originalTransactionId || "");
+      if (!existing) return { value: { originalTransactionId }, result: "primary" };
+      return { value: { originalTransactionId: existing }, result: existing === originalTransactionId ? "primary" : "secondary" };
+    }
+  );
   await setTransactionRole(originalTransactionId, identity, role);
   return role;
 }
@@ -413,7 +502,10 @@ export async function verifyNotification(signedPayload: string): Promise<Notific
   if (!peek) return null;
   const env = String(peek?.data?.environment || "");
   let decoded: any;
-  if (env === "Xcode" || env === "LocalTesting" || ALLOW_UNVERIFIED) {
+  if (env === "Xcode" || env === "LocalTesting") {
+    if (!ALLOW_LOCAL_TRANSACTIONS) return null;
+    decoded = peek;
+  } else if (ALLOW_UNVERIFIED) {
     decoded = peek;
   } else {
     const environment = env === "Production" ? Environment.PRODUCTION : env === "Sandbox" ? Environment.SANDBOX : null;
@@ -428,7 +520,12 @@ export async function verifyNotification(signedPayload: string): Promise<Notific
     }
   }
   const signedTx = decoded?.data?.signedTransactionInfo;
-  const tx = typeof signedTx === "string" ? await verifyTransaction(signedTx) : null;
+  // A REFUND/REVOKE notification intentionally carries a transaction whose
+  // revocationDate is set. It must still be decoded so the owner can be found
+  // and unused subscription credits can be clawed back; ordinary purchase
+  // verification continues to reject revoked transactions.
+  const signedTransactionPayload = typeof signedTx === "string" ? await verifiedTransactionPayload(signedTx) : null;
+  const tx = signedTransactionPayload ? toTxInfo(signedTransactionPayload, { allowRevoked: true }) : null;
   return {
     notificationType: String(decoded.notificationType || ""),
     subtype: decoded.subtype ? String(decoded.subtype) : undefined,

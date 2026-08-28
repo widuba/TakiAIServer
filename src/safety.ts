@@ -1,4 +1,4 @@
-import { storeGet, storeSet } from "./store.js";
+import { storeGet, storeGetMany, storeSet, storeUpdate, storeUpdatePair } from "./store.js";
 
 /* ============================================================================
  * Safety & enforcement.
@@ -22,7 +22,11 @@ import { storeGet, storeSet } from "./store.js";
  * used as an enforcement gate.
  * ==========================================================================*/
 
-const STRIKE_LIMIT = Number(process.env.SAFETY_STRIKE_LIMIT || 3);
+// Keep a malformed environment value from disabling enforcement (NaN would
+// make every `strikes >= threshold` comparison false) or creating an
+// impractically large threshold.  The server's policy is intentionally bounded
+// even when deployment configuration is edited by hand.
+const STRIKE_LIMIT = Math.max(1, Math.min(100, Math.floor(Number(process.env.SAFETY_STRIKE_LIMIT || 3) || 3)));
 
 // Escalating tolerance: the first suspension takes STRIKE_LIMIT flagged messages;
 // each later cycle needs one fewer, bottoming out (and staying) at 1. So with the
@@ -114,71 +118,140 @@ function acctKey(id: string): string { return `safety:acct:${keyify(id)}`; }
 const FLAGGED_INDEX = "safety:flagged"; // list of currently-suspended identities
 const SAFETY_ALL_INDEX = "safety:all";  // every identity that has any safety history
 
-export async function getSafetyAccount(identity: string): Promise<SafetyAccount> {
-  const a = await storeGet<SafetyAccount>(acctKey(identity), {
-    identity, status: "active", strikes: 0, violations: [],
-    suspensionCount: 0, flaggedTotal: 0, flaggedHistory: [], warnings: 0,
+function emptySafetyAccount(identity: string): SafetyAccount {
+  return {
+    identity, status: "active", strikes: 0, violations: [], suspensionCount: 0,
+    flaggedTotal: 0, flaggedHistory: [], warnings: 0,
     pendingNotice: null, pendingSuspension: null, updatedAt: 0
-  });
+  };
+}
+
+function normalizeSafetyAccount(identity: string, stored?: SafetyAccount | null): SafetyAccount {
+  const a = stored && typeof stored === "object" && !Array.isArray(stored)
+    ? stored
+    : emptySafetyAccount(identity);
   a.identity = identity;
-  // Backfill fields for accounts saved before these were added.
+  if (!(a.status === "active" || a.status === "suspended" || a.status === "terminated")) a.status = "active";
   if (!Array.isArray(a.violations)) a.violations = [];
+  a.violations = a.violations.filter((item) => item && typeof item === "object" && typeof item.text === "string")
+    .map((item) => ({
+      text: item.text.slice(0, 2_000),
+      category: String(item.category || "").slice(0, 80),
+      at: Number.isFinite(Number(item.at)) ? Number(item.at) : Date.now(),
+      ...(item.ip ? { ip: String(item.ip).slice(0, 120) } : {}),
+      ...(item.deviceId ? { deviceId: String(item.deviceId).slice(0, 32) } : {})
+    })).slice(-50);
   if (!Array.isArray(a.flaggedHistory)) a.flaggedHistory = [];
-  if (typeof a.suspensionCount !== "number") a.suspensionCount = 0;
-  if (typeof a.flaggedTotal !== "number") a.flaggedTotal = a.flaggedHistory.length || a.violations.length;
-  if (typeof a.warnings !== "number") a.warnings = 0;
-  if (a.pendingNotice === undefined) a.pendingNotice = null;
-  if (a.pendingSuspension === undefined) a.pendingSuspension = null;
-  if (a.status === "active" && a.pendingSuspension
-      && a.pendingSuspension.additionalMessages >= 2
-      && a.pendingSuspension.suspendAt <= Date.now()) {
-    a.status = "suspended";
-    a.suspensionCount += 1;
-    a.pendingSuspension = null;
-    await saveSafetyAccount(a);
-    await indexAdd(identity);
+  a.flaggedHistory = a.flaggedHistory.filter((item) => item && typeof item === "object" && typeof item.text === "string")
+    .map((item) => ({
+      text: item.text.slice(0, 2_000),
+      category: String(item.category || "").slice(0, 80),
+      at: Number.isFinite(Number(item.at)) ? Number(item.at) : Date.now(),
+      ...(item.ip ? { ip: String(item.ip).slice(0, 120) } : {}),
+      ...(item.deviceId ? { deviceId: String(item.deviceId).slice(0, 32) } : {})
+    })).slice(-FLAGGED_HISTORY_CAP);
+  if (typeof a.suspensionCount !== "number" || !Number.isFinite(a.suspensionCount)) a.suspensionCount = 0;
+  a.suspensionCount = Math.max(0, Math.floor(a.suspensionCount));
+  if (typeof a.flaggedTotal !== "number" || !Number.isFinite(a.flaggedTotal)) a.flaggedTotal = a.flaggedHistory.length || a.violations.length;
+  a.flaggedTotal = Math.max(a.flaggedHistory.length, Math.floor(a.flaggedTotal));
+  if (typeof a.strikes !== "number" || !Number.isFinite(a.strikes)) a.strikes = a.violations.length;
+  a.strikes = Math.max(0, Math.floor(a.strikes));
+  if (typeof a.warnings !== "number" || !Number.isFinite(a.warnings)) a.warnings = 0;
+  a.warnings = Math.max(0, Math.floor(a.warnings));
+  if (!a.pendingNotice || typeof a.pendingNotice !== "object" || Array.isArray(a.pendingNotice)) a.pendingNotice = null;
+  else {
+    a.pendingNotice = {
+      kind: a.pendingNotice.kind === "warning" ? "warning" : "reinstatement",
+      reason: String(a.pendingNotice.reason || "").slice(0, 2_000),
+      categories: Array.isArray(a.pendingNotice.categories) ? a.pendingNotice.categories.map(String).slice(0, 20) : [],
+      messages: [],
+      suspensionNumber: Math.max(0, Math.floor(Number(a.pendingNotice.suspensionNumber) || 0)),
+      nextThreshold: Math.max(1, Math.floor(Number(a.pendingNotice.nextThreshold) || strikeThreshold(a.suspensionCount))),
+      at: Number.isFinite(Number(a.pendingNotice.at)) ? Number(a.pendingNotice.at) : Date.now()
+    };
+  }
+  if (!a.pendingSuspension || typeof a.pendingSuspension !== "object" || Array.isArray(a.pendingSuspension)) a.pendingSuspension = null;
+  else {
+    a.pendingSuspension = {
+      thresholdReachedAt: Number.isFinite(Number(a.pendingSuspension.thresholdReachedAt)) ? Number(a.pendingSuspension.thresholdReachedAt) : Date.now(),
+      suspendAt: Number.isFinite(Number(a.pendingSuspension.suspendAt)) ? Number(a.pendingSuspension.suspendAt) : Date.now() + 8_000,
+      additionalMessages: Math.max(0, Math.min(2, Math.floor(Number(a.pendingSuspension.additionalMessages) || 0)))
+    };
   }
   return a;
 }
-async function saveSafetyAccount(a: SafetyAccount): Promise<void> {
-  a.updatedAt = Date.now();
-  await storeSet(acctKey(a.identity), a);
-  await allIndexAdd(a.identity);
-}
 
+export async function getSafetyAccount(identity: string): Promise<SafetyAccount> {
+  const a = normalizeSafetyAccount(identity, await storeGet<SafetyAccount | null>(acctKey(identity), null));
+  if (a.status === "active" && a.pendingSuspension
+      && a.pendingSuspension.additionalMessages >= 2
+      && a.pendingSuspension.suspendAt <= Date.now()) {
+    const updated = await storeUpdate<SafetyAccount | null, SafetyAccount>(acctKey(identity), null, (stored) => {
+      const current = normalizeSafetyAccount(identity, stored);
+      if (current.status === "active" && current.pendingSuspension
+          && current.pendingSuspension.additionalMessages >= 2
+          && current.pendingSuspension.suspendAt <= Date.now()) {
+        current.status = "suspended";
+        current.suspensionCount += 1;
+        current.pendingSuspension = null;
+        current.updatedAt = Date.now();
+      }
+      return { value: current, result: current };
+    });
+    await allIndexAdd(identity);
+    if (updated.status === "suspended") await indexAdd(identity);
+    return updated;
+  }
+  return a;
+}
 async function indexAdd(identity: string): Promise<void> {
-  const idx = await storeGet<{ ids: string[] }>(FLAGGED_INDEX, { ids: [] });
-  if (!idx.ids.includes(identity)) { idx.ids.push(identity); await storeSet(FLAGGED_INDEX, idx); }
+  await storeUpdate<{ ids: string[] }, void>(FLAGGED_INDEX, { ids: [] }, (idx) => {
+    const ids = Array.isArray(idx.ids) ? idx.ids.filter((id): id is string => typeof id === "string").slice(-50_000) : [];
+    if (!ids.includes(identity)) ids.push(identity);
+    return { value: { ids }, result: undefined };
+  });
 }
 async function indexRemove(identity: string): Promise<void> {
-  const idx = await storeGet<{ ids: string[] }>(FLAGGED_INDEX, { ids: [] });
-  if (idx.ids.includes(identity)) { idx.ids = idx.ids.filter((i) => i !== identity); await storeSet(FLAGGED_INDEX, idx); }
+  await storeUpdate<{ ids: string[] }, void>(FLAGGED_INDEX, { ids: [] }, (idx) => ({
+    value: { ids: (Array.isArray(idx.ids) ? idx.ids.filter((i): i is string => typeof i === "string") : []).filter((i) => i !== identity) },
+    result: undefined
+  }));
 }
 async function allIndexAdd(identity: string): Promise<void> {
-  const idx = await storeGet<{ ids: string[] }>(SAFETY_ALL_INDEX, { ids: [] });
-  if (!idx.ids.includes(identity)) { idx.ids.push(identity); await storeSet(SAFETY_ALL_INDEX, idx); }
+  await storeUpdate<{ ids: string[] }, void>(SAFETY_ALL_INDEX, { ids: [] }, (idx) => {
+    const ids = Array.isArray(idx.ids) ? idx.ids.filter((id): id is string => typeof id === "string").slice(-100_000) : [];
+    if (!ids.includes(identity)) ids.push(identity);
+    return { value: { ids }, result: undefined };
+  });
 }
 
 // Record a contextually flagged message. Reaching the escalating threshold
 // starts the delayed suspension window; it does not immediately change access.
 export async function recordViolation(identity: string, v: Violation): Promise<SafetyAccount> {
-  const a = await getSafetyAccount(identity);
-  if (a.status === "terminated") return a;
-  a.strikes += 1;
-  a.violations.push(v);
-  if (a.violations.length > 50) a.violations = a.violations.slice(-50);
-  a.flaggedTotal += 1;
-  a.flaggedHistory.push(v);
-  if (a.flaggedHistory.length > FLAGGED_HISTORY_CAP) a.flaggedHistory = a.flaggedHistory.slice(-FLAGGED_HISTORY_CAP);
-  if (a.status === "active" && !a.pendingSuspension && a.strikes >= strikeThreshold(a.suspensionCount)) {
-    const now = Date.now();
-    a.pendingSuspension = {
-      thresholdReachedAt: now,
-      suspendAt: now + 8_000,
-      additionalMessages: 0
-    };
-  }
-  await saveSafetyAccount(a);
+  const violation: Violation = {
+    text: String(v?.text || "").slice(0, 2_000),
+    category: String(v?.category || "unknown").replace(/[^a-z0-9_.-]/gi, "_").slice(0, 80) || "unknown",
+    at: Number.isFinite(Number(v?.at)) ? Math.max(0, Number(v.at)) : Date.now(),
+    ...(v?.ip ? { ip: String(v.ip).slice(0, 120) } : {}),
+    ...(v?.deviceId ? { deviceId: String(v.deviceId).slice(0, 32) } : {})
+  };
+  const a = await storeUpdate<SafetyAccount | null, SafetyAccount>(acctKey(identity), null, (stored) => {
+    const current = normalizeSafetyAccount(identity, stored);
+    if (current.status === "terminated") return { value: current, result: current };
+    current.strikes += 1;
+    current.violations.push(violation);
+    if (current.violations.length > 50) current.violations = current.violations.slice(-50);
+    current.flaggedTotal += 1;
+    current.flaggedHistory.push(violation);
+    if (current.flaggedHistory.length > FLAGGED_HISTORY_CAP) current.flaggedHistory = current.flaggedHistory.slice(-FLAGGED_HISTORY_CAP);
+    if (current.status === "active" && !current.pendingSuspension && current.strikes >= strikeThreshold(current.suspensionCount)) {
+      const now = Date.now();
+      current.pendingSuspension = { thresholdReachedAt: now, suspendAt: now + 8_000, additionalMessages: 0 };
+    }
+    current.updatedAt = Date.now();
+    return { value: current, result: current };
+  });
+  await allIndexAdd(identity);
   return a;
 }
 
@@ -187,17 +260,18 @@ export async function recordViolation(identity: string, v: Violation): Promise<S
 // second minimum have both elapsed. The persisted timestamps make this survive
 // a server restart, while the timer handles the normal no-further-message case.
 export async function noteMessageAfterSafetyThreshold(identity: string): Promise<SafetyAccount> {
-  const a = await getSafetyAccount(identity);
-  if (a.status !== "active" || !a.pendingSuspension) return a;
-  a.pendingSuspension.additionalMessages = Math.min(2, a.pendingSuspension.additionalMessages + 1);
-  if (a.pendingSuspension.additionalMessages >= 2) {
-    // Make the delay genuinely additive: the account remains active for eight
-    // seconds after the second grace message, not merely eight seconds after
-    // the original threshold was reached.
-    a.pendingSuspension.suspendAt = Math.max(a.pendingSuspension.suspendAt, Date.now() + 8_000);
-  }
-  await saveSafetyAccount(a);
-  if (a.pendingSuspension.additionalMessages >= 2) {
+  const a = await storeUpdate<SafetyAccount | null, SafetyAccount>(acctKey(identity), null, (stored) => {
+    const current = normalizeSafetyAccount(identity, stored);
+    if (current.status !== "active" || !current.pendingSuspension) return { value: current, result: current };
+    current.pendingSuspension.additionalMessages = Math.min(2, current.pendingSuspension.additionalMessages + 1);
+    if (current.pendingSuspension.additionalMessages >= 2) {
+      current.pendingSuspension.suspendAt = Math.max(current.pendingSuspension.suspendAt, Date.now() + 8_000);
+    }
+    current.updatedAt = Date.now();
+    return { value: current, result: current };
+  });
+  await allIndexAdd(identity);
+  if (a.pendingSuspension && a.pendingSuspension.additionalMessages >= 2) {
     const delay = Math.max(0, a.pendingSuspension.suspendAt - Date.now());
     const timer = setTimeout(() => {
       void getSafetyAccount(identity).catch((error) => console.error("Delayed safety suspension:", error));
@@ -218,18 +292,39 @@ function devKey(dev: string): string { return `safety:dev:${keyify(dev)}`; } // 
 function testRestrictionKey(identity: string): string { return `safety:test-restriction:${keyify(identity)}`; }
 
 export async function recordAssoc(identity: string, deviceId?: string, ip?: string): Promise<void> {
-  const a = await storeGet<Assoc>(assocKey(identity), { devices: [], ips: [] });
-  let changed = false;
-  if (deviceId && !a.devices.includes(deviceId)) { a.devices.push(deviceId); changed = true; }
-  if (ip && !a.ips.includes(ip)) { a.ips.push(ip); if (a.ips.length > 25) a.ips = a.ips.slice(-25); changed = true; }
-  if (changed) await storeSet(assocKey(identity), a);
-  if (deviceId) {
-    const d = await storeGet<{ ids: string[] }>(devKey(deviceId), { ids: [] });
-    if (!d.ids.includes(identity)) { d.ids.push(identity); await storeSet(devKey(deviceId), d); }
+  if (!identity) return;
+  const safeDeviceId = typeof deviceId === "string" && /^\d{8}$/.test(deviceId) ? deviceId : "";
+  const safeIp = typeof ip === "string" && ip.length <= 120 ? ip : "";
+  await storeUpdate<Assoc, void>(assocKey(identity), { devices: [], ips: [] }, (stored) => {
+    const a = {
+      devices: Array.isArray(stored.devices) ? stored.devices : [],
+      ips: Array.isArray(stored.ips) ? stored.ips : []
+    };
+    if (safeDeviceId && !a.devices.includes(safeDeviceId)) a.devices.push(safeDeviceId);
+    if (a.devices.length > 50) a.devices = a.devices.slice(-50);
+    if (safeIp && safeIp !== "unknown" && !a.ips.includes(safeIp)) {
+      a.ips.push(safeIp);
+      if (a.ips.length > 25) a.ips = a.ips.slice(-25);
+    }
+    return { value: a, result: undefined };
+  });
+  if (safeDeviceId) {
+    await storeUpdate<{ ids: string[] }, void>(devKey(safeDeviceId), { ids: [] }, (stored) => {
+      const ids = Array.isArray(stored.ids) ? stored.ids : [];
+      if (!ids.includes(identity)) ids.push(identity);
+      return { value: { ids: ids.slice(-2_000) }, result: undefined };
+    });
   }
 }
 
-export async function getBanList(): Promise<BanList> { return await storeGet<BanList>(BAN_KEY, { identities: [], devices: [], ips: [] }); }
+export async function getBanList(): Promise<BanList> {
+  const b = await storeGet<BanList>(BAN_KEY, { identities: [], devices: [], ips: [] });
+  return {
+    identities: Array.isArray(b.identities) ? [...new Set(b.identities.filter((id) => typeof id === "string").slice(-50_000))] : [],
+    devices: Array.isArray(b.devices) ? [...new Set(b.devices.filter((id) => typeof id === "string").slice(-50_000))] : [],
+    ips: Array.isArray(b.ips) ? [...new Set(b.ips.filter((ip) => typeof ip === "string").slice(-50_000))] : []
+  };
+}
 
 const RETIRED_IPS_KEY = "safety:banlist:retired-ips";
 
@@ -239,30 +334,45 @@ const RETIRED_IPS_KEY = "safety:banlist:retired-ips";
 // the record of which IPs were once banned is preserved rather than destroyed.
 // Idempotent: a ban list with no IPs is left untouched. Returns how many moved.
 export async function retireBannedIps(): Promise<number> {
-  const b = await getBanList();
-  const ips = Array.isArray(b.ips) ? b.ips.filter(Boolean) : [];
-  if (ips.length === 0) {
-    if (Array.isArray(b.ips) && b.ips.length === 0) return 0;
-    b.ips = [];
-    await storeSet(BAN_KEY, b);
-    return 0;
-  }
-  const archive = await storeGet<{ ips: string[]; retiredAt: number }>(RETIRED_IPS_KEY, { ips: [], retiredAt: 0 });
-  const merged = Array.from(new Set([...(archive.ips || []), ...ips]));
-  await storeSet(RETIRED_IPS_KEY, { ips: merged, retiredAt: Date.now() });
-  b.ips = [];
-  await storeSet(BAN_KEY, b);
-  return ips.length;
+  return storeUpdatePair<BanList, { ips: string[]; retiredAt: number }, number>(
+    { key: BAN_KEY, fallback: { identities: [], devices: [], ips: [] } },
+    { key: RETIRED_IPS_KEY, fallback: { ips: [], retiredAt: 0 } },
+    ({ first: rawBan, second: rawArchive }) => {
+      const ban = {
+        identities: Array.isArray(rawBan?.identities) ? rawBan.identities.filter((id): id is string => typeof id === "string") : [],
+        devices: Array.isArray(rawBan?.devices) ? rawBan.devices.filter((id): id is string => typeof id === "string") : [],
+        ips: Array.isArray(rawBan?.ips) ? rawBan.ips.filter((ip): ip is string => typeof ip === "string" && ip.length <= 120) : []
+      };
+      const archive = {
+        ips: Array.isArray(rawArchive?.ips) ? rawArchive.ips.filter((ip): ip is string => typeof ip === "string" && ip.length <= 120) : [],
+        retiredAt: Number.isFinite(Number(rawArchive?.retiredAt)) ? Number(rawArchive.retiredAt) : 0
+      };
+      const ips = [...new Set(ban.ips)];
+      if (!ips.length) return { first: ban, second: archive, result: 0 };
+      return {
+        first: { ...ban, ips: [] },
+        second: { ips: [...new Set([...archive.ips, ...ips])].slice(-50_000), retiredAt: Date.now() },
+        result: ips.length
+      };
+    }
+  );
 }
 
 // The IPs that were on the ban list before IP banning was removed (record only).
 export async function retiredBannedIps(): Promise<string[]> {
-  return (await storeGet<{ ips: string[] }>(RETIRED_IPS_KEY, { ips: [] })).ips || [];
+  const stored = await storeGet<{ ips: string[] }>(RETIRED_IPS_KEY, { ips: [] });
+  return Array.isArray(stored?.ips)
+    ? [...new Set(stored.ips.filter((ip): ip is string => typeof ip === "string" && ip.length <= 120))].slice(-50_000)
+    : [];
 }
 
 // Device ids + IPs seen for an identity (used to show linked devices per account).
 export async function associationsFor(identity: string): Promise<Assoc> {
-  return await storeGet<Assoc>(assocKey(identity), { devices: [], ips: [] });
+  const stored = await storeGet<Assoc>(assocKey(identity), { devices: [], ips: [] });
+  return {
+    devices: Array.isArray(stored?.devices) ? stored.devices.filter((id): id is string => typeof id === "string" && /^\d{8}$/.test(id)).slice(-50) : [],
+    ips: Array.isArray(stored?.ips) ? stored.ips.filter((ip): ip is string => typeof ip === "string" && ip.length <= 120).slice(-25) : []
+  };
 }
 
 /* ---- Apple account ↔ device links (identity stays the device number) ---- */
@@ -270,16 +380,30 @@ function appleKey(sub: string): string { return `safety:applelink:${keyify(sub)}
 function devAppleKey(dev: string): string { return `safety:devapple:${keyify(dev)}`; }
 export async function linkApple(sub: string, deviceId: string): Promise<void> {
   if (!sub || !deviceId) return;
-  const a = await storeGet<{ devices: string[] }>(appleKey(sub), { devices: [] });
-  if (!a.devices.includes(deviceId)) { a.devices.push(deviceId); await storeSet(appleKey(sub), a); }
-  await storeSet(devAppleKey(deviceId), { sub });
+  const prior = await storeUpdate<{ sub: string }, string>(devAppleKey(deviceId), { sub: "" }, (stored) => {
+    const previous = typeof stored?.sub === "string" ? stored.sub : "";
+    return { value: { sub }, result: previous };
+  });
+  if (prior && prior !== sub) {
+    await storeUpdate<{ devices: string[] }, void>(appleKey(prior), { devices: [] }, (stored) => ({
+      value: { devices: (Array.isArray(stored.devices) ? stored.devices : []).filter((id) => id !== deviceId) },
+      result: undefined
+    }));
+  }
+  await storeUpdate<{ devices: string[] }, void>(appleKey(sub), { devices: [] }, (stored) => {
+    const devices = Array.isArray(stored.devices) ? stored.devices : [];
+    if (!devices.includes(deviceId)) devices.push(deviceId);
+    return { value: { devices: devices.slice(-100) }, result: undefined };
+  });
 }
 export async function devicesForApple(sub: string): Promise<string[]> {
   if (!sub) return [];
-  return (await storeGet<{ devices: string[] }>(appleKey(sub), { devices: [] })).devices;
+  const devices = (await storeGet<{ devices: string[] }>(appleKey(sub), { devices: [] })).devices;
+  return Array.isArray(devices) ? [...new Set(devices.filter((id) => /^\d{8}$/.test(id)))].slice(-100) : [];
 }
 export async function appleForDevice(deviceId: string): Promise<string> {
-  return (await storeGet<{ sub: string }>(devAppleKey(deviceId), { sub: "" })).sub;
+  const sub = (await storeGet<{ sub: string }>(devAppleKey(deviceId), { sub: "" })).sub;
+  return typeof sub === "string" ? sub.slice(0, 256) : "";
 }
 
 // IP addresses are recorded for context (associationsFor) but never used to
@@ -322,55 +446,67 @@ export async function isTestRestricted(identity: string): Promise<boolean> {
 // the user is queued an overview of why they were suspended, which they must
 // acknowledge before returning to the app.
 export async function reinstate(identity: string): Promise<void> {
-  const a = await getSafetyAccount(identity);
-  const cycleMessages = a.violations.slice();
-  a.status = "active"; a.strikes = 0; a.violations = []; a.pendingSuspension = null;
-  a.pendingNotice = buildReinstatementNotice(a, cycleMessages);
-  await saveSafetyAccount(a);
+  await storeUpdate<SafetyAccount | null, void>(acctKey(identity), null, (stored) => {
+    const a = normalizeSafetyAccount(identity, stored);
+    const cycleMessages = a.violations.slice();
+    a.status = "active"; a.strikes = 0; a.violations = []; a.pendingSuspension = null;
+    a.pendingNotice = buildReinstatementNotice(a, cycleMessages);
+    a.updatedAt = Date.now();
+    return { value: a, result: undefined };
+  });
+  await allIndexAdd(identity);
   await indexRemove(identity);
 }
 
 // Manually suspend an account (admin action). Counts as a suspension so the
 // escalation applies, and queues the same review as an automatic suspension.
 export async function suspendAccount(identity: string, reason?: string): Promise<SafetyAccount> {
-  const a = await getSafetyAccount(identity);
-  if (a.status === "terminated") return a;
-  if (a.status !== "suspended") {
-    a.status = "suspended";
-    a.suspensionCount += 1;
-  }
-  a.pendingSuspension = null;
-  if (reason && reason.trim()) {
-    a.violations.push({ text: reason.trim(), category: "admin", at: Date.now() });
-  }
-  await saveSafetyAccount(a);
+  const a = await storeUpdate<SafetyAccount | null, SafetyAccount>(acctKey(identity), null, (stored) => {
+    const current = normalizeSafetyAccount(identity, stored);
+    if (current.status === "terminated") return { value: current, result: current };
+    if (current.status !== "suspended") {
+      current.status = "suspended";
+      current.suspensionCount += 1;
+    }
+    current.pendingSuspension = null;
+    if (reason && reason.trim()) current.violations.push({ text: reason.trim().slice(0, 2_000), category: "admin", at: Date.now() });
+    current.updatedAt = Date.now();
+    return { value: current, result: current };
+  });
+  await allIndexAdd(identity);
   await indexAdd(identity);
   return a;
 }
 
 // Issue a warning the user sees (and must acknowledge) next time they open Taki.
 export async function warnUser(identity: string, message?: string): Promise<SafetyAccount> {
-  const a = await getSafetyAccount(identity);
-  a.warnings += 1;
-  a.pendingNotice = {
-    kind: "warning",
-    reason: (message && message.trim())
-      || "This is a formal warning. Please review Taki's Terms of Service — continued policy violations can lead to suspension.",
-    categories: [],
-    messages: [],
-    suspensionNumber: a.suspensionCount,
-    nextThreshold: strikeThreshold(a.suspensionCount),
-    at: Date.now()
-  };
-  await saveSafetyAccount(a);
+  const a = await storeUpdate<SafetyAccount | null, SafetyAccount>(acctKey(identity), null, (stored) => {
+    const current = normalizeSafetyAccount(identity, stored);
+    current.warnings += 1;
+    current.pendingNotice = {
+      kind: "warning",
+      reason: (message && message.trim().slice(0, 2_000))
+        || "This is a formal warning. Please review Taki's Terms of Service — continued policy violations can lead to suspension.",
+      categories: [], messages: [], suspensionNumber: current.suspensionCount,
+      nextThreshold: strikeThreshold(current.suspensionCount), at: Date.now()
+    };
+    current.updatedAt = Date.now();
+    return { value: current, result: current };
+  });
+  await allIndexAdd(identity);
   return a;
 }
 
 // The user has seen the reinstatement/warning overview — clear it so it isn't
 // shown again.
 export async function acknowledgeNotice(identity: string): Promise<void> {
-  const a = await getSafetyAccount(identity);
-  if (a.pendingNotice) { a.pendingNotice = null; await saveSafetyAccount(a); }
+  await storeUpdate<SafetyAccount | null, void>(acctKey(identity), null, (stored) => {
+    const a = normalizeSafetyAccount(identity, stored);
+    a.pendingNotice = null;
+    a.updatedAt = Date.now();
+    return { value: a, result: undefined };
+  });
+  await allIndexAdd(identity);
 }
 
 export async function pendingNoticeFor(identity: string): Promise<PendingNotice | null> {
@@ -420,7 +556,11 @@ export async function safetyDetailFor(identity: string): Promise<SafetyAccount &
 // banned) — the source for the admin "all accounts" section.
 export async function allSafetyAccounts(): Promise<SafetySummary[]> {
   const idx = await storeGet<{ ids: string[] }>(SAFETY_ALL_INDEX, { ids: [] });
-  const out = await Promise.all(idx.ids.map((id) => safetySummaryFor(id)));
+  const ids = Array.isArray(idx?.ids) ? [...new Set(idx.ids.filter((id): id is string => typeof id === "string"))].slice(-100_000) : [];
+  const stored = await storeGetMany<SafetyAccount>(ids.map(acctKey));
+  const out = ids
+    .filter((id) => stored.has(acctKey(id)))
+    .map((id) => safetySummary(normalizeSafetyAccount(id, stored.get(acctKey(id)))));
   return out.sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
@@ -432,17 +572,26 @@ export async function unban(identity: string): Promise<BanImpact> {
   const removeIds = new Set<string>([identity]);
   const removeDevs = new Set<string>(assoc.devices);
   const removeIps = new Set<string>(assoc.ips.filter((x) => x && x !== "unknown"));
-  const b = await getBanList();
-  b.identities = b.identities.filter((i) => !removeIds.has(i));
-  b.devices = b.devices.filter((d) => !removeDevs.has(d));
-  b.ips = b.ips.filter((ip) => !removeIps.has(ip));
-  await storeSet(BAN_KEY, b);
+  await storeUpdate<BanList, void>(BAN_KEY, { identities: [], devices: [], ips: [] }, (stored) => {
+    const b = {
+      identities: Array.isArray(stored.identities) ? stored.identities : [],
+      devices: Array.isArray(stored.devices) ? stored.devices : [],
+      ips: Array.isArray(stored.ips) ? stored.ips : []
+    };
+    b.identities = b.identities.filter((i) => !removeIds.has(i));
+    b.devices = b.devices.filter((d) => !removeDevs.has(d));
+    b.ips = b.ips.filter((ip) => !removeIps.has(ip));
+    return { value: b, result: undefined };
+  });
 
-  const a = await getSafetyAccount(identity);
-  const cycleMessages = a.violations.length ? a.violations.slice() : a.flaggedHistory.slice(-5);
-  a.status = "active"; a.strikes = 0; a.violations = []; a.pendingSuspension = null;
-  a.pendingNotice = buildReinstatementNotice(a, cycleMessages);
-  await saveSafetyAccount(a);
+  await storeUpdate<SafetyAccount | null, void>(acctKey(identity), null, (stored) => {
+    const a = normalizeSafetyAccount(identity, stored);
+    const cycleMessages = a.violations.length ? a.violations.slice() : a.flaggedHistory.slice(-5);
+    a.status = "active"; a.strikes = 0; a.violations = []; a.pendingSuspension = null;
+    a.pendingNotice = buildReinstatementNotice(a, cycleMessages);
+    a.updatedAt = Date.now();
+    return { value: a, result: undefined };
+  });
   await indexRemove(identity);
   return { identities: Array.from(removeIds), devices: Array.from(removeDevs), ips: Array.from(removeIps) };
 }
@@ -470,15 +619,25 @@ export async function previewTermination(identity: string): Promise<BanImpact> {
 // seen on those devices. Associated IPs are returned only for admin context.
 export async function terminateAndBan(identity: string): Promise<BanImpact> {
   const impact = await previewTermination(identity);
-  const b = await getBanList();
   // Ban the identities and devices only. Associated IPs stay in `impact` for the
   // record/preview but are deliberately NOT added to the ban list.
-  b.identities = Array.from(new Set([...b.identities, ...impact.identities]));
-  b.devices = Array.from(new Set([...b.devices, ...impact.devices]));
-  await storeSet(BAN_KEY, b);
+  await storeUpdate<BanList, void>(BAN_KEY, { identities: [], devices: [], ips: [] }, (stored) => {
+    const b = {
+      identities: Array.isArray(stored.identities) ? stored.identities : [],
+      devices: Array.isArray(stored.devices) ? stored.devices : [],
+      ips: Array.isArray(stored.ips) ? stored.ips : []
+    };
+    b.identities = Array.from(new Set([...b.identities, ...impact.identities]));
+    b.devices = Array.from(new Set([...b.devices, ...impact.devices]));
+    return { value: b, result: undefined };
+  });
   for (const i of impact.identities) {
-    const a = await getSafetyAccount(i);
-    a.status = "terminated"; a.pendingSuspension = null; await saveSafetyAccount(a);
+    await storeUpdate<SafetyAccount | null, void>(acctKey(i), null, (stored) => {
+      const a = normalizeSafetyAccount(i, stored);
+      a.status = "terminated"; a.pendingSuspension = null; a.updatedAt = Date.now();
+      return { value: a, result: undefined };
+    });
+    await allIndexAdd(i);
     await indexRemove(i);
   }
   return impact;
@@ -488,7 +647,11 @@ export async function terminateAndBan(identity: string): Promise<BanImpact> {
 // flagged messages (the only point at which that content becomes visible).
 export async function reviewQueue(): Promise<SafetyAccount[]> {
   const idx = await storeGet<{ ids: string[] }>(FLAGGED_INDEX, { ids: [] });
-  const out: SafetyAccount[] = [];
-  for (const id of idx.ids) out.push(await getSafetyAccount(id));
+  const ids = Array.isArray(idx?.ids) ? [...new Set(idx.ids.filter((id): id is string => typeof id === "string"))].slice(-50_000) : [];
+  const stored = await storeGetMany<SafetyAccount>(ids.map(acctKey));
+  const out = ids
+    .filter((id) => stored.has(acctKey(id)))
+    .map((id) => normalizeSafetyAccount(id, stored.get(acctKey(id))))
+    .filter((account) => account.status === "suspended");
   return out;
 }

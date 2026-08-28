@@ -10,37 +10,38 @@ import { buildConversationState } from "./src/context.js";
 import { planAssistantResponse } from "./src/planner.js";
 import { finalizeResponse } from "./src/validators.js";
 import { styleInCharacter, getWeatherSnapshot, inferEventDestination, matchEventToQuery, getTravelTime, answerAboutImage, answerAboutAttachments, fitVoiceResponse } from "./src/tools.js";
+import type { TakiAttachment } from "./src/tools.js";
 // getTravelTime (above) also powers the background commute push loop.
 import { briefForVoice, withTimeout } from "./src/util.js";
 import { parseIncomingStyleProfiles } from "./src/messageStyle.js";
 import { parseUserPersona } from "./src/persona.js";
 import {
-  registerToken, forgetToken, broadcast, getTokens, isPushConfigured,
+  registerToken, forgetToken, broadcast, getRegisteredTokens, isPushConfigured,
   registerLiveActivity, unregisterLiveActivity, getLiveActivities, sendLiveActivityUpdate, clearPushStateForReset
 } from "./src/push.js";
 import { cachedTrackerSnapshot } from "./src/tracker.js";
 import { extractFlightCode, normalizeTrackerKind } from "./src/entityClassifier.js";
 import { clearPushToken, getPushToken, setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, clearAlertsForReset, type Alert } from "./src/alerts.js";
-import { isDurable, storeDelete, storeDeleteCategory, storeGet, storeSet } from "./src/store.js";
+import { isDurable, storeDelete, storeDeleteCategory, storeGet, storeSet, storeUpdate } from "./src/store.js";
 import { summary as creditSummary, chargeUsageUsd, InsufficientCreditsError, reset as resetCredits, tierCatalog, grantForTransaction, activateSubscriptionTier, updateSubscriptionStatus, grantForConsumableTransaction, grantWebTopup, grantAdminCredits, adminCreditAdjustments, MAX_ADMIN_CREDIT_GRANT, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, CREDIT_USD, type Tier } from "./src/credits.js";
 import { measureUsage, sttCostUsd, totalUsageUsd, ttsCostUsd } from "./src/metering.js";
 import { decideAssistantCharge, planCorrectionSynthesis, usageBlockFor, usageBlockedPayload, voiceTurnEstimateCredits } from "./src/usage.js";
-import { verifyTransaction, verifyCreditTransaction, claimCreditTransaction, transferCreditTransaction, rebindCreditTransactions, linkTransactionIdentity, transferSubscriptionIdentity, claimSubscriptionPeriod, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
+import { verifyTransaction, verifyCreditTransaction, claimCreditTransaction, transferCreditTransaction, rebindCreditTransactions, linkTransactionIdentity, transferSubscriptionIdentity, claimSubscriptionPeriod, releaseSubscriptionPeriod, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
 import { revokeAppleAuthorizationCode, verifyAppleIdentityToken } from "./src/appleauth.js";
-import { purgeAppleAccount } from "./src/accountDeletion.js";
+import { purgeAppleAccount, purgeStandaloneAccount } from "./src/accountDeletion.js";
 import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, reinstate, terminateAndBan, unban, warnUser, suspendAccount, acknowledgeNotice, safetyDetailFor, allSafetyAccounts, retireBannedIps, retiredBannedIps, reviewQueue, linkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG } from "./src/safety.js";
 import { queueContextualSafetyReview } from "./src/safetyReview.js";
 import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, noteInteraction, noteChannelCost, noteSession, noteEngagementPreferences, noteBillingEvent, userForIdentity, identitiesForIp, allUsers, deleteUser, type UserRecord } from "./src/users.js";
 import { TIERS } from "./src/credits.js";
-import { billableAudioDurationMs, transcribe, synthesize, splitTextForProgressiveSpeech, listVoices, isVoiceConfigured, PIRATE_MARSHAL_VOICE_ID, speechCharacterCount, shouldAskForVoiceRepeat, VOICE_REPEAT_PROMPT } from "./src/voice.js";
+import { billableAudioDurationMs, transcribe, synthesize, splitTextForProgressiveSpeech, listVoices, isVoiceConfigured, PIRATE_MARSHAL_VOICE_ID, speechCharacterCount, shouldAskForVoiceRepeat, VOICE_REPEAT_PROMPT, normalizeSpeechKeyterms } from "./src/voice.js";
 import { extractDurableMemories } from "./src/userMemory.js";
 import { createChatTitle } from "./src/chatTitle.js";
 import { engagementSummary, isEngagementEmailConfigured, recordEngagementOpen, recordEngagementSession, recommendedEngagement, sendPersonalizedEngagement, shouldSendAutomatic, type EngagementChannel } from "./src/engagement.js";
 import { backfillApplePromotionalSubscribers, enrollApplePromotionalSubscriber, promotionalSummary, sendPromotionalCampaign, unsubscribePromotionalEmail } from "./src/promotional.js";
 import { performFullReset, previewFullReset, type FullResetPreview } from "./src/fullReset.js";
 import { bypassResetGeneration, hasCurrentResetGeneration, RESET_EPOCH_HEADER } from "./src/resetGeneration.js";
-import { isKnownIdentity, markWebAuthenticated, issueDeviceCredential, verifyDeviceCredential } from "./src/identity.js";
+import { isKnownIdentity, markWebAuthenticated, issueDeviceCredential, verifyDeviceCredential, issueWebSession, verifyWebSession, revokeWebAuthentication } from "./src/identity.js";
 import { bypassDeviceAuth } from "./src/deviceAuth.js";
 import { googleWebClientId, isGoogleWebAuthConfigured, verifyGoogleIdToken } from "./src/webauth.js";
 import { isProductKnowledgeQuestion, productAnswerFor } from "./src/productKnowledge.js";
@@ -56,11 +57,13 @@ const ADMIN_SECRET = (process.env.ADMIN_SECRET || "").trim();
 // older cached script can present a valid handoff token alongside its legacy
 // Account ID without being mistaken for an uncredentialed physical device.
 const PURCHASE_LINK_SECRET = process.env.PURCHASE_LINK_SECRET || process.env.STRIPE_WEBHOOK_SECRET || process.env.STRIPE_SECRET_KEY || "";
+const APNS_TOKEN_RE = /^[a-f0-9]{32,256}$/i;
 
-type PendingVoiceSynthesis = { deviceId: string; included: boolean; expiresAt: number };
+type PendingVoiceSynthesis = { deviceId: string; included: boolean; expiresAt: number; inFlight: boolean };
 const pendingVoiceSyntheses = new Map<string, PendingVoiceSynthesis>();
 const assistantTurnReplay = new TurnReplayCache<any>();
 const FULL_RESET_PHRASE = "DELETE EVERY TAKI ACCOUNT AND ALL DATA";
+const FULL_RESET_PREVIEW_KEY = "system:full-reset-preview";
 const fullResetPreviews = new Map<string, { expiresAt: number; fingerprint: string }>();
 let fullResetInProgress = false;
 let activeRequests = 0;
@@ -95,6 +98,15 @@ function requireAdminSecret(value: unknown, res: express.Response): boolean {
   return true;
 }
 
+function readAdminIdentity(req: express.Request, res: express.Response): string | null {
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  if (!/^(?:\d{8}|(?:apple|google):[^:\s]{1,256})$/.test(identity)) {
+    res.status(400).json({ error: "valid account identity required" });
+    return null;
+  }
+  return identity;
+}
+
 async function purgeLegacyInboxConnection(identity: string): Promise<void> {
   if (!identity) return;
   const safeIdentity = identity.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -113,7 +125,7 @@ function createVoiceSynthesisToken(deviceId: string, included: boolean): string 
   // Long enough to survive the phone leaving Taki to run the action (opening
   // Messages, granting a permission) — the token is the only thing that can
   // grant included speech, so an early expiry would silently start charging.
-  pendingVoiceSyntheses.set(token, { deviceId, included, expiresAt: now + 5 * 60_000 });
+  pendingVoiceSyntheses.set(token, { deviceId, included, expiresAt: now + 5 * 60_000, inFlight: false });
   return token;
 }
 
@@ -124,13 +136,33 @@ function takeVoiceSynthesisToken(token: string, deviceId: string): PendingVoiceS
     pendingVoiceSyntheses.delete(token);
     return null;
   }
-  pendingVoiceSyntheses.delete(token);
+  // Claim the capability before starting ElevenLabs. The previous read-then-
+  // consume sequence let two concurrent correction requests both use the same
+  // included Voice Credit. The text is intentionally not bound to the token:
+  // native action execution can replace the model's original confirmation with
+  // a corrected success/error line.
+  if (pending.inFlight) return null;
+  pending.inFlight = true;
   return pending;
 }
 
-async function chargeMeasuredUsage(deviceId: string, usage: { geminiUsd: number; searchUsd: number }): Promise<number> {
+function consumeVoiceSynthesisToken(token: string, deviceId: string): void {
+  const pending = pendingVoiceSyntheses.get(token);
+  if (pending?.deviceId === deviceId) pendingVoiceSyntheses.delete(token);
+}
+
+function releaseVoiceSynthesisToken(token: string, deviceId: string): void {
+  const pending = pendingVoiceSyntheses.get(token);
+  if (pending?.deviceId === deviceId) pending.inFlight = false;
+}
+
+async function chargeMeasuredUsage(
+  deviceId: string,
+  usage: { geminiUsd: number; searchUsd: number },
+  requestId?: string
+): Promise<number> {
   if (!deviceId) throw new Error("Cannot meter usage without an account identity");
-  const charged = await chargeUsageUsd(deviceId, usage.geminiUsd + usage.searchUsd, "text", randomUUID());
+  const charged = await chargeUsageUsd(deviceId, usage.geminiUsd + usage.searchUsd, "text", requestId || randomUUID());
   await noteSpend(deviceId, charged.spent);
   return charged.spent;
 }
@@ -171,6 +203,55 @@ function attachmentFeature(attachments: any[]): string {
   return kinds.has("text") ? "pasted_text" : "attachments";
 }
 
+const MAX_INLINE_ATTACHMENT_BASE64_CHARS = 14_000_000; // ~10 MB decoded
+const ATTACHMENT_KINDS = new Set(["image", "file", "url", "text"]);
+
+/**
+ * Normalize a raw base64 payload before it reaches a provider. Node's
+ * Buffer.from(value, "base64") is deliberately permissive: it silently
+ * ignores invalid characters and can turn a typo or an attacker-controlled
+ * string into a different byte sequence. Keep the wire format strict while
+ * accepting harmless line wrapping from older clients.
+ */
+function normalizeBase64Payload(value: string): string {
+  const compact = value.replace(/\s+/g, "");
+  if (!compact || compact.length > MAX_INLINE_ATTACHMENT_BASE64_CHARS) return "";
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(compact)) return "";
+  const unpadded = compact.replace(/=+$/, "");
+  const padding = compact.length - unpadded.length;
+  if (unpadded.length % 4 === 1) return "";
+  if (padding > 0 && (compact.length % 4 !== 0 || (padding === 1 && unpadded.length % 4 !== 3) || (padding === 2 && unpadded.length % 4 !== 2))) return "";
+  const decoded = Buffer.from(compact, "base64");
+  return decoded.length > 0 ? compact : "";
+}
+
+function normalizeAttachmentInputs(raw: unknown): TakiAttachment[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 6).flatMap((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const item = value as Record<string, unknown>;
+    const kind = typeof item.kind === "string" ? item.kind.trim().toLowerCase() : "";
+    if (!ATTACHMENT_KINDS.has(kind)) return [];
+    const base64 = typeof item.base64 === "string" ? normalizeBase64Payload(item.base64) : "";
+    const text = typeof item.text === "string" ? item.text.trim() : "";
+    const url = typeof item.url === "string" ? item.url.trim() : "";
+    // Do not bill or invoke the model for an attachment shell with no actual
+    // content.  Empty image/file entries used to fall through as a successful
+    // request and could make the model answer from the question alone.
+    if ((kind === "image" || kind === "file") && !base64) return [];
+    if (kind === "text" && !text) return [];
+    if (kind === "url" && !url) return [];
+    return [{
+      kind: kind as TakiAttachment["kind"],
+      name: typeof item.name === "string" ? item.name.trim().slice(0, 160) : "Attachment",
+      mime: typeof item.mime === "string" ? item.mime.trim().toLowerCase().slice(0, 128) : "",
+      ...(base64 ? { base64 } : {}),
+      ...(text ? { text: text.slice(0, 100_000) } : {}),
+      ...(url ? { url: url.slice(0, 2_048) } : {})
+    }];
+  });
+}
+
 /* ============================================================================
  * Taki AI server — planner-first architecture (entrypoint).
  *
@@ -190,10 +271,36 @@ function attachmentFeature(attachments: any[]): string {
  * ==========================================================================*/
 
 const app = express();
-app.use(cors());
+app.set("trust proxy", 1);
+const configuredOrigins = new Set(
+  (process.env.ALLOWED_ORIGINS || "https://takiai.app,https://www.takiai.app,http://localhost:3000,http://localhost:5173,http://localhost,https://localhost,capacitor://localhost,ionic://localhost")
+    .split(",").map((value) => value.trim()).filter(Boolean)
+);
+app.use(cors({
+  origin: (origin, callback) => {
+    // Native clients do not send Origin. Browsers must be restricted to the
+    // explicitly configured Taki web surfaces instead of receiving wildcard
+    // CORS access to account and billing endpoints.
+    if (!origin || configuredOrigins.has(origin)) callback(null, true);
+    else callback(new Error("Origin is not allowed"));
+  },
+  credentials: false,
+  maxAge: 600
+}));
 // Keep the raw body around so the Stripe webhook can verify its signature (Stripe
 // signs the exact bytes, not the parsed JSON).
-app.use(express.json({ limit: "16mb", verify: (req, _res, buf) => { (req as any).rawBody = buf; } }));
+app.use(express.json({
+  limit: "16mb",
+  verify: (req, _res, buf) => {
+    // Stripe signs the exact request bytes. Keep that buffer only for the
+    // webhook that needs it; retaining a copy for every 16 MB-capable API
+    // request needlessly doubles peak memory and made large image requests an
+    // easy process-level DoS.
+    if ((req as any).path === "/api/stripe/webhook" || String((req as any).originalUrl || "").split("?")[0] === "/api/stripe/webhook") {
+      (req as any).rawBody = buf;
+    }
+  }
+}));
 app.use(express.urlencoded({ extended: false, limit: "16kb" }));
 app.use((_req, res, next) => {
   if (fullResetInProgress) {
@@ -225,16 +332,43 @@ function requestPhysicalIdentities(req: express.Request): string[] {
     .filter((value) => /^\d{8}$/.test(value)))];
 }
 
+function requestProviderIdentities(req: express.Request): string[] {
+  const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
+  const query = req.query && typeof req.query === "object" ? req.query as Record<string, unknown> : {};
+  const values = [body.identity, body.deviceId, query.identity, query.deviceId];
+  return [...new Set(values
+    .flatMap((value) => Array.isArray(value) ? value : [value])
+    .map((value) => typeof value === "string" ? value.trim() : "")
+    .filter((value) => /^(?:apple|google):[^:\s]{1,256}$/.test(value)))];
+}
+
+function requestWebSession(req: express.Request): string {
+  const authorization = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
+  const bearer = authorization.match(/^Bearer\s+(.+)$/i)?.[1] || "";
+  const header = typeof req.headers["x-taki-session"] === "string" ? req.headers["x-taki-session"] : "";
+  const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
+  const query = req.query && typeof req.query === "object" ? req.query as Record<string, unknown> : {};
+  return (header || bearer || (typeof body.sessionToken === "string" ? body.sessionToken : "") || (typeof query.sessionToken === "string" ? query.sessionToken : "")).trim();
+}
+
+async function verifiedPhysicalDevice(req: express.Request): Promise<string | null> {
+  const deviceId = typeof req.headers["x-taki-device-id"] === "string" ? req.headers["x-taki-device-id"].trim() : "";
+  const credential = typeof req.headers["x-taki-device-credential"] === "string" ? req.headers["x-taki-device-credential"].trim() : "";
+  if (!/^\d{8}$/.test(deviceId) || !(await verifyDeviceCredential(deviceId, credential))) return null;
+  return deviceId;
+}
+
 app.use(async (req, res, next) => {
   if (!req.path.startsWith("/api/") || bypassDeviceAuth(req.path)) {
     next();
     return;
   }
   const identities = requestPhysicalIdentities(req);
+  const providerIdentities = requestProviderIdentities(req);
   const expectedHandoffPurpose = req.path === "/api/plans/checkout"
     ? "checkout" as const
     : req.path === "/api/credits/checkout"
-      ? undefined
+      ? "credits" as const
       : null;
   const handoff = expectedHandoffPurpose !== null
     ? verifyPurchaseLink(req.body?.handoffToken, expectedHandoffPurpose)
@@ -246,15 +380,34 @@ app.use(async (req, res, next) => {
     next();
     return;
   }
-  if (identities.length === 0) {
+  if (identities.length === 0 && providerIdentities.length === 0) {
     next();
     return;
   }
   const headerId = typeof req.headers["x-taki-device-id"] === "string" ? req.headers["x-taki-device-id"].trim() : "";
   const credential = typeof req.headers["x-taki-device-credential"] === "string" ? req.headers["x-taki-device-credential"].trim() : "";
-  if (!/^\d{8}$/.test(headerId) || identities.some((identity) => identity !== headerId) || !(await verifyDeviceCredential(headerId, credential))) {
+  const physicalValid = identities.length === 0
+    ? true
+    : /^\d{8}$/.test(headerId) && identities.every((identity) => identity === headerId) && await verifyDeviceCredential(headerId, credential);
+  if (!physicalValid) {
     res.status(401).json({ error: "This Taki installation needs to reconnect securely." });
     return;
+  }
+  if (providerIdentities.length) {
+    const physical = identities.length ? headerId : await verifiedPhysicalDevice(req);
+    const session = requestWebSession(req);
+    for (const identity of providerIdentities) {
+      let allowed = await verifyWebSession(identity, session);
+      // Apple-linked native requests may use their installation credential;
+      // Google web identities have no physical fallback.
+      if (!allowed && physical && identity.startsWith("apple:")) {
+        allowed = (await devicesForApple(identity.slice("apple:".length))).includes(physical);
+      }
+      if (!allowed) {
+        res.status(401).json({ error: "This Taki account session has expired. Please sign in again." });
+        return;
+      }
+    }
   }
   next();
 });
@@ -274,27 +427,46 @@ function signPurchaseLink(payload: PurchaseLinkPayload): string {
 }
 function verifyPurchaseLink(token: unknown, expectedPurpose?: PurchaseLinkPayload["purpose"]): PurchaseLinkPayload | null {
   if (!PURCHASE_LINK_SECRET || typeof token !== "string") return null;
-  const [body, suppliedSignature] = token.split(".");
-  if (!body || !suppliedSignature) return null;
+  if (token.length > 4_096) return null;
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+  const [body, suppliedSignature] = parts;
+  if (!body || !suppliedSignature || !/^[A-Za-z0-9_-]+$/.test(body) || !/^[A-Za-z0-9_-]+$/.test(suppliedSignature)) return null;
   const expectedSignature = createHmac("sha256", PURCHASE_LINK_SECRET).update(body).digest("base64url");
   const supplied = Buffer.from(suppliedSignature);
   const expected = Buffer.from(expectedSignature);
   if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return null;
   try {
     const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as PurchaseLinkPayload;
-    if (!(payload.purpose === "credits" || payload.purpose === "checkout") || (expectedPurpose && payload.purpose !== expectedPurpose) || !payload.identity || payload.exp < Date.now()) return null;
+    if (!(payload.purpose === "credits" || payload.purpose === "checkout")
+      || (expectedPurpose && payload.purpose !== expectedPurpose)
+      || !/^\d{8}$/.test(String(payload.identity || ""))
+      || typeof payload.nonce !== "string" || !/^[A-Za-z0-9_-]{8,128}$/.test(payload.nonce)
+      || !Number.isSafeInteger(payload.exp) || payload.exp <= Date.now()) return null;
     return payload;
   } catch { return null; }
 }
 
 app.get("/health", async (_req, res) => {
-  const reset = await storeGet<{ epoch?: number }>("system:reset", {});
-  res.json({
+  const durableStorage = isDurable();
+  const requiresDurableStorage = process.env.NODE_ENV === "production" || process.env.RENDER === "true" || process.env.REQUIRE_DURABLE_STORAGE === "1";
+  let reset: { epoch?: number } = {};
+  try { reset = await storeGet<{ epoch?: number }>("system:reset", {}); }
+  catch (error) {
+    console.error("health storage check failed:", error);
+    res.status(503).json({ ok: false, error: "durable storage unavailable", durableStorage });
+    return;
+  }
+  if (requiresDurableStorage && !durableStorage) {
+    res.status(503).json({ ok: false, error: "DATABASE_URL is required in production", durableStorage });
+    return;
+  }
+  res.status(200).json({
     ok: true,
     app: "Taki AI server",
     mode: "planner-first-modular-v3",
     version: "2026-07-31-lights-anchor-v36",
-    durableStorage: isDurable(),
+    durableStorage,
     aiProvider: ACTIVE_AI_PROVIDER,
     models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL },
     // Live Activity background updates require APNs config (APNS_KEY_P8 or
@@ -379,7 +551,7 @@ app.use(async (req, res, next) => {
 app.post("/api/register-push", async (req, res) => {
   const token = typeof req.body?.token === "string" ? req.body.token : "";
   const deviceId = normalizeTopupIdentity(typeof req.body?.deviceId === "string" ? req.body.deviceId : "");
-  if (!token || !/^\d{8}$/.test(deviceId)) {
+  if (!APNS_TOKEN_RE.test(token.trim()) || !/^\d{8}$/.test(deviceId)) {
     res.status(400).json({ error: "token and valid deviceId required" });
     return;
   }
@@ -387,7 +559,7 @@ app.post("/api/register-push", async (req, res) => {
   registerToken(token);
   // Tie the token to the device id so the nudge engine can target this device.
   await setPushToken(deviceId, token);
-  res.json({ ok: true, configured: isPushConfigured(), devices: getTokens().length });
+    res.json({ ok: true, configured: isPushConfigured(), devices: (await getRegisteredTokens()).length });
 });
 
 // The device syncs its upcoming nudge manifest on every foreground; the cron
@@ -444,13 +616,18 @@ app.post("/api/style", async (req, res) => {
     res.status(400).json({ error: "text required" });
     return;
   }
-  const deviceId = await requireCreditIdentity(req.body?.deviceId, res);
+  const deviceId = await requireCreditIdentity(req.body?.deviceId, res, req);
   if (!deviceId) return;
   try {
     const persona = parseUserPersona(req.body?.profile);
     const measured = await measureUsage(() => withTimeout(styleInCharacter(text, persona), 8000, "Style"));
     const styled = measured.value;
-    await chargeMeasuredUsage(deviceId, measured.usage);
+    await chargeMeasuredUsage(deviceId, measured.usage, turnMeteringRequestId(
+      req.body?.requestId,
+      "style",
+      text,
+      JSON.stringify(req.body?.profile || {})
+    ));
     res.json({ text: (styled || text).trim() });
   } catch (error) {
     console.error("Style error:", error);
@@ -464,12 +641,23 @@ app.post("/api/register-la", async (req, res) => {
   const id = typeof req.body?.id === "string" ? req.body.id : "";
   const token = typeof req.body?.token === "string" ? req.body.token : "";
   const deviceId = normalizeTopupIdentity(typeof req.body?.deviceId === "string" ? req.body.deviceId : "");
-  if (!id || !token || !/^\d{8}$/.test(deviceId)) {
+  if (!/^[a-zA-Z0-9_.:-]{1,128}$/.test(id) || !APNS_TOKEN_RE.test(token.trim()) || !/^\d{8}$/.test(deviceId)) {
     res.status(400).json({ error: "id, token, and valid deviceId required" });
     return;
   }
   if (!(await isKnownIdentity(deviceId))) { res.status(401).json({ error: "registered device required" }); return; }
-  const meta = req.body?.meta && typeof req.body.meta === "object" ? req.body.meta : {};
+  const rawMeta = req.body?.meta && typeof req.body.meta === "object" && !Array.isArray(req.body.meta) ? req.body.meta as Record<string, unknown> : {};
+  // Live Activity metadata is later used by a background worker. Keep it to
+  // small JSON primitives so a modified client cannot persist an arbitrarily
+  // deep object or a huge string that is replayed on every polling tick.
+  const meta: Record<string, any> = {};
+  for (const [key, value] of Object.entries(rawMeta).slice(0, 24)) {
+    const safeKey = key.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 64);
+    if (!safeKey) continue;
+    if (typeof value === "string") meta[safeKey] = value.slice(0, 400);
+    else if (typeof value === "number" && Number.isFinite(value)) meta[safeKey] = value;
+    else if (typeof value === "boolean") meta[safeKey] = value;
+  }
   const requestedKind = typeof req.body?.kind === "string" ? req.body.kind : "finance";
   const query = typeof meta?.query === "string" ? meta.query : "";
   const environment = req.body?.environment === "production" ? "production" : req.body?.environment === "sandbox" ? "sandbox" : undefined;
@@ -509,6 +697,7 @@ const deadToken = (r: { status: number; reason?: string }) =>
 // actually changed (pushing identical frames every 15s wastes Apple's Live
 // Activity budget and invites throttling).
 const lastPushed = new Map<string, string>();
+const lastPushedAt = new Map<string, number>();
 const livePushKey = (registration: { id: string; deviceId?: string }) => `${registration.deviceId || "legacy"}:${registration.id}`;
 
 // Data trackers: re-fetch (cached) and push every 15s. Product prices use a
@@ -525,6 +714,7 @@ setInterval(async () => {
         await sendLiveActivityUpdate(reg.token, null, "end", reg.environment);
         await unregisterLiveActivity(reg.id, reg.deviceId || "legacy");
         lastPushed.delete(livePushKey(reg));
+        lastPushedAt.delete(livePushKey(reg));
         continue;
       }
       if (reg.kind !== "finance" && reg.kind !== "product" && reg.kind !== "sports" && reg.kind !== "flight" && reg.kind !== "package") continue;
@@ -543,10 +733,14 @@ setInterval(async () => {
         }
         const sig = JSON.stringify(content);
         const pushKey = livePushKey(reg);
-        if (lastPushed.get(pushKey) === sig) continue;
+        const unchanged = lastPushed.get(pushKey) === sig;
+        // Send an identical heartbeat at least every four minutes. ActivityKit
+        // receives a fresh stale-date even when a score/quote itself has not
+        // changed, so an otherwise healthy activity never looks frozen.
+        if (unchanged && Date.now() - (lastPushedAt.get(pushKey) || 0) < 4 * 60_000) continue;
         const result = await sendLiveActivityUpdate(reg.token, content, "update", reg.environment);
-        if (deadToken(result)) { await unregisterLiveActivity(reg.id, reg.deviceId || "legacy"); lastPushed.delete(pushKey); }
-        else lastPushed.set(pushKey, sig);
+        if (deadToken(result)) { await unregisterLiveActivity(reg.id, reg.deviceId || "legacy"); lastPushed.delete(pushKey); lastPushedAt.delete(pushKey); }
+        else { lastPushed.set(pushKey, sig); lastPushedAt.set(pushKey, Date.now()); }
       } catch (error) {
         console.error("Live Activity push error:", error);
       }
@@ -572,6 +766,7 @@ setInterval(async () => {
       if (Number.isFinite(startEpoch) && startEpoch * 1000 < Date.now()) {
         await sendLiveActivityUpdate(reg.token, null, "end", reg.environment);
         await unregisterLiveActivity(reg.id, reg.deviceId || "legacy");
+        lastPushedAt.delete(livePushKey(reg));
         continue;
       }
       try {
@@ -602,14 +797,14 @@ app.post("/api/alerts", async (req, res) => {
   const b = req.body || {};
   const deviceId = normalizeTopupIdentity(typeof b.deviceId === "string" ? b.deviceId : "");
   const kind = b.kind === "price" || b.kind === "score" ? b.kind : "";
-  const query = typeof b.query === "string" ? b.query.trim() : "";
+  const query = typeof b.query === "string" ? b.query.trim().slice(0, 300) : "";
   if (!/^\d{8}$/.test(deviceId) || !kind || !query) { res.status(400).json({ error: "deviceId, kind, and query required" }); return; }
   if (!(await isKnownIdentity(deviceId))) { res.status(401).json({ error: "registered device required" }); return; }
-  const base = { id: `alert-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, deviceId, createdAt: Date.now(), query, label: typeof b.label === "string" && b.label ? b.label : query };
+  const base = { id: `alert-${randomUUID()}`, deviceId, createdAt: Date.now(), query, label: typeof b.label === "string" && b.label.trim() ? b.label.trim().slice(0, 200) : query };
   let alert: Alert;
   if (kind === "price") {
     const target = Number(b.target);
-    if (!Number.isFinite(target)) { res.status(400).json({ error: "target required" }); return; }
+    if (!Number.isFinite(target) || target <= 0 || Math.abs(target) > 1e15) { res.status(400).json({ error: "target must be a positive finite number" }); return; }
     alert = { ...base, kind: "price", target, direction: b.direction === "below" ? "below" : "above" };
   } else {
     alert = { ...base, kind: "score", trigger: b.trigger === "final" ? "final" : "any" };
@@ -630,8 +825,11 @@ app.post("/api/alerts/cancel", async (req, res) => {
   const deviceId = normalizeTopupIdentity(typeof b.deviceId === "string" ? b.deviceId : "");
   if (!/^\d{8}$/.test(deviceId)) { res.status(400).json({ error: "deviceId required" }); return; }
   if (!(await isKnownIdentity(deviceId))) { res.status(401).json({ error: "registered device required" }); return; }
-  const filter = (b.id || b.kind || b.query)
-    ? { id: typeof b.id === "string" ? b.id : undefined, kind: typeof b.kind === "string" ? b.kind : undefined, query: typeof b.query === "string" ? b.query : undefined }
+  const filterId = typeof b.id === "string" ? b.id.trim().slice(0, 160) : "";
+  const filterKind = b.kind === "price" || b.kind === "score" ? b.kind : "";
+  const filterQuery = typeof b.query === "string" ? b.query.trim().slice(0, 300) : "";
+  const filter = filterId || filterKind || filterQuery
+    ? { id: filterId || undefined, kind: filterKind || undefined, query: filterQuery || undefined }
     : undefined;
   const removed = await cancelAlerts(deviceId, filter);
   res.json({ ok: true, removed });
@@ -652,11 +850,11 @@ setInterval(() => { void tickNudges(); }, 60 * 1000);
 // this to keep the lock-screen / Dynamic Island tracker fresh.
 app.get("/api/track", async (req, res) => {
   const deviceId = normalizeTopupIdentity(typeof req.query.deviceId === "string" ? req.query.deviceId : "");
-  const requestedKind = typeof req.query.kind === "string" ? req.query.kind : "";
-  const query = typeof req.query.q === "string" ? req.query.q : "";
+  const requestedKind = typeof req.query.kind === "string" ? req.query.kind.trim().slice(0, 30) : "";
+  const query = typeof req.query.q === "string" ? req.query.q.trim().slice(0, 300) : "";
   const kind = normalizeTrackerKind(requestedKind, query);
-  const tz = typeof req.query.tz === "string" ? req.query.tz : undefined;
-  if ((kind !== "finance" && kind !== "product" && kind !== "sports" && kind !== "flight" && kind !== "package") || !query) {
+  const tz = typeof req.query.tz === "string" ? req.query.tz.trim().slice(0, 100) : undefined;
+  if ((kind !== "finance" && kind !== "product" && kind !== "sports" && kind !== "flight" && kind !== "package") || !query || !validTimeZone(tz)) {
     res.status(400).json({ error: "kind (finance|product|sports|flight|package) and q are required" });
     return;
   }
@@ -684,7 +882,7 @@ app.get("/api/widget-weather", async (req, res) => {
   const lat = Number(req.query.lat);
   const lon = Number(req.query.lon);
   const tz = typeof req.query.tz === "string" ? req.query.tz : undefined;
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180 || !validTimeZone(tz)) {
     res.status(400).json({ error: "lat and lon are required" });
     return;
   }
@@ -714,11 +912,17 @@ app.post("/api/resolve-destination", async (req, res) => {
   const notes = typeof req.body?.notes === "string" ? req.body.notes.slice(0, 4000) : "";
   const lat = Number(req.body?.lat);
   const lon = Number(req.body?.lon);
+  const hasLat = Number.isFinite(lat);
+  const hasLon = Number.isFinite(lon);
+  if ((hasLat !== hasLon) || (hasLat && (lat < -90 || lat > 90 || lon < -180 || lon > 180))) {
+    res.status(400).json({ error: "lat and lon must be supplied together within valid ranges" });
+    return;
+  }
   if (!title && !location) {
     res.status(400).json({ error: "title or location is required" });
     return;
   }
-  const deviceId = await requireCreditIdentity(req.body?.deviceId, res);
+  const deviceId = await requireCreditIdentity(req.body?.deviceId, res, req);
   if (!deviceId) return;
   try {
     const measured = await measureUsage(() => withTimeout(
@@ -733,7 +937,15 @@ app.post("/api/resolve-destination", async (req, res) => {
       "Resolve destination"
     ));
     const dest = measured.value;
-    await chargeMeasuredUsage(deviceId, measured.usage);
+    await chargeMeasuredUsage(deviceId, measured.usage, turnMeteringRequestId(
+      req.body?.requestId,
+      "resolve-destination",
+      title,
+      location,
+      notes,
+      String(Number.isFinite(lat) ? lat : ""),
+      String(Number.isFinite(lon) ? lon : "")
+    ));
     if (!dest) {
       res.status(404).json({ error: "could not resolve a destination" });
       return;
@@ -759,12 +971,17 @@ app.post("/api/match-event", async (req, res) => {
     res.json({ index: -1 });
     return;
   }
-  const deviceId = await requireCreditIdentity(req.body?.deviceId, res);
+  const deviceId = await requireCreditIdentity(req.body?.deviceId, res, req);
   if (!deviceId) return;
   try {
     const measured = await measureUsage(() => withTimeout(matchEventToQuery(query, events), 10000, "Match event"));
     const index = measured.value;
-    await chargeMeasuredUsage(deviceId, measured.usage);
+    await chargeMeasuredUsage(deviceId, measured.usage, turnMeteringRequestId(
+      req.body?.requestId,
+      "match-event",
+      query,
+      JSON.stringify(events)
+    ));
     res.json({ index });
   } catch (error) {
     console.error("Match event error:", error);
@@ -774,20 +991,34 @@ app.post("/api/match-event", async (req, res) => {
 
 // Vision: answer a question about a photo (base64) the user took/picked.
 app.post("/api/vision", async (req, res) => {
-  const image = typeof req.body?.image === "string" ? req.body.image : "";
-  const mime = typeof req.body?.mime === "string" ? req.body.mime : "image/jpeg";
+  const rawImage = typeof req.body?.image === "string" ? req.body.image : "";
+  const requestedMime = typeof req.body?.mime === "string" ? req.body.mime.trim().toLowerCase() : "image/jpeg";
+  const mime = /^image\/(?:jpeg|jpg|png|webp|gif|heic|heif)$/.test(requestedMime) ? requestedMime : "";
   const question = typeof req.body?.question === "string" ? req.body.question.slice(0, 8000) : "";
   const timeZone = typeof req.body?.timeZone === "string" ? req.body.timeZone : undefined;
   const userProfile = parseUserPersona(req.body?.profile, req.body?.addressUser);
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   const voiceMode = req.body?.voiceMode === true;
-  if (!image) {
+  if (!rawImage) {
     res.status(400).json({ error: "image is required" });
     return;
   }
-  if (!(await requireCreditIdentity(deviceId, res))) return;
+  if (!mime) {
+    res.status(400).json({ error: "a supported image MIME type is required" });
+    return;
+  }
+  if (rawImage.length > MAX_INLINE_ATTACHMENT_BASE64_CHARS) {
+    res.status(413).json({ error: "image is too large" });
+    return;
+  }
+  const image = normalizeBase64Payload(rawImage);
+  if (!image) {
+    res.status(400).json({ error: "image must be valid base64" });
+    return;
+  }
+  if (!(await requireCreditIdentity(deviceId, res, req))) return;
   const visionGate = await safetyGate(deviceId, question, req);
-  if (visionGate) { res.json({ spokenText: visionGate.message, blocked: true, ...(visionGate.block ? { access: visionGate.block, accessMessage: visionGate.message } : {}) }); return; }
+  if (visionGate) { res.status(visionGate.failClosed ? 503 : 200).json({ spokenText: visionGate.message, blocked: true, ...(visionGate.block ? { access: visionGate.block, accessMessage: visionGate.message } : {}) }); return; }
   let tier: Tier = "free";
   const sum = await creditSummary(deviceId);
   tier = sum.tier;
@@ -809,7 +1040,12 @@ app.post("/api/vision", async (req, res) => {
       voiceOutputUsd: speechUsd
     });
     if (charge.block) { res.status(402).json(usageBlockedPayload(charge.block)); return; }
-    const s = await chargeUsageUsd(deviceId, charge.usageUsd, voiceMode ? "voice" : "text", String(req.body?.requestId || randomUUID()));
+    const s = await chargeUsageUsd(
+      deviceId,
+      charge.usageUsd,
+      voiceMode ? "voice" : "text",
+      turnMeteringRequestId(req.body?.requestId, "vision", image, question, mime, voiceMode ? "voice" : "text")
+    );
     await noteSpend(deviceId, s.spent);
     await noteCreditCharge(deviceId, voiceMode ? "voice" : "text", s);
     await noteInteraction(deviceId, {
@@ -831,7 +1067,10 @@ app.post("/api/vision", async (req, res) => {
 });
 
 app.post("/api/attachments", async (req, res) => {
-  const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments.slice(0, 6) : [];
+  const rawAttachments = Array.isArray(req.body?.attachments) ? req.body.attachments : [];
+  const oversized = rawAttachments.some((item: any) => item && typeof item === "object" && typeof item.base64 === "string" && item.base64.length > MAX_INLINE_ATTACHMENT_BASE64_CHARS);
+  if (oversized) { res.status(413).json({ error: "attachment is too large" }); return; }
+  const attachments = normalizeAttachmentInputs(rawAttachments);
   const attachmentCredits = attachmentBaseCostCredits(attachments);
   const question = typeof req.body?.question === "string" ? req.body.question.slice(0, 8000) : "";
   const timeZone = typeof req.body?.timeZone === "string" ? req.body.timeZone : undefined;
@@ -839,10 +1078,10 @@ app.post("/api/attachments", async (req, res) => {
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   const voiceMode = req.body?.voiceMode === true;
   if (!attachments.length) { res.status(400).json({ error: "attachment is required" }); return; }
-  if (!(await requireCreditIdentity(deviceId, res))) return;
+  if (!(await requireCreditIdentity(deviceId, res, req))) return;
 
   const gate = await safetyGate(deviceId, question, req);
-  if (gate) { res.json({ spokenText: gate.message, blocked: true, ...(gate.block ? { access: gate.block, accessMessage: gate.message } : {}) }); return; }
+  if (gate) { res.status(gate.failClosed ? 503 : 200).json({ spokenText: gate.message, blocked: true, ...(gate.block ? { access: gate.block, accessMessage: gate.message } : {}) }); return; }
 
   let tier: Tier = "free";
   const attachmentSummary = await creditSummary(deviceId);
@@ -866,7 +1105,12 @@ app.post("/api/attachments", async (req, res) => {
       voiceOutputUsd: speechUsd
     });
     if (charge.block) { res.status(402).json(usageBlockedPayload(charge.block)); return; }
-    const spent = await chargeUsageUsd(deviceId, charge.usageUsd, voiceMode ? "voice" : "text", String(req.body?.requestId || randomUUID()));
+    const spent = await chargeUsageUsd(
+      deviceId,
+      charge.usageUsd,
+      voiceMode ? "voice" : "text",
+      turnMeteringRequestId(req.body?.requestId, "attachments", question, JSON.stringify(attachments), voiceMode ? "voice" : "text")
+    );
     await noteSpend(deviceId, spent.spent);
     await noteInteraction(deviceId, {
       channel: voiceMode ? "voice" : "text",
@@ -894,41 +1138,88 @@ app.post("/api/attachments", async (req, res) => {
 // other), remaining 7 = a per-country registration sequence. Server-tracked so
 // numbers are unique + never reused; the device saves it in the Keychain so it
 // persists across reinstall. Serialized so concurrent registrations don't collide.
-let deviceSeqChain: Promise<unknown> = Promise.resolve();
 async function assignDeviceNumber(region: string): Promise<string> {
   const country = region.toUpperCase() === "US" ? "1" : "0";
-  const run = deviceSeqChain.then(async () => {
-    // Random 7 digits (so the id doesn't reveal how many devices exist), checked
-    // against a used-set for uniqueness and marked so it's never reused.
-    for (let attempt = 0; attempt < 25; attempt++) {
-      const rnd = String(Math.floor(Math.random() * 10_000_000)).padStart(7, "0");
-      const id = country + rnd;
-      if (!(await storeGet<boolean>(`devnum:used:${id}`, false))) {
-        await storeSet(`devnum:used:${id}`, true);
-        return id;
-      }
-    }
-    // Astronomically unlikely fallback (would need the number space near-full).
-    const id = country + String(Date.now()).slice(-7);
-    await storeSet(`devnum:used:${id}`, true);
-    return id;
-  });
-  deviceSeqChain = run.then(() => {}, () => {});
-  return run;
+  // Random ids avoid exposing account volume, while storeUpdate makes the
+  // claim atomic across every server instance (the old read-then-write pair
+  // could issue the same id during a registration burst).
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const rnd = String(Math.floor(Math.random() * 10_000_000)).padStart(7, "0");
+    const id = country + rnd;
+    const claimed = await storeUpdate<boolean, boolean>(`devnum:used:${id}`, false, (used) => used
+      ? { value: true, result: false }
+      : { value: true, result: true });
+    if (claimed) return id;
+  }
+  throw new Error("device id space is temporarily unavailable");
+}
+
+const registrationWindows = new Map<string, { at: number; count: number }>();
+function localRegistrationAllowed(ip: string): boolean {
+  const now = Date.now();
+  if (registrationWindows.size > 5_000) {
+    for (const [key, value] of registrationWindows) if (now - value.at > 10 * 60_000) registrationWindows.delete(key);
+  }
+  const previous = registrationWindows.get(ip);
+  const state = !previous || now - previous.at > 10 * 60_000 ? { at: now, count: 0 } : previous;
+  if (state.count >= 5) return false;
+  state.count += 1;
+  registrationWindows.set(ip, state);
+  return true;
+}
+
+async function registrationAllowed(ip: string): Promise<boolean> {
+  // The in-memory guard handles development without a database. Production
+  // needs a shared counter, otherwise each Render instance could independently
+  // mint five accounts for the same network and recreate the ghost-account
+  // burst this limit is meant to stop.
+  if (!isDurable()) return localRegistrationAllowed(ip);
+  const bucket = createHash("sha256").update(ip || "unknown").digest("hex").slice(0, 32);
+  try {
+    return await storeUpdate<{ at: number; count: number }, boolean>(`rate:register:${bucket}`, { at: 0, count: 0 }, (stored) => {
+      const now = Date.now();
+      const at = Number(stored?.at || 0);
+      const count = Number(stored?.count || 0);
+      const current = at > 0 && now - at <= 10 * 60_000 ? { at, count } : { at: now, count: 0 };
+      if (current.count >= 5) return { value: current, result: false };
+      current.count += 1;
+      return { value: current, result: true };
+    });
+  } catch (error) {
+    console.error("registration rate-limit storage failed:", error);
+    return false;
+  }
 }
 
 app.post("/api/register-device", async (req, res) => {
+  if (!(await registrationAllowed(clientIp(req)))) {
+    res.status(429).json({ error: "Too many new installations from this network. Try again later." });
+    return;
+  }
   const region = typeof req.body?.region === "string" ? req.body.region : "";
+  let deviceId = "";
+  let registrationCompleted = false;
   try {
-    const deviceId = await assignDeviceNumber(region);
+    deviceId = await assignDeviceNumber(region);
     // Registration creates the account record and starter ledger together. A
     // device ID can therefore never exist only on the phone or be invisible in
     // the admin dashboard.
     await noteUser(deviceId, clientIp(req), String(req.headers?.["user-agent"] || ""));
     const credits = await creditSummary(deviceId);
     const credential = await issueDeviceCredential(deviceId);
+    registrationCompleted = true;
     res.json({ deviceId, credential, credits });
   } catch (e) {
+    if (deviceId && !registrationCompleted) {
+      // A failed response must not leave a permanently issued, otherwise-empty
+      // installation that later appears as a ghost account or blocks recovery.
+      await Promise.allSettled([
+        deleteUser(deviceId),
+        storeDelete(`credits:${deviceId}`),
+        storeDelete(`devicecredential:${deviceId}`),
+        storeDelete(`devnum:used:${deviceId}`)
+      ]);
+    }
     console.error("register-device error:", e);
     res.status(502).json({ error: "could not register device" });
   }
@@ -950,20 +1241,28 @@ app.get("/api/web/auth/config", (_req, res) => {
 
 // Shared tail: record the verified account, ensure its ledger, return identity+credits.
 async function finishWebSignIn(req: any, res: any, identity: string, email?: string, name?: string) {
-  await markWebAuthenticated(identity);
-  await noteUser(identity, clientIp(req), String(req.headers?.["user-agent"] || ""));
-  if (identity.startsWith("apple:")) {
-    const appleSub = identity.slice("apple:".length);
-    await noteApple(identity, { sub: appleSub, email, name });
-    await enrollApplePromotionalSubscriber({ email, appleSub, identity });
-  }
+  // Check enforcement before persisting a web-auth marker or analytics record.
+  // A rejected sign-in must not leave a session that can be replayed later.
   const ip = clientIp(req);
   if ((await isBanned(identity, undefined, ip)) || (await isTestRestricted(identity))) {
     res.status(403).json({ error: "This account is restricted." });
     return;
   }
+  await markWebAuthenticated(identity);
+  const sessionToken = await issueWebSession(identity);
+  if (!sessionToken) {
+    res.status(503).json({ error: "Web sign-in is temporarily unavailable. Please try again." });
+    return;
+  }
+  await noteUser(identity, ip, String(req.headers?.["user-agent"] || ""));
+  if (identity.startsWith("apple:")) {
+    const appleSub = identity.slice("apple:".length);
+    await noteApple(identity, { sub: appleSub, email, name });
+    await enrollApplePromotionalSubscriber({ email, appleSub, identity });
+  }
   const credits = await creditSummary(identity);
-  res.json({ identity, email: email || "", name: name || "", credits });
+  res.set("Cache-Control", "no-store");
+  res.json({ identity, email: email || "", name: name || "", sessionToken, expiresIn: 30 * 24 * 60 * 60, credits });
 }
 
 app.post("/api/web/auth/google", async (req, res) => {
@@ -979,12 +1278,33 @@ app.post("/api/web/auth/apple", async (req, res) => {
   await finishWebSignIn(req, res, `apple:${verified.sub}`, verified.email);
 });
 
+app.post("/api/web/auth/logout", async (req, res) => {
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  if (!/^(?:apple|google):[^:\s]{1,256}$/.test(identity) || !(await verifyWebSession(identity, requestWebSession(req)))) {
+    res.status(401).json({ error: "valid web session required" });
+    return;
+  }
+  await revokeWebAuthentication(identity);
+  res.set("Cache-Control", "no-store").json({ ok: true });
+});
+
 app.post("/api/device/info", async (req, res) => {
   const b = req.body || {};
   const deviceId = typeof b.deviceId === "string" ? normalizeTopupIdentity(b.deviceId) : "";
   if (!/^\d{8}$/.test(deviceId)) { res.status(400).json({ error: "valid deviceId required" }); return; }
+  const credential = typeof req.headers["x-taki-device-credential"] === "string"
+    ? req.headers["x-taki-device-credential"].trim()
+    : "";
   if (!(await storeGet<boolean>(`devnum:used:${deviceId}`, false))) {
     res.status(404).json({ error: "unknown device" }); return;
+  }
+  // This endpoint is reachable without the global device middleware so an
+  // installation can recover after a full reset removed its credential. Never
+  // return a different response for a known id with a bad credential: the app
+  // treats the generic 404 as a signal to provision a fresh installation.
+  if (!(await verifyDeviceCredential(deviceId, credential))) {
+    res.status(404).json({ error: "unknown device" });
+    return;
   }
   // Repair accounts created by older builds that issued an ID without adding a
   // complete dashboard record. Validation runs whenever the app launches.
@@ -1049,10 +1369,19 @@ app.post("/api/analytics/session", async (req, res) => {
   }
   const campaign = typeof req.body?.campaign === "string" ? req.body.campaign.trim().slice(0, 80) : "";
   await noteSession(identity, durationSeconds, campaign || undefined);
-  // The campaign UUID is an unguessable capability delivered in the push. The
-  // app may report its physical device id while the campaign belongs to its
-  // canonical Apple identity, so attribution must not reject that valid alias.
-  if (campaign) await recordEngagementSession(campaign, undefined, durationSeconds);
+  if (campaign) {
+    const candidates = [identity];
+    if (/^\d{8}$/.test(identity)) {
+      const appleSub = await appleForDevice(identity);
+      if (appleSub) candidates.push(`apple:${appleSub}`);
+    }
+    // The campaign may belong to the linked Apple identity, but it must still
+    // match one of this installation's verified identities. This prevents a
+    // caller from inflating another account's engagement metrics with a UUID.
+    for (const candidate of [...new Set(candidates)]) {
+      if (await recordEngagementSession(campaign, candidate, durationSeconds)) break;
+    }
+  }
   res.json({ ok: true });
 });
 
@@ -1060,7 +1389,7 @@ const CLIENT_BILLING_EVENTS = new Set(["pricing_page_viewed", "plan_selected"]);
 app.post("/api/analytics/billing", async (req, res) => {
   const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
   const event = typeof req.body?.event === "string" ? req.body.event.trim() : "";
-  if (!(await requireCreditIdentity(identity, res))) return;
+  if (!(await requireCreditIdentity(identity, res, req))) return;
   if (!CLIENT_BILLING_EVENTS.has(event)) { res.status(400).json({ error: "unsupported billing event" }); return; }
   const tier = (["plus", "plus_voice", "pro"] as string[]).includes(String(req.body?.tier || ""))
     ? String(req.body.tier)
@@ -1073,11 +1402,20 @@ app.post("/api/engagement/open", async (req, res) => {
   const campaign = typeof req.body?.campaign === "string" ? req.body.campaign.trim() : "";
   const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
   if (!campaign || !identity) { res.status(400).json({ error: "campaign and identity required" }); return; }
+  if (!(await requireCreditIdentity(identity, res, req))) return;
   // A signed-in app can open a campaign sent to its canonical Apple identity
-  // while reporting the physical device id. The campaign UUID already binds the
-  // event to the correct account; an exact identity comparison caused every
-  // legitimate tap in that configuration to be shown as ignored.
-  const recorded = await recordEngagementOpen(campaign);
+  // while reporting the physical device id. Try the physical identity first,
+  // then its verified Apple alias; never accept an arbitrary campaign UUID from
+  // an authenticated but unrelated account.
+  const candidates = [identity];
+  if (/^\d{8}$/.test(identity)) {
+    const appleSub = await appleForDevice(identity);
+    if (appleSub) candidates.push(`apple:${appleSub}`);
+  }
+  let recorded = false;
+  for (const candidate of [...new Set(candidates)]) {
+    if (await recordEngagementOpen(campaign, candidate)) { recorded = true; break; }
+  }
   res.status(recorded ? 200 : 404).json({ ok: recorded });
 });
 
@@ -1090,6 +1428,11 @@ app.get("/api/engagement/click", async (req, res) => {
 async function captureRequestDeviceInfo(req: any, takiName: string): Promise<void> {
   const deviceId = typeof req.body?.physicalDeviceId === "string" ? normalizeTopupIdentity(req.body.physicalDeviceId) : "";
   if (!/^\d{8}$/.test(deviceId)) return;
+  // This helper runs in the background after assistant/voice authentication.
+  // Do not let an authenticated account write device metadata for a different
+  // physical installation by putting another id in `physicalDeviceId`.
+  const authenticatedDevice = await verifiedPhysicalDevice(req);
+  if (authenticatedDevice !== deviceId) return;
   if (!(await storeGet<boolean>(`devnum:used:${deviceId}`, false)) && !(await hasCreditsAccount(deviceId))) return;
   const info = req.body?.deviceInfo || {};
   await noteDevice(deviceId, {
@@ -1103,12 +1446,7 @@ async function captureRequestDeviceInfo(req: any, takiName: string): Promise<voi
 app.get("/api/credits", async (req, res) => {
   const deviceId = typeof req.query.deviceId === "string" ? req.query.deviceId.trim() : "";
   if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
-  if (!deviceId.startsWith("apple:") && !deviceId.startsWith("google:") && !/^\d{8}$/.test(deviceId)) {
-    res.status(400).json({ error: "registered deviceId required" }); return;
-  }
-  if (!(await isKnownIdentity(deviceId))) {
-    res.status(404).json({ error: "device account not found; register this installation again" }); return;
-  }
+  if (!(await requireCreditIdentity(deviceId, res, req))) return;
   // Report access status so the app can hard-block a banned/suspended account on
   // launch (full-screen), not just when the user asks something.
   let access: "active" | "suspended" | "banned" = "active";
@@ -1135,6 +1473,7 @@ app.post("/api/account/acknowledge-notice", async (req, res) => {
   const b = req.body || {};
   const identity = typeof b.identity === "string" ? b.identity.trim() : (typeof b.deviceId === "string" ? b.deviceId.trim() : "");
   if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  if (!(await requireCreditIdentity(identity, res, req))) return;
   await acknowledgeNotice(identity);
   res.json({ ok: true });
 });
@@ -1144,14 +1483,14 @@ app.post("/api/account/acknowledge-notice", async (req, res) => {
 // device-only attachment previews never leave the originating device.
 app.get("/api/chats", async (req, res) => {
   if (!(await verifyDeviceCredential(String(req.headers["x-taki-device-id"] || ""), String(req.headers["x-taki-device-credential"] || "")))) { res.status(401).json({ error: "This Taki installation needs to reconnect." }); return; }
-  const identity = await requireCreditIdentity(req.query?.deviceId, res);
+  const identity = await requireCreditIdentity(req.query?.deviceId, res, req);
   if (!identity) return;
   res.json(await readSyncedChats(identity));
 });
 
 app.post("/api/chats/sync", async (req, res) => {
   if (!(await verifyDeviceCredential(String(req.headers["x-taki-device-id"] || ""), String(req.headers["x-taki-device-credential"] || "")))) { res.status(401).json({ error: "This Taki installation needs to reconnect." }); return; }
-  const identity = await requireCreditIdentity(req.body?.deviceId, res);
+  const identity = await requireCreditIdentity(req.body?.deviceId, res, req);
   if (!identity) return;
   const chats = Array.isArray(req.body?.chats) ? req.body.chats : [];
   const activeChatId = typeof req.body?.activeChatId === "string" ? req.body.activeChatId : undefined;
@@ -1166,7 +1505,7 @@ app.post("/api/chats/sync", async (req, res) => {
 app.post("/api/credits/preflight", async (req, res) => {
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   if (!deviceId) { res.status(400).json({ error: "deviceId is required" }); return; }
-  if (!(await requireCreditIdentity(deviceId, res))) return;
+  if (!(await requireCreditIdentity(deviceId, res, req))) return;
   const kind = req.body?.kind === "voice" ? "voice" : req.body?.kind === "attachment" ? "attachment" : "text";
   const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments.slice(0, 6) : [];
   const summary = await creditSummary(deviceId);
@@ -1208,7 +1547,8 @@ app.get("/api/credits/topup-config", (_req, res) => {
 });
 
 function normalizeTopupIdentity(identity: string): string {
-  return identity.replace(/\D/g, "").slice(0, 8);
+  const value = String(identity || "").trim();
+  return /^\d{8}$/.test(value) ? value : "";
 }
 
 function creditsKeyForIdentity(identity: string): string {
@@ -1220,9 +1560,22 @@ async function hasCreditsAccount(identity: string): Promise<boolean> {
   return !!acct && acct.deviceId === identity && Number(acct.updatedAt || 0) > 0;
 }
 
-async function requireCreditIdentity(rawIdentity: unknown, res: any): Promise<string | null> {
+async function requireCreditIdentity(rawIdentity: unknown, res: any, req?: express.Request): Promise<string | null> {
   const identity = typeof rawIdentity === "string" ? rawIdentity.trim() : "";
-  if (!identity || !(await isKnownIdentity(identity)) || !(await hasCreditsAccount(identity))) {
+  const canonical = /^\d{8}$/.test(identity) || /^(?:apple|google):[^:\s]{1,256}$/.test(identity);
+  let authorized = false;
+  if (canonical && req) {
+    if (/^\d{8}$/.test(identity)) {
+      authorized = (await verifiedPhysicalDevice(req)) === identity;
+    } else {
+      authorized = await verifyWebSession(identity, requestWebSession(req));
+      if (!authorized && identity.startsWith("apple:")) {
+        const physical = await verifiedPhysicalDevice(req);
+        authorized = !!physical && (await devicesForApple(identity.slice("apple:".length))).includes(physical);
+      }
+    }
+  }
+  if (!canonical || !authorized || !(await isKnownIdentity(identity)) || !(await hasCreditsAccount(identity))) {
     res.status(401).json({ error: "A registered Taki AI account is required." });
     return null;
   }
@@ -1318,17 +1671,14 @@ async function validateTopupAccount(identity: string): Promise<PurchaseAccount> 
   };
 }
 
-function publicPurchaseAccount(v: PurchaseAccount, checkoutToken = "") {
+function publicPurchaseAccount(v: PurchaseAccount, checkoutToken = "", includePrivate = false) {
   return {
     valid: v.valid,
     reason: v.reason || "",
     identity: v.publicId,
     isPro: v.isPro,
     tier: v.tier,
-    appleSynced: v.appleSynced,
-    email: v.email,
-    displayName: v.displayName,
-    devices: v.devices,
+    ...(includePrivate ? { appleSynced: v.appleSynced, email: v.email, displayName: v.displayName, devices: v.devices } : {}),
     min: CREDIT_TOPUP_MIN,
     max: CREDIT_TOPUP_MAX,
     centsPerCredit: topupCentsPerCredit(v.tier),
@@ -1355,7 +1705,7 @@ app.post("/api/credits/handoff", async (req, res) => {
   if (!payload) { res.status(401).json({ valid: false, reason: "This purchase link expired. Open Membership in Taki and try again." }); return; }
   const account = await validateTopupAccount(payload.identity);
   if (!account.valid) { res.status(400).json(publicPurchaseAccount(account)); return; }
-  res.json(publicPurchaseAccount(account));
+  res.json(publicPurchaseAccount(account, "", true));
 });
 
 const purchaseLookupWindows = new Map<string, { at: number; count: number }>();
@@ -1381,7 +1731,7 @@ app.post("/api/credits/account-check", async (req, res) => {
   const checkoutToken = v.valid && PURCHASE_LINK_SECRET
     ? signPurchaseLink({ identity: v.publicId, exp: Date.now() + 10 * 60_000, nonce: randomUUID(), purpose: "checkout" })
     : "";
-  res.json(publicPurchaseAccount(v, checkoutToken));
+  res.json(publicPurchaseAccount(v, checkoutToken, false));
 });
 
 // Step 2: start a checkout for `credits` credits toward `identity`. Re-validates
@@ -1389,8 +1739,18 @@ app.post("/api/credits/account-check", async (req, res) => {
 // sent prices/Pro flags are never trusted).
 app.post("/api/credits/checkout", async (req, res) => {
   if (!stripe) { res.status(503).json({ error: "top-ups are not available yet" }); return; }
-  const handoff = verifyPurchaseLink(req.body?.handoffToken);
-  const identity = handoff?.identity || (typeof req.body?.identity === "string" ? normalizeTopupIdentity(req.body.identity) : "");
+  // A plan-checkout handoff is a different capability from a credit top-up
+  // handoff.  Accepting any valid signed token here would let a token minted
+  // for one flow authorize the other, which is especially easy to trigger
+  // from a stale browser tab.  Keep the purpose check at the route boundary
+  // as well as in the shared middleware.
+  const handoff = verifyPurchaseLink(req.body?.handoffToken, "credits");
+  const submittedIdentity = typeof req.body?.identity === "string" ? normalizeTopupIdentity(req.body.identity) : "";
+  if (handoff && submittedIdentity && submittedIdentity !== handoff.identity) {
+    res.status(400).json({ error: "The purchase link does not match this account." });
+    return;
+  }
+  const identity = handoff?.identity || submittedIdentity;
   const credits = Math.floor(Number(req.body?.credits));
   if (!identity) { res.status(400).json({ error: "account ID required" }); return; }
   const v = await validateTopupAccount(identity);
@@ -1422,15 +1782,40 @@ type WebSubscription = {
   periodStart?: number | null;
   periodEnd?: number | null;
   updatedAt: number;
+  /** Stripe event creation time used to ignore an older webhook delivered late. */
+  eventCreatedAt?: number;
 };
 const webSubKey = (id: string) => `stripe:subscription:${id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 const webSubsForIdentityKey = (identity: string) => `stripe:identity-subs:${identity.replace(/[^a-zA-Z0-9_:-]/g, "_")}`;
 
-async function saveWebSubscription(record: WebSubscription): Promise<void> {
-  await storeSet(webSubKey(record.id), record);
-  const key = webSubsForIdentityKey(record.identity);
-  const list = await storeGet<{ ids: string[] }>(key, { ids: [] });
-  if (!list.ids.includes(record.id)) { list.ids.push(record.id); await storeSet(key, list); }
+async function saveWebSubscription(record: WebSubscription): Promise<{ applied: boolean; record: WebSubscription }> {
+  const saved = await storeUpdate<WebSubscription | null, { applied: boolean; record: WebSubscription }>(webSubKey(record.id), null, (stored) => {
+    const incomingEventAt = Number(record.eventCreatedAt || 0);
+    const priorEventAt = Number(stored?.eventCreatedAt || 0);
+    if (stored && incomingEventAt > 0 && priorEventAt > incomingEventAt) {
+      // Stripe can deliver subscription events out of order. Keep the newest
+      // authoritative state instead of allowing a late cancellation/update to
+      // roll the record back.
+      return { value: stored, result: { applied: false, record: stored } };
+    }
+    const next: WebSubscription = {
+      ...(stored || {}),
+      ...record,
+      ...(incomingEventAt > 0 ? { eventCreatedAt: incomingEventAt } : priorEventAt > 0 ? { eventCreatedAt: priorEventAt } : {})
+    };
+    return {
+      value: next,
+      result: { applied: true, record: next }
+    };
+  });
+  if (!saved.record.identity) return saved;
+  const key = webSubsForIdentityKey(saved.record.identity);
+  await storeUpdate<{ ids: string[] }, void>(key, { ids: [] }, (list) => {
+    const ids = Array.isArray(list.ids) ? list.ids : [];
+    if (!ids.includes(saved.record.id)) ids.push(saved.record.id);
+    return { value: { ids }, result: undefined };
+  });
+  return saved;
 }
 
 async function hasOtherActiveWebSubscription(identity: string, excluding: string): Promise<boolean> {
@@ -1453,7 +1838,7 @@ async function retireOtherWebSubscriptions(identity: string, keeping: string): P
     try { await stripe.subscriptions.cancel(id); } catch (error) { console.error("retire prior Stripe subscription:", error); }
     record.active = false;
     record.updatedAt = Date.now();
-    await storeSet(webSubKey(id), record);
+    await saveWebSubscription(record);
   }
 }
 
@@ -1471,7 +1856,7 @@ async function cancelWebSubscriptionsForDeletion(identity: string): Promise<void
     record.identity = "";
     record.publicId = "";
     record.updatedAt = Date.now();
-    await storeSet(webSubKey(id), record);
+    await saveWebSubscription(record);
   }
   await storeDelete(key);
 }
@@ -1479,7 +1864,12 @@ async function cancelWebSubscriptionsForDeletion(identity: string): Promise<void
 app.post("/api/plans/checkout", async (req, res) => {
   if (!stripe) { res.status(503).json({ error: "subscriptions are not available yet" }); return; }
   const handoff = verifyPurchaseLink(req.body?.handoffToken, "checkout");
-  const publicId = handoff?.identity || (typeof req.body?.identity === "string" ? normalizeTopupIdentity(req.body.identity) : "");
+  const submittedIdentity = typeof req.body?.identity === "string" ? normalizeTopupIdentity(req.body.identity) : "";
+  if (handoff && submittedIdentity && submittedIdentity !== handoff.identity) {
+    res.status(400).json({ error: "The purchase link does not match this account." });
+    return;
+  }
+  const publicId = handoff?.identity || submittedIdentity;
   const tier = String(req.body?.tier || "") as Tier;
   if (!(["plus", "plus_voice", "pro"] as string[]).includes(tier)) { res.status(400).json({ error: "choose a valid plan" }); return; }
   const account = await validateTopupAccount(publicId);
@@ -1533,22 +1923,29 @@ app.post("/api/stripe/webhook", async (req, res) => {
       const dedupeKey = `stripe:session:${s.id}`;
       try {
         if (identity && subscriptionId && (["plus", "plus_voice", "pro"] as string[]).includes(tier) && !(await storeGet<boolean>(dedupeKey, false))) {
-          await saveWebSubscription({ id: subscriptionId, identity, publicId: s.metadata?.publicId || "", tier, active: true, status: "active", periodStart: Date.now(), periodEnd: null, updatedAt: Date.now() });
-          await retireOtherWebSubscriptions(identity, subscriptionId);
-          const granted = await grantForTransaction(identity, tier, `stripe:first:${s.id}`, {
+          const saved = await saveWebSubscription({ id: subscriptionId, identity, publicId: s.metadata?.publicId || "", tier, active: true, status: "active", periodStart: Date.now(), periodEnd: null, updatedAt: Date.now(), eventCreatedAt: Number(event.created || 0) * 1000 || Date.now() });
+          if (!saved.applied) {
+            // A checkout event delivered after a newer subscription event must
+            // not roll the record back or grant a stale first-cycle ledger.
+            await storeSet(dedupeKey, true);
+            res.json({ received: true });
+            return;
+          }
+          await retireOtherWebSubscriptions(saved.record.identity, subscriptionId);
+          const granted = await grantForTransaction(saved.record.identity, saved.record.tier, `stripe:first:${s.id}`, {
             subscriptionId,
             transactionId: s.id,
-            productId: `${tier}_monthly`,
-            periodStart: Date.now(),
-            periodEnd: null,
+            productId: `${saved.record.tier}_monthly`,
+            periodStart: saved.record.periodStart,
+            periodEnd: saved.record.periodEnd,
             reason: "stripe_subscription_started",
             status: "active"
           });
           await storeSet(dedupeKey, true);
           if (granted.granted) {
-            await noteTier(identity, tier, "stripe_subscription");
-            await noteBillingEvent(identity, "subscription_started", { tier, provider: "stripe" });
-            await noteRevenue(identity, { at: Date.now(), kind: "web_subscription", amountUsd: (s.amount_total || TIERS[tier].priceUsd * 100) / 100, credits: TIERS[tier].creditsPerCycle, tier });
+            await noteTier(saved.record.identity, saved.record.tier, "stripe_subscription");
+            await noteBillingEvent(saved.record.identity, "subscription_started", { tier: saved.record.tier, provider: "stripe" });
+            await noteRevenue(saved.record.identity, { at: Date.now(), kind: "web_subscription", amountUsd: (s.amount_total || TIERS[saved.record.tier].priceUsd * 100) / 100, credits: TIERS[saved.record.tier].creditsPerCycle, tier: saved.record.tier });
           }
         }
       } catch (e) {
@@ -1582,27 +1979,36 @@ app.post("/api/stripe/webhook", async (req, res) => {
       const dedupeKey = `stripe:invoice:${invoice.id}`;
       try {
         const record = subscriptionId ? await storeGet<WebSubscription | null>(webSubKey(subscriptionId), null) : null;
+        if (!record) throw new Error("Stripe invoice references an unknown subscription; retry after checkout webhook is persisted");
         if (record?.active && !(await storeGet<boolean>(dedupeKey, false))) {
           const periodStart = Number(invoice.period_start || 0) * 1000 || null;
           const periodEnd = Number(invoice.period_end || 0) * 1000 || null;
           record.periodStart = periodStart;
           record.periodEnd = periodEnd;
           record.status = "active";
-          await saveWebSubscription(record);
-          const granted = await grantForTransaction(record.identity, record.tier, `stripe:renewal:${invoice.id}`, {
-            subscriptionId,
-            transactionId: String(invoice.id || ""),
-            productId: `${record.tier}_monthly`,
-            periodStart,
-            periodEnd,
-            reason: "stripe_subscription_renewed",
-            status: "active"
-          });
-          await storeSet(dedupeKey, true);
-          if (granted.granted) {
-            await noteTier(record.identity, record.tier, "stripe_renewal");
-            await noteBillingEvent(record.identity, "subscription_renewed", { tier: record.tier, provider: "stripe" });
-            await noteRevenue(record.identity, { at: Date.now(), kind: "web_subscription", amountUsd: Number(invoice.amount_paid || 0) / 100, credits: TIERS[record.tier].creditsPerCycle, tier: record.tier });
+          record.eventCreatedAt = Number(event.created || 0) * 1000 || Date.now();
+          const saved = await saveWebSubscription(record);
+          if (saved.applied) {
+            const applied = saved.record;
+            const granted = await grantForTransaction(applied.identity, applied.tier, `stripe:renewal:${invoice.id}`, {
+              subscriptionId,
+              transactionId: String(invoice.id || ""),
+              productId: `${applied.tier}_monthly`,
+              periodStart,
+              periodEnd,
+              reason: "stripe_subscription_renewed",
+              status: "active"
+            });
+            await storeSet(dedupeKey, true);
+            if (granted.granted) {
+              await noteTier(applied.identity, applied.tier, "stripe_renewal");
+              await noteBillingEvent(applied.identity, "subscription_renewed", { tier: applied.tier, provider: "stripe" });
+              await noteRevenue(applied.identity, { at: Date.now(), kind: "web_subscription", amountUsd: Number(invoice.amount_paid || 0) / 100, credits: TIERS[applied.tier].creditsPerCycle, tier: applied.tier });
+            }
+          } else {
+            // A newer subscription event won the atomic row update. Mark this
+            // invoice as observed so a replay cannot keep doing ledger work.
+            await storeSet(dedupeKey, true);
           }
         }
       } catch (e) {
@@ -1615,36 +2021,82 @@ app.post("/api/stripe/webhook", async (req, res) => {
   if (event.type === "customer.subscription.updated") {
     const subscription: any = event.data.object;
     const record = await storeGet<WebSubscription | null>(webSubKey(String(subscription.id || "")), null);
+    if (!record) {
+      // Delivery can race checkout.session.completed. Ask Stripe to retry
+      // instead of acknowledging an update that could otherwise be lost.
+      res.status(500).json({ error: "subscription record not available yet" });
+      return;
+    }
     if (record) {
       const previousTier = record.tier;
       const nextTier = String(subscription.metadata?.tier || record.tier) as Tier;
       if ((["plus", "plus_voice", "pro"] as string[]).includes(nextTier)) record.tier = nextTier;
-      record.active = !["canceled", "unpaid", "incomplete_expired"].includes(String(subscription.status || ""));
-      record.status = subscription.cancel_at_period_end ? "cancelled" : String(subscription.status || "active");
+      const stripeStatus = String(subscription.status || "active").toLowerCase();
+      const terminal = ["canceled", "unpaid", "incomplete_expired"].includes(stripeStatus);
+      record.active = !terminal && stripeStatus !== "incomplete";
+      record.status = subscription.cancel_at_period_end ? "cancelled" : stripeStatus;
       record.periodStart = Number(subscription.current_period_start || 0) * 1000 || record.periodStart || null;
       record.periodEnd = Number(subscription.current_period_end || 0) * 1000 || record.periodEnd || null;
       record.updatedAt = Date.now();
-      await saveWebSubscription(record);
-      await updateSubscriptionStatus(record.identity,
-        subscription.cancel_at_period_end ? "cancelled" : subscription.status === "past_due" ? "billing_retry" : "active",
-        { subscriptionId: record.id, productId: `${record.tier}_monthly`, periodStart: record.periodStart, periodEnd: record.periodEnd }
+      record.eventCreatedAt = Number(event.created || 0) * 1000 || Date.now();
+      const saved = await saveWebSubscription(record);
+      if (!saved.applied) {
+        // A late delivery must not apply its stale tier/status to the credit
+        // ledger after a newer subscription event has already won the row.
+        res.json({ received: true });
+        return;
+      }
+      const applied = saved.record;
+      if (!applied.identity) {
+        // Account deletion blanks the subscription identity. Do not recreate a
+        // synthetic empty ledger if a subscription update arrives afterward.
+        res.json({ received: true });
+        return;
+      }
+      const ledgerStatus = subscription.cancel_at_period_end
+        ? "cancelled"
+        : stripeStatus === "past_due" || stripeStatus === "incomplete"
+          ? "billing_retry"
+          : terminal
+            ? "expired"
+            : "active";
+      await updateSubscriptionStatus(applied.identity,
+        ledgerStatus,
+        { subscriptionId: applied.id, productId: `${applied.tier}_monthly`, periodStart: applied.periodStart, periodEnd: applied.periodEnd }
       );
+      if (terminal && !(await hasOtherActiveWebSubscription(applied.identity, applied.id)) && !(await primarySubscriptionForIdentity(applied.identity))) {
+        await downgradeToFree(applied.identity, { subscriptionId: applied.id, productId: `${applied.tier}_monthly`, periodStart: applied.periodStart, periodEnd: applied.periodEnd });
+        await noteTier(applied.identity, "free", "stripe_subscription_ended");
+        await noteBillingEvent(applied.identity, "subscription_expired", { tier: applied.tier, provider: "stripe" });
+      }
       if (nextTier !== previousTier) {
         const rank: Record<string, number> = { plus: 1, plus_voice: 2, pro: 3 };
-        if ((rank[nextTier] || 0) > (rank[previousTier] || 0)) await activateSubscriptionTier(record.identity, nextTier);
-        await noteBillingEvent(record.identity, (rank[nextTier] || 0) > (rank[previousTier] || 0) ? "subscription_upgraded" : "subscription_downgraded", { fromTier: previousTier, toTier: nextTier, provider: "stripe" });
+        if ((rank[nextTier] || 0) > (rank[previousTier] || 0)) await activateSubscriptionTier(applied.identity, nextTier);
+        await noteBillingEvent(applied.identity, (rank[nextTier] || 0) > (rank[previousTier] || 0) ? "subscription_upgraded" : "subscription_downgraded", { fromTier: previousTier, toTier: nextTier, provider: "stripe" });
       } else if (subscription.cancel_at_period_end) {
-        await noteBillingEvent(record.identity, "subscription_cancelled", { tier: record.tier, provider: "stripe", accessUntilPeriodEnd: true });
+        await noteBillingEvent(applied.identity, "subscription_cancelled", { tier: applied.tier, provider: "stripe", accessUntilPeriodEnd: true });
       }
     }
   }
   if (event.type === "customer.subscription.deleted") {
     const subscription: any = event.data.object;
-    const record = await storeGet<WebSubscription | null>(webSubKey(String(subscription.id || "")), null);
-    if (record) {
-      record.active = false;
-      record.updatedAt = Date.now();
-      await storeSet(webSubKey(record.id), record);
+    const subscriptionId = String(subscription.id || "");
+    const outcome = await storeUpdate<WebSubscription | null, { applied: boolean; record: WebSubscription | null }>(webSubKey(subscriptionId), null, (stored) => {
+      if (!stored) return { value: null, result: { applied: false, record: null } };
+      const eventCreatedAt = Number(event.created || 0) * 1000 || Date.now();
+      if (Number(stored.eventCreatedAt || 0) > eventCreatedAt) return { value: stored, result: { applied: false, record: stored } };
+      const next = { ...stored, active: false, updatedAt: Date.now(), eventCreatedAt };
+      return { value: next, result: { applied: true, record: next } };
+    });
+    if (outcome.applied && outcome.record) {
+      const record = outcome.record;
+      // Account deletion intentionally blanks the stored identity. A late
+      // Stripe deletion event must not create a blank account or downgrade an
+      // empty identity; the deletion path already canceled and scrubbed it.
+      if (!record.identity) {
+        res.json({ received: true });
+        return;
+      }
       if (!(await hasOtherActiveWebSubscription(record.identity, record.id)) && !(await primarySubscriptionForIdentity(record.identity))) {
         await downgradeToFree(record.identity, { subscriptionId: record.id, productId: `${record.tier}_monthly`, periodStart: record.periodStart, periodEnd: record.periodEnd });
         await noteTier(record.identity, "free", "stripe_subscription_ended");
@@ -1664,7 +2116,7 @@ app.post("/api/stripe/webhook", async (req, res) => {
 app.get("/api/iap/credit-packs", async (req, res) => {
   const identity = typeof req.query.identity === "string" ? req.query.identity.trim() : "";
   if (!identity) { res.status(400).json({ error: "identity required" }); return; }
-  if (!(await requireCreditIdentity(identity, res))) return;
+  if (!(await requireCreditIdentity(identity, res, req))) return;
   const account = await creditSummary(identity);
   const packs = Object.entries(IN_APP_CREDIT_PRODUCTS).map(([productId, pack]) => ({
     productId,
@@ -1684,7 +2136,7 @@ app.post("/api/iap/verify", async (req, res) => {
   const b = req.body || {};
   const identity = typeof b.identity === "string" ? b.identity.trim() : (typeof b.deviceId === "string" ? b.deviceId.trim() : "");
   if (!identity) { res.status(400).json({ error: "identity required" }); return; }
-  if (!(await requireCreditIdentity(identity, res))) return;
+  if (!(await requireCreditIdentity(identity, res, req))) return;
   const jwsList: string[] = Array.isArray(b.transactions)
     ? b.transactions.filter((t: unknown) => typeof t === "string")
     : (typeof b.transaction === "string" ? [b.transaction] : []);
@@ -1743,8 +2195,10 @@ app.post("/api/iap/verify", async (req, res) => {
     // Grant this cycle's credits only if no identity has claimed it yet; either
     // way the entitlement (tier) applies to the presenting device.
     const periodIsNew = await claimSubscriptionPeriod(info.periodKey);
-    const r = periodIsNew
-      ? await grantForTransaction(identity, info.tier, info.periodKey, {
+    let r;
+    if (periodIsNew) {
+      try {
+        r = await grantForTransaction(identity, info.tier, info.periodKey, {
           subscriptionId: info.originalTransactionId,
           transactionId: info.transactionId,
           productId: info.productId,
@@ -1752,17 +2206,26 @@ app.post("/api/iap/verify", async (req, res) => {
           periodEnd: info.expiresDate ?? null,
           reason: "storekit_subscription",
           status: "active"
-        })
-      : { granted: false, summary: await (async () => {
-          await activateSubscriptionTier(identity, info.tier);
-          return updateSubscriptionStatus(identity, "active", {
-            subscriptionId: info.originalTransactionId,
-            transactionId: info.transactionId,
-            productId: info.productId,
-            periodStart: info.purchaseDate ?? null,
-            periodEnd: info.expiresDate ?? null
-          });
-        })() };
+        });
+      } catch (error) {
+        // The global period reservation is separate from the account ledger.
+        // Release it when the ledger write fails so Apple's retry can grant the
+        // cycle instead of seeing a phantom "already claimed" period.
+        await releaseSubscriptionPeriod(info.periodKey).catch((releaseError) => console.error("IAP period release failed:", releaseError));
+        throw error;
+      }
+    } else {
+      r = { granted: false, summary: await (async () => {
+        await activateSubscriptionTier(identity, info.tier);
+        return updateSubscriptionStatus(identity, "active", {
+          subscriptionId: info.originalTransactionId,
+          transactionId: info.transactionId,
+          productId: info.productId,
+          periodStart: info.purchaseDate ?? null,
+          periodEnd: info.expiresDate ?? null
+        });
+      })() };
+    }
     if (r.granted) {
       // Analytics: record the plan + gross revenue for this billing period.
       await noteTier(identity, info.tier, "subscription");
@@ -1917,6 +2380,25 @@ app.post("/api/account/delete", async (req, res) => {
   }
 });
 
+// Google web accounts do not have an Apple authorization code to revoke. A
+// signed, still-live web session is the reauthentication step; all durable
+// account, billing, chat, safety, and notification records are then removed.
+app.post("/api/account/delete-google", async (req, res) => {
+  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  if (!/^google:[^:\s]{1,256}$/.test(identity) || !(await verifyWebSession(identity, requestWebSession(req)))) {
+    res.status(401).json({ error: "Google reauthentication required" });
+    return;
+  }
+  try {
+    await cancelWebSubscriptionsForDeletion(identity);
+    const deleted = await purgeStandaloneAccount(identity);
+    res.json({ ok: true, deleted });
+  } catch (error) {
+    console.error("Google account deletion failed:", error);
+    res.status(502).json({ error: "The account could not be completely deleted. Please try again." });
+  }
+});
+
 // App Store Server Notifications V2 — Apple POSTs {signedPayload} on renewals,
 // refunds, cancellations, expirations, etc. We verify it, find the owning
 // identity (by originalTransactionId), and update credits/tier automatically.
@@ -1986,11 +2468,22 @@ app.post("/api/iap/notifications", async (req, res) => {
 
 // User feedback on an answer / composed message / the app. Stored durably so the
 // owner can review what people flag. kind = "answer" | "message" | "app" | "report".
+const feedbackWindows = new Map<string, { at: number; count: number }>();
 app.post("/api/feedback", async (req, res) => {
   const b = req.body || {};
+  const ip = clientIp(req);
+  const now = Date.now();
+  const priorWindow = feedbackWindows.get(ip);
+  const windowState = !priorWindow || now - priorWindow.at > 10 * 60_000 ? { at: now, count: 0 } : priorWindow;
+  if (windowState.count >= 30) { res.status(429).json({ error: "feedback rate limit reached" }); return; }
+  windowState.count += 1;
+  feedbackWindows.set(ip, windowState);
+  if (feedbackWindows.size > 5_000) for (const [key, value] of feedbackWindows) if (now - value.at > 10 * 60_000) feedbackWindows.delete(key);
+  const submittedIdentity = typeof b.deviceId === "string" ? b.deviceId.trim() : "";
+  if (submittedIdentity && !(await requireCreditIdentity(submittedIdentity, res, req))) return;
   const entry = {
-    at: Date.now(),
-    deviceId: typeof b.deviceId === "string" ? b.deviceId.slice(0, 64) : "",
+    at: now,
+    deviceId: submittedIdentity.slice(0, 64),
     kind: typeof b.kind === "string" ? b.kind.slice(0, 20) : "answer",
     rating: b.rating === "up" || b.rating === "down" ? b.rating : null,
     note: typeof b.note === "string" ? b.note.slice(0, 1000) : "",
@@ -2003,11 +2496,15 @@ app.post("/api/feedback", async (req, res) => {
     consent: b.consent === true
   };
   try {
-    const list = await storeGet<any[]>("feedback", []);
-    list.push(entry);
-    await storeSet("feedback", list.slice(-500)); // keep the most recent 500
+    await storeUpdate<any[], void>("feedback", [], (stored) => {
+      const list = Array.isArray(stored) ? stored.slice(-499) : [];
+      list.push(entry);
+      return { value: list, result: undefined };
+    });
   } catch (e) {
     console.error("Feedback store error:", e);
+    res.status(503).json({ error: "feedback could not be saved" });
+    return;
   }
   res.json({ ok: true });
 });
@@ -2016,8 +2513,8 @@ app.post("/api/feedback", async (req, res) => {
 app.post("/api/credits/reset", async (req, res) => {
   const b = req.body || {};
   if (!isAdminAuthorized(b.secret)) { res.status(403).json({ error: "forbidden" }); return; }
-  const deviceId = typeof b.deviceId === "string" ? b.deviceId.trim() : "";
-  if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
+  const deviceId = typeof b.deviceId === "string" ? normalizeTopupIdentity(b.deviceId) : "";
+  if (!deviceId) { res.status(400).json({ error: "valid deviceId required" }); return; }
   await resetCredits(deviceId);
   res.json({ ok: true });
 });
@@ -2033,8 +2530,8 @@ app.post("/api/admin/flagged", async (req, res) => {
 // Reinstate a suspended account (clears strikes + retained flagged messages).
 app.post("/api/admin/reinstate", async (req, res) => {
   if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
-  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
-  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  const identity = readAdminIdentity(req, res);
+  if (!identity) return;
   await reinstate(identity);
   res.json({ ok: true, identity, status: "active" });
 });
@@ -2043,8 +2540,8 @@ app.post("/api/admin/reinstate", async (req, res) => {
 // own devices from the ban list, reactivates it, and queues the overview.
 app.post("/api/admin/unban", async (req, res) => {
   if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
-  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
-  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  const identity = readAdminIdentity(req, res);
+  if (!identity) return;
   const lifted = await unban(identity);
   res.json({ ok: true, identity, status: "active", lifted });
 });
@@ -2052,8 +2549,8 @@ app.post("/api/admin/unban", async (req, res) => {
 // Manually suspend an account (counts toward the escalation like an auto-suspend).
 app.post("/api/admin/suspend", async (req, res) => {
   if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
-  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
-  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  const identity = readAdminIdentity(req, res);
+  if (!identity) return;
   const acct = await suspendAccount(identity, typeof req.body?.reason === "string" ? req.body.reason : undefined);
   res.json({ ok: true, identity, status: acct.status, suspensionCount: acct.suspensionCount });
 });
@@ -2061,8 +2558,8 @@ app.post("/api/admin/suspend", async (req, res) => {
 // Issue a warning the user must acknowledge next launch.
 app.post("/api/admin/warn", async (req, res) => {
   if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
-  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
-  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  const identity = readAdminIdentity(req, res);
+  if (!identity) return;
   const acct = await warnUser(identity, typeof req.body?.message === "string" ? req.body.message : undefined);
   res.json({ ok: true, identity, warnings: acct.warnings });
 });
@@ -2079,32 +2576,32 @@ app.post("/api/admin/accounts", async (req, res) => {
 // retained flagged-message history (the only place that content is visible).
 app.post("/api/admin/account-safety", async (req, res) => {
   if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
-  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
-  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  const identity = readAdminIdentity(req, res);
+  if (!identity) return;
   res.json({ ok: true, account: await adminSafetyDetailFor(identity) });
 });
 
 // Read-only preview of the exact permanent-ban cascade.
 app.post("/api/admin/terminate-preview", async (req, res) => {
   if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
-  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
-  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  const identity = readAdminIdentity(req, res);
+  if (!identity) return;
   res.json({ ok: true, identity, impact: await previewTermination(identity) });
 });
 
 // Temporary identity-only restriction for safely testing the blocked app state.
 app.post("/api/admin/test-restrict", async (req, res) => {
   if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
-  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
-  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  const identity = readAdminIdentity(req, res);
+  if (!identity) return;
   const restriction = await setTestRestriction(identity, Number(req.body?.minutes) || 5);
   res.json({ ok: true, identity, testOnly: true, expiresAt: restriction.expiresAt });
 });
 
 app.post("/api/admin/test-restrict-clear", async (req, res) => {
   if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
-  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
-  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  const identity = readAdminIdentity(req, res);
+  if (!identity) return;
   await clearTestRestriction(identity);
   res.json({ ok: true, identity, testOnly: true, cleared: true });
 });
@@ -2113,8 +2610,8 @@ app.post("/api/admin/test-restrict-clear", async (req, res) => {
 // identities seen on the same device(s). No appeal.
 app.post("/api/admin/terminate", async (req, res) => {
   if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
-  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
-  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  const identity = readAdminIdentity(req, res);
+  if (!identity) return;
   const banned = await terminateAndBan(identity);
   res.json({ ok: true, identity, status: "terminated", banned });
 });
@@ -2122,8 +2619,8 @@ app.post("/api/admin/terminate", async (req, res) => {
 // Remove a user from the dashboard registry (e.g. test accounts).
 app.post("/api/admin/delete-user", async (req, res) => {
   if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
-  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
-  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  const identity = readAdminIdentity(req, res);
+  if (!identity) return;
   await deleteUser(identity);
   res.json({ ok: true, identity, deleted: true });
 });
@@ -2200,6 +2697,11 @@ app.post("/api/admin/full-reset-preview", async (req, res) => {
     const expiresAt = Date.now() + 5 * 60_000;
     fullResetPreviews.clear();
     fullResetPreviews.set(previewToken, { expiresAt, fingerprint: preview.fingerprint });
+    // Keep the confirmation capability in the authoritative store as well as
+    // memory. Admin preview and commit requests may land on different Render
+    // instances; an in-memory-only token made a valid confirmation randomly
+    // fail with "preview expired" behind the load balancer.
+    await storeSet(FULL_RESET_PREVIEW_KEY, { token: previewToken, expiresAt, fingerprint: preview.fingerprint });
     res.json({
       ok: true,
       preview: resetPreviewForAdmin(preview),
@@ -2216,8 +2718,20 @@ app.post("/api/admin/full-reset-preview", async (req, res) => {
 
 app.post("/api/admin/full-reset", async (req, res) => {
   if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
-  const previewToken = typeof req.body?.previewToken === "string" ? req.body.previewToken : "";
-  const pending = fullResetPreviews.get(previewToken);
+  const previewToken = typeof req.body?.previewToken === "string" ? req.body.previewToken.trim().slice(0, 128) : "";
+  let pending = fullResetPreviews.get(previewToken);
+  if (!pending && previewToken) {
+    try {
+      const stored = await storeGet<{ token?: unknown; expiresAt?: unknown; fingerprint?: unknown } | null>(FULL_RESET_PREVIEW_KEY, null);
+      if (stored?.token === previewToken && typeof stored.fingerprint === "string" && Number.isSafeInteger(Number(stored.expiresAt))) {
+        pending = { expiresAt: Number(stored.expiresAt), fingerprint: stored.fingerprint };
+      }
+    } catch (error) {
+      console.error("Full reset preview lookup failed:", error);
+      res.status(503).json({ error: "The reset preview could not be verified. Run a new preview." });
+      return;
+    }
+  }
   if (!pending || pending.expiresAt < Date.now()) {
     res.status(409).json({ error: "The reset preview expired. Run a new preview." });
     return;
@@ -2252,7 +2766,7 @@ app.post("/api/admin/full-reset", async (req, res) => {
 
     await cancelStripeSubscriptionsForFullReset(current.activeStripeSubscriptionIds);
     await clearPushStateForReset();
-    clearAlertsForReset();
+    await clearAlertsForReset();
     const resetEpoch = Date.now();
     const result = await performFullReset(resetEpoch);
     resetCommitted = true;
@@ -2636,8 +3150,8 @@ app.post("/api/admin/promotional/send", async (req, res) => {
 
 app.post("/api/admin/account", async (req, res) => {
   if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
-  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
-  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  const identity = readAdminIdentity(req, res);
+  if (!identity) return;
   res.json({ account: (await buildAdminAccount(identity)).detail });
 });
 
@@ -2647,8 +3161,8 @@ app.post("/api/admin/account", async (req, res) => {
 // known identity also prevents a typo from silently creating a new account.
 app.post("/api/admin/credits/grant", async (req, res) => {
   if (!requireAdminSecret(req.body?.secret, res)) return;
-  const requestedIdentity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
-  if (!requestedIdentity) { res.status(400).json({ error: "identity required" }); return; }
+  const requestedIdentity = readAdminIdentity(req, res);
+  if (!requestedIdentity) return;
   const amountValue = typeof req.body?.amount === "number"
     ? req.body.amount
     : typeof req.body?.amount === "string" && /^\d+$/.test(req.body.amount.trim())
@@ -2656,10 +3170,6 @@ app.post("/api/admin/credits/grant", async (req, res) => {
       : NaN;
   if (!Number.isSafeInteger(amountValue) || amountValue < 1 || amountValue > MAX_ADMIN_CREDIT_GRANT) {
     res.status(400).json({ error: `Credits must be a whole number from 1 to ${MAX_ADMIN_CREDIT_GRANT.toLocaleString()}.` });
-    return;
-  }
-  if (!/^(?:\d{8}|(?:apple|google):[^\s]{1,240})$/.test(requestedIdentity)) {
-    res.status(400).json({ error: "invalid account identity" });
     return;
   }
   try {
@@ -2688,9 +3198,9 @@ app.post("/api/admin/credits/grant", async (req, res) => {
 
 app.post("/api/admin/engagement-preview", async (req, res) => {
   if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
-  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  const identity = readAdminIdentity(req, res);
   const channel: EngagementChannel = req.body?.channel === "email" ? "email" : "push";
-  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  if (!identity) return;
   const account = await buildAdminAccount(identity);
   res.json({ preview: await recommendedEngagement(account.user, channel), enabled: channel === "push" ? account.user.engagement.pushEnabled : account.user.engagement.emailEnabled });
 });
@@ -2734,9 +3244,9 @@ function engagementDeliveryFailure(channel: EngagementChannel, reason: string): 
 
 app.post("/api/admin/engagement-send", async (req, res) => {
   if (!requireAdminSecret(req.body?.secret, res)) return;
-  const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
+  const identity = readAdminIdentity(req, res);
   const channel: EngagementChannel = req.body?.channel === "email" ? "email" : "push";
-  if (!identity) { res.status(400).json({ error: "identity required" }); return; }
+  if (!identity) return;
   try {
     const account = await buildAdminAccount(identity);
     const enabled = channel === "push" ? account.user.engagement.pushEnabled : account.user.engagement.emailEnabled;
@@ -2801,7 +3311,9 @@ app.post("/api/travel-time", async (req, res) => {
   const toLat = Number(req.body?.toLat);
   const toLon = Number(req.body?.toLon);
   const mode = typeof req.body?.mode === "string" ? req.body.mode : "driving";
-  if (![fromLat, fromLon, toLat, toLon].every(Number.isFinite)) {
+  if (![fromLat, fromLon, toLat, toLon].every(Number.isFinite)
+    || fromLat < -90 || fromLat > 90 || toLat < -90 || toLat > 90
+    || fromLon < -180 || fromLon > 180 || toLon < -180 || toLon > 180) {
     res.status(400).json({ error: "from/to coordinates required" });
     return;
   }
@@ -2821,17 +3333,28 @@ app.post("/api/travel-time", async (req, res) => {
   }
 });
 
-// Best-effort client IP (Render sits behind a proxy → prefer X-Forwarded-For).
+// Express' trusted-proxy setting normalizes req.ip to the client address.
 function clientIp(req: any): string {
   const xf = String(req.headers?.["x-forwarded-for"] || "");
-  return (xf.split(",")[0].trim() || req.ip || req.socket?.remoteAddress || "unknown");
+  const forwarded = xf.split(",").map((part) => part.trim()).filter(Boolean);
+  return (req.ip || forwarded.at(-1) || req.socket?.remoteAddress || "unknown").slice(0, 120);
+}
+
+function validTimeZone(value: string | undefined): boolean {
+  if (!value) return true;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value }).format();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Safety gate: records identity/device/IP context and blocks accounts whose
 // delayed suspension or admin enforcement is already active. New messages are
 // reviewed contextually in the background; the user is never shown a special
 // keyword/refusal response that reveals whether a strike was recorded.
-type GateResult = { message: string; block?: "banned" | "suspended" };
+type GateResult = { message: string; block?: "banned" | "suspended"; failClosed?: boolean };
 async function safetyGate(identity: string, message: string, req: any, _voiceMode = false): Promise<GateResult | null> {
   if (!identity) return null;
   const ip = clientIp(req);
@@ -2851,6 +3374,10 @@ async function safetyGate(identity: string, message: string, req: any, _voiceMod
     queueContextualSafetyReview(identity, message, { ip, deviceId: dev });
   } catch (e) {
     console.error("safetyGate error:", e);
+    return {
+      message: "Taki is temporarily unavailable while it verifies account safety. Please try again shortly.",
+      failClosed: true
+    };
   }
   return null;
 }
@@ -2942,9 +3469,6 @@ async function runAssistant(
     // The block check comes first: a refused turn must not burn an included
     // voice turn the user never got to hear.
     if (charge.block) return usageBlockedPayload(charge.block);
-    if (beforeUsageCommit) {
-      await beforeUsageCommit({ response: finalized, deferVoiceSynthesis, includedVoice: charge.includedVoice });
-    }
     const voiceSynthesisIncluded = charge.includedVoice;
     let s: Awaited<ReturnType<typeof chargeUsageUsd>>;
     try {
@@ -2956,6 +3480,13 @@ async function runAssistant(
         return usageBlockedPayload(usageBlockFor(fresh, error.required)!);
       }
       throw error;
+    }
+    // Reserve/charge the authoritative ledger before starting any optional
+    // provider work (especially ElevenLabs TTS).  This closes the old window
+    // where a provider call could succeed while the balance update later lost a
+    // race or rejected for insufficient credits.
+    if (beforeUsageCommit) {
+      await beforeUsageCommit({ response: finalized, deferVoiceSynthesis, includedVoice: charge.includedVoice });
     }
     if (!s.deduplicated) {
       await noteSpend(deviceId, s.spent);
@@ -2986,7 +3517,7 @@ app.post("/api/assistant", async (req, res) => {
   const deviceWeather: DeviceWeather | undefined = req.body?.deviceWeather;
   const timeZone: string | undefined = typeof req.body?.timeZone === "string" ? req.body.timeZone : undefined;
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
-  if (!(await requireCreditIdentity(deviceId, res))) return;
+  if (!(await requireCreditIdentity(deviceId, res, req))) return;
   const voiceMode = req.body?.voiceMode === true;
   // Opt-in progressive text. Older installed builds omit the flag and keep
   // receiving a single JSON body, so streaming can ship before the app does.
@@ -3036,7 +3567,7 @@ app.post("/api/assistant", async (req, res) => {
 
   const gate = await safetyGate(deviceId, userMessage, req, voiceMode);
   if (gate) {
-    res.json({
+    res.status(gate.failClosed ? 503 : 200).json({
       ...finalizeResponse({ spokenText: gate.message, action: null, memoryPatch: { pendingClarification: null }, needsExecution: false }, state),
       ...(gate.block ? { blocked: true, access: gate.block, accessMessage: gate.message } : {})
     });
@@ -3118,10 +3649,10 @@ app.post("/api/voice", async (req, res) => {
   if (!isVoiceConfigured() && (!deviceTranscript || !prefersDeviceSpeech)) {
     res.status(503).json({ error: "voice not configured (set ELEVENLABS_API_KEY)" }); return;
   }
-  const speechHints = [
+  const speechHints = normalizeSpeechKeyterms([
     "Taki", "Amicalola", "Amicalola Falls", "Dyckert",
     ...(Array.isArray(req.body?.speechHints) ? req.body.speechHints : [])
-  ];
+  ]);
   const audioDurationMs = billableAudioDurationMs(audioBase64, req.body?.audioDurationMs);
   const mime = typeof req.body?.mime === "string" ? req.body.mime : "audio/m4a";
   const rawContext = typeof req.body?.context === "string" ? req.body.context.slice(-120_000) : "";
@@ -3129,7 +3660,7 @@ app.post("/api/voice", async (req, res) => {
   const deviceLocation: DeviceLocation | undefined = req.body?.deviceLocation;
   const deviceWeather: DeviceWeather | undefined = req.body?.deviceWeather;
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
-  if (!(await requireCreditIdentity(deviceId, res))) return;
+  if (!(await requireCreditIdentity(deviceId, res, req))) return;
   const voiceId = typeof req.body?.voiceId === "string" ? req.body.voiceId : undefined;
   if (!prefersDeviceSpeech && voiceId && !(await listVoices()).some((voice) => voice.id === voiceId)) {
     res.status(400).json({ error: "voice is not available" }); return;
@@ -3183,7 +3714,7 @@ app.post("/api/voice", async (req, res) => {
       if (!prefersDeviceSpeech) {
         try { audio = await synthesize(gate.message, voiceId, voiceVariability); } catch { /* text still returns if TTS is temporarily unavailable */ }
       }
-      res.json({ transcript, spokenText: gate.message, action: null, actions: null, audioBase64: audio, mime: "audio/mpeg", blocked: true, ...(gate.block ? { access: gate.block, accessMessage: gate.message } : {}) });
+      res.status(gate.failClosed ? 503 : 200).json({ transcript, spokenText: gate.message, action: null, actions: null, audioBase64: audio, mime: "audio/mpeg", blocked: true, ...(gate.block ? { access: gate.block, accessMessage: gate.message } : {}) });
       return;
     }
     startVoiceStream();
@@ -3298,7 +3829,7 @@ app.post("/api/memory/extract", async (req, res) => {
   const message = typeof req.body?.message === "string" ? req.body.message.trim().slice(0, 2000) : "";
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   if (!message || !deviceId) { res.status(400).json({ error: "message and deviceId required" }); return; }
-  if (!(await requireCreditIdentity(deviceId, res))) return;
+  if (!(await requireCreditIdentity(deviceId, res, req))) return;
   const ip = clientIp(req);
   if ((await isBanned(deviceId, deviceId, ip)) || (await isTestRestricted(deviceId))) {
     res.status(403).json({ error: "access restricted" }); return;
@@ -3317,7 +3848,13 @@ app.post("/api/memory/extract", async (req, res) => {
   }
   const currentFacts = Array.isArray(req.body?.currentFacts) ? req.body.currentFacts : [];
   const measured = await measureUsage(() => extractDurableMemories(message, currentFacts, req.body?.teen === true));
-  await chargeMeasuredUsage(deviceId, measured.usage);
+  await chargeMeasuredUsage(deviceId, measured.usage, turnMeteringRequestId(
+    req.body?.requestId,
+    "memory-extract",
+    message,
+    JSON.stringify(currentFacts),
+    req.body?.teen === true ? "teen" : "adult"
+  ));
   res.json(measured.value);
 });
 
@@ -3325,7 +3862,7 @@ app.post("/api/chat/title", async (req, res) => {
   const message = typeof req.body?.message === "string" ? req.body.message.trim().slice(0, 1200) : "";
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   if (!message || !deviceId) { res.status(400).json({ error: "message and deviceId required" }); return; }
-  if (!(await requireCreditIdentity(deviceId, res))) return;
+  if (!(await requireCreditIdentity(deviceId, res, req))) return;
   const ip = clientIp(req);
   if ((await isBanned(deviceId, deviceId, ip)) || (await isTestRestricted(deviceId))) {
     res.status(403).json({ error: "access restricted" }); return;
@@ -3338,13 +3875,18 @@ app.post("/api/chat/title", async (req, res) => {
   windowState.count += 1;
   memoryExtractWindows.set(rateKey, windowState);
   const measured = await measureUsage(() => createChatTitle(message, req.body?.teen === true));
-  await chargeMeasuredUsage(deviceId, measured.usage);
+  await chargeMeasuredUsage(deviceId, measured.usage, turnMeteringRequestId(
+    req.body?.requestId,
+    "chat-title",
+    message,
+    req.body?.teen === true ? "teen" : "adult"
+  ));
   res.json({ title: measured.value });
 });
 
 // The account's available voices, for the app's voice picker.
 app.get("/api/voices", async (req, res) => {
-  if (!(await requireCreditIdentity(req.query?.deviceId, res))) return;
+  if (!(await requireCreditIdentity(req.query?.deviceId, res, req))) return;
   res.json({ voices: await listVoices() });
 });
 
@@ -3364,7 +3906,7 @@ app.post("/api/voice/synthesize", async (req, res) => {
     ? Math.max(0, Math.min(1, req.body.voiceVariability))
     : 0.5;
   if (!text || !deviceId) { res.status(400).json({ error: "text and deviceId required" }); return; }
-  if (!(await requireCreditIdentity(deviceId, res))) return;
+  if (!(await requireCreditIdentity(deviceId, res, req))) return;
   if (voiceId && !(await listVoices()).some((voice) => voice.id === voiceId)) {
     res.status(400).json({ error: "voice is not available" }); return;
   }
@@ -3393,9 +3935,14 @@ app.post("/api/voice/synthesize", async (req, res) => {
     const pending = deferredToken ? takeVoiceSynthesisToken(deferredToken, deviceId) : null;
     const account = await creditSummary(deviceId);
     const plan = planCorrectionSynthesis(pending, account, speechCharacterCount(text));
-    if (!plan.allowed) { res.status(402).json({ error: plan.message }); return; }
+    if (!plan.allowed) {
+      if (deferredToken) releaseVoiceSynthesisToken(deferredToken, deviceId);
+      res.status(402).json({ error: plan.message });
+      return;
+    }
     const audio = await synthesize(text, voiceId, variability);
     if (!audio) throw new Error("Voice synthesis returned no audio");
+    if (pending && deferredToken) consumeVoiceSynthesisToken(deferredToken, deviceId);
     const speechUsd = ttsCostUsd(speechCharacterCount(text));
     await noteChannelCost(deviceId, "voice", speechUsd);
     if (!plan.included) {
@@ -3404,6 +3951,7 @@ app.post("/api/voice/synthesize", async (req, res) => {
     }
     res.json({ audioBase64: audio, mime: "audio/mpeg", spokenText: text });
   } catch (error) {
+    if (deferredToken) releaseVoiceSynthesisToken(deferredToken, deviceId);
     console.error("Voice correction synthesis error:", error);
     res.status(502).json({ error: "voice unavailable" });
   }
@@ -3417,7 +3965,7 @@ const voiceSampleCache = new Map<string, string>();
 const voiceSampleWindows = new Map<string, { startedAt: number; count: number }>();
 app.get("/api/voice/sample", async (req, res) => {
   if (!isVoiceConfigured()) { res.status(503).json({ error: "voice not configured" }); return; }
-  const deviceId = await requireCreditIdentity(req.query?.deviceId, res);
+  const deviceId = await requireCreditIdentity(req.query?.deviceId, res, req);
   if (!deviceId) return;
   const voiceId = typeof req.query?.voiceId === "string" ? req.query.voiceId.trim() : "";
   if (voiceId && !(await listVoices()).some((voice) => voice.id === voiceId)) {
@@ -3444,6 +3992,24 @@ app.get("/api/voice/sample", async (req, res) => {
   if (!audio) { res.status(502).json({ error: "tts failed" }); return; }
   voiceSampleCache.set(key, audio);
   res.json({ audioBase64: audio, mime: "audio/mpeg" });
+});
+
+// Keep rejected async handlers, malformed JSON, oversized bodies, and CORS
+// failures from becoming Express' default HTML/stack-trace response. Native
+// clients need a stable JSON error shape, while logs retain the diagnostic.
+app.use((error: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent) { next(error); return; }
+  const status = Number(error?.status || error?.statusCode);
+  console.error("Unhandled request error:", error);
+  if (error?.type === "entity.too.large" || status === 413) {
+    res.status(413).json({ error: "request too large" });
+    return;
+  }
+  if (/origin is not allowed/i.test(String(error?.message || ""))) {
+    res.status(403).json({ error: "origin not allowed" });
+    return;
+  }
+  res.status(status >= 400 && status < 500 ? status : 500).json({ error: "request failed" });
 });
 
 void storeDeleteCategory("connected_knowledge")

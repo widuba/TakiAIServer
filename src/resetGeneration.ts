@@ -1,6 +1,17 @@
 export const RESET_EPOCH_HEADER = "x-taki-reset-epoch";
 
 const EXTERNAL_PATHS = new Set([
+  // These bootstrap routes must remain reachable by a fresh install (or an
+  // old installation that has just learned a new reset epoch). Requiring the
+  // previous generation here creates a deadlock: the client cannot register or
+  // discover that its old device id was deleted until it already has a valid
+  // generation header.
+  "/api/register-device",
+  "/api/device/info",
+  "/api/web/auth/config",
+  "/api/web/auth/google",
+  "/api/web/auth/apple",
+  "/api/web/auth/logout",
   "/api/credits/topup-config",
   "/api/credits/handoff",
   "/api/credits/account-check",

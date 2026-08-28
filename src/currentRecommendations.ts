@@ -1,4 +1,5 @@
 import { parse } from "node-html-parser";
+import { fetchWithTimeout, readResponseBodyLimited } from "./util.js";
 
 export type RecommendationSource = { title: string; url: string };
 
@@ -38,25 +39,24 @@ function summerCalendarUrl(date: Date): string {
 }
 
 async function fetchHtml(url: string, fetchImpl: FetchLike, timeoutMs = 5_000): Promise<string> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetchImpl(url, {
-      signal: controller.signal,
-      headers: {
-        Accept: "text/html,application/xhtml+xml",
-        "User-Agent": "TakiAI/1.0 (+https://takiai.app)"
-      }
-    });
-    if (!response.ok) throw new Error(`Recommendation source returned ${response.status}`);
-    const declaredSize = Number(response.headers.get("content-length") || 0);
-    if (declaredSize > 2_000_000) throw new Error("Recommendation source was unexpectedly large");
-    const html = await response.text();
-    if (!html || html.length > 2_000_000) throw new Error("Recommendation source was empty or unexpectedly large");
-    return html;
-  } finally {
-    clearTimeout(timer);
-  }
+  const init: RequestInit = {
+    headers: {
+      Accept: "text/html,application/xhtml+xml",
+      "User-Agent": "TakiAI/1.0 (+https://takiai.app)"
+    }
+  };
+  // Keep the injectable fetch used by parser tests, while production requests
+  // use the shared abort-backed deadline instead of leaving a stalled socket
+  // alive after the recommendation request has timed out.
+  const response = fetchImpl === fetch
+    ? await fetchWithTimeout(url, init, timeoutMs, "Recommendation source")
+    : await fetchImpl(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  if (!response.ok) throw new Error(`Recommendation source returned ${response.status}`);
+  const declaredSize = Number(response.headers.get("content-length") || 0);
+  if (declaredSize > 2_000_000) throw new Error("Recommendation source was unexpectedly large");
+  const html = await readResponseBodyLimited(response, 2_000_000);
+  if (!html) throw new Error("Recommendation source was empty or unexpectedly large");
+  return html;
 }
 
 export function parseRottenTomatoesGuide(html: string, limit = 12): string[] {

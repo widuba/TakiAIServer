@@ -27,6 +27,7 @@ const MAX_CHATS = 50;
 const MAX_MESSAGES_PER_CHAT = 300;
 const MAX_TOTAL_TEXT = 1_500_000;
 const TOMBSTONE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 const EMPTY_CHAT_SYNC: ChatSyncRecord = { chats: [], deleted: {}, updatedAt: 0 };
 
 function safeIdentity(identity: string): string {
@@ -39,7 +40,12 @@ export function chatSyncKey(identity: string): string {
 
 function iso(value: unknown, fallback: string): string {
   const text = typeof value === "string" ? value : "";
-  return Number.isFinite(Date.parse(text)) ? text : fallback;
+  const parsed = Date.parse(text);
+  if (!Number.isFinite(parsed)) return fallback;
+  // Client clocks are untrusted. A far-future updatedAt could permanently win
+  // every merge and keep a stale conversation ahead of real phone/CarPlay
+  // turns. Preserve small clock skew, but clamp anything beyond five minutes.
+  return new Date(Math.min(parsed, Date.now() + MAX_FUTURE_SKEW_MS)).toISOString();
 }
 
 function cleanMessage(value: unknown): SyncedChatMessage | null {
@@ -121,9 +127,14 @@ export function mergeSyncedChats(
     if (bounded.length >= MAX_CHATS) break;
     const kept: SyncedChatMessage[] = [];
     for (const message of [...chat.messages].reverse()) {
-      if (totalText + message.text.length > MAX_TOTAL_TEXT) break;
-      totalText += message.text.length;
-      kept.push(message);
+      const remaining = MAX_TOTAL_TEXT - totalText;
+      if (remaining <= 0) break;
+      // Keep the newest portion of an oversized turn instead of dropping the
+      // entire chat as soon as one unusually long client message is seen.
+      const text = message.text.length > remaining ? message.text.slice(-remaining) : message.text;
+      if (!text) break;
+      totalText += text.length;
+      kept.push(text === message.text ? message : { ...message, text });
     }
     bounded.push({ ...chat, messages: kept.reverse() });
   }

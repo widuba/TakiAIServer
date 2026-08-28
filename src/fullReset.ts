@@ -66,18 +66,25 @@ export async function previewFullReset(): Promise<FullResetPreview> {
 }
 
 export async function performFullReset(resetEpoch: number): Promise<{ deletedRecords: number; deletedTokenFiles: number }> {
+  // Commit the authoritative KV reset before removing local notification
+  // caches. If Postgres is unavailable, the caller gets a clean failure and
+  // both the durable records and local token files remain recoverable.
+  const deletedRecords = await storeResetAll({
+    "system:reset": { epoch: resetEpoch, completedAt: new Date(resetEpoch).toISOString() }
+  });
   let deletedTokenFiles = 0;
   for (const name of TOKEN_FILES) {
     try {
       fs.unlinkSync(path.join(SERVER_DIR, name));
       deletedTokenFiles += 1;
     } catch (error: any) {
-      if (error?.code !== "ENOENT") throw error;
+      if (error?.code !== "ENOENT") {
+        // The account data is already reset. Keep the reset successful, but
+        // surface the local cleanup problem in logs so it can be corrected
+        // before the next process starts and reloads stale tokens.
+        console.error(`Could not remove ${name} after full reset:`, error);
+      }
     }
   }
-
-  const deletedRecords = await storeResetAll({
-    "system:reset": { epoch: resetEpoch, completedAt: new Date(resetEpoch).toISOString() }
-  });
   return { deletedRecords, deletedTokenFiles };
 }

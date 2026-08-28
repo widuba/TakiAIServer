@@ -4,6 +4,10 @@
 // intentionally starts with only the eight-digit Account ID.
 export const DEVICE_AUTH_EXEMPT_PATHS = new Set([
   "/api/register-device",
+  // Launch-time validation must be able to reach the route after a full reset
+  // has removed the old installation credential. The route performs its own
+  // credential check and returns the same generic 404 for an unknown or
+  // invalid installation, so this does not become an account-existence oracle.
   "/api/device/info",
   "/api/web/auth/config",
   "/api/web/auth/google",

@@ -1,4 +1,5 @@
-import { storeGet, storeSet } from "./store.js";
+import { storeGet, storeUpdate } from "./store.js";
+import { randomUUID } from "node:crypto";
 import { forgetToken, sendPush } from "./push.js";
 import { clearPushToken, getPushToken } from "./nudges.js";
 import { fetchAssetPrice, fetchTrackerSnapshot } from "./tracker.js";
@@ -75,7 +76,10 @@ export type Alert = PriceAlert | ScoreAlert;
 
 const KEY = "alerts";
 const MAX_ALERTS = 50;
+const MAX_ALERT_RECORDS = 10_000;
 const ALERT_TTL_MS = 1000 * 60 * 60 * 24 * 7; // auto-expire stale alerts after 7 days
+const POLL_LEASE_KEY = "alerts:poll-lease";
+const POLL_LEASE_MS = 80_000;
 
 let alerts: Alert[] = [];
 let loaded = false;
@@ -87,65 +91,113 @@ function withAlertLock<T>(fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
-export function clearAlertsForReset(): void {
+export function clearAlertsForReset(): Promise<void> {
   alerts = [];
   loaded = true;
+  // Clear the authoritative record as well as the process cache. Without this,
+  // a restart after a full reset could reload old alerts and send them to a
+  // device that no longer owns the account. Queue the write behind any sweep
+  // already in progress so an in-flight evaluation cannot repopulate it.
+  const run = alertChain.then(async () => {
+    await storeUpdate<Alert[], void>(KEY, [], () => ({ value: [], result: undefined }));
+  }, async () => {
+    await storeUpdate<Alert[], void>(KEY, [], () => ({ value: [], result: undefined }));
+  });
+  alertChain = run.then(() => undefined, () => undefined);
+  return run;
 }
 
-async function load(): Promise<void> {
-  if (loaded) return;
+async function load(force = false): Promise<void> {
+  if (loaded && !force) return;
   const stored = await storeGet<Alert[]>(KEY, []);
   // Legacy alerts predate ownership and cannot be delivered privately.
-  alerts = stored.filter((alert) => /^\d{8}$/.test(String(alert?.deviceId || "")));
+  alerts = normalizeAlerts(stored);
   loaded = true;
 }
 
-async function persist(): Promise<void> {
-  await storeSet(KEY, alerts);
+function normalizeAlerts(value: unknown): Alert[] {
+  const unique = new Map<string, Alert>();
+  for (const raw of Array.isArray(value) ? value : []) {
+    if (!raw || typeof raw !== "object") continue;
+    const item = raw as Record<string, unknown>;
+    const id = typeof item.id === "string" ? item.id.trim().slice(0, 128) : "";
+    const deviceId = typeof item.deviceId === "string" ? item.deviceId.trim() : "";
+    const query = typeof item.query === "string" ? item.query.trim().slice(0, 300) : "";
+    const label = typeof item.label === "string" ? item.label.trim().slice(0, 200) : query;
+    const createdAt = Number(item.createdAt);
+    if (!id || !/^\d{8}$/.test(deviceId) || !query || !Number.isFinite(createdAt)) continue;
+    const boundedCreatedAt = Math.min(createdAt, Date.now() + 5 * 60_000);
+    let alert: Alert | null = null;
+    if (item.kind === "price" && Number.isFinite(Number(item.target)) && Number(item.target) > 0 && Number(item.target) <= 1e15) {
+      alert = {
+        id, deviceId, kind: "price", createdAt: boundedCreatedAt, query, label,
+        target: Number(item.target), direction: item.direction === "below" ? "below" : "above",
+        ...(Number.isFinite(Number(item.lastValue)) ? { lastValue: Number(item.lastValue) } : {})
+      };
+    } else if (item.kind === "score") {
+      alert = {
+        id, deviceId, kind: "score", createdAt: boundedCreatedAt, query, label,
+        trigger: item.trigger === "final" ? "final" : "any",
+        ...(typeof item.lastLine === "string" ? { lastLine: item.lastLine.slice(0, 500) } : {}),
+        ...(item.notified === true ? { notified: true } : {})
+      };
+    }
+    if (alert) unique.set(`${deviceId}:${id}`, alert);
+  }
+  return [...unique.values()].sort((a, b) => a.createdAt - b.createdAt).slice(-MAX_ALERT_RECORDS);
 }
 
 export async function listAlerts(deviceId: string): Promise<Alert[]> {
   return withAlertLock(async () => {
-    await load();
+    await load(true);
     return alerts.filter((alert) => alert.deviceId === deviceId);
   });
 }
 
 export async function addAlert(a: Alert): Promise<{ ok: boolean; reason?: string }> {
+  const normalized = normalizeAlerts([a])[0];
+  if (!normalized) return { ok: false, reason: "Invalid alert." };
   return withAlertLock(async () => {
-    await load();
-    if (alerts.filter((alert) => alert.deviceId === a.deviceId).length >= MAX_ALERTS) {
-      return { ok: false, reason: "Too many active alerts." };
-    }
-    // De-dupe an identical pending alert.
-    const dup = alerts.find(
-      (x) => x.deviceId === a.deviceId && x.kind === a.kind && x.query.toLowerCase() === a.query.toLowerCase() &&
-        (x.kind === "price" && a.kind === "price"
-          ? x.target === a.target && x.direction === a.direction
-          : x.kind === "score" && a.kind === "score" ? x.trigger === a.trigger : false)
-    );
-    if (dup) return { ok: true };
-    alerts.push(a);
-    await persist();
-    return { ok: true };
+    const result = await storeUpdate<Alert[], { ok: boolean; reason?: string; alerts: Alert[] }>(KEY, [], (stored) => {
+    const current = normalizeAlerts(stored);
+      if (current.filter((alert) => alert.deviceId === normalized.deviceId).length >= MAX_ALERTS) {
+        return { value: current, result: { ok: false, reason: "Too many active alerts.", alerts: current } };
+      }
+      // De-dupe an identical pending alert.
+      const dup = current.find(
+        (x) => x.deviceId === normalized.deviceId && x.kind === normalized.kind && x.query.toLowerCase() === normalized.query.toLowerCase() &&
+          (x.kind === "price" && normalized.kind === "price"
+            ? x.target === normalized.target && x.direction === normalized.direction
+            : x.kind === "score" && normalized.kind === "score" ? x.trigger === normalized.trigger : false)
+      );
+      if (dup) return { value: current, result: { ok: true, alerts: current } };
+      const next = [...current, normalized].slice(-MAX_ALERT_RECORDS);
+      return { value: next, result: { ok: true, alerts: next } };
+    });
+    alerts = result.alerts;
+    loaded = true;
+    return { ok: result.ok, ...(result.reason ? { reason: result.reason } : {}) };
   });
 }
 
 export async function cancelAlerts(deviceId: string, filter?: { id?: string; kind?: string; query?: string }): Promise<number> {
   return withAlertLock(async () => {
-    await load();
-    const before = alerts.length;
-    alerts = alerts.filter((a) => {
-      if (a.deviceId !== deviceId) return true;
-      if (!filter) return false; // no filter = cancel all
-      if (filter.id) return a.id !== filter.id; // exact id → remove just that one
-      if (filter.kind && a.kind !== filter.kind) return true;
-      if (filter.query && !a.query.toLowerCase().includes(filter.query.toLowerCase())) return true;
-      return false; // matches the filter → remove
+    const result = await storeUpdate<Alert[], { removed: number; alerts: Alert[] }>(KEY, [], (stored) => {
+      const current = normalizeAlerts(stored);
+      const next = current.filter((a) => {
+        if (a.deviceId !== deviceId) return true;
+        if (!filter) return false; // no filter = cancel all
+        if (!filter.id && !filter.kind && !filter.query) return true; // invalid filter = cancel none
+        if (filter.id) return a.id !== filter.id; // exact id → remove just that one
+        if (filter.kind && a.kind !== filter.kind) return true;
+        if (filter.query && !a.query.toLowerCase().includes(filter.query.toLowerCase())) return true;
+        return false; // matches the filter → remove
+      });
+      return { value: next, result: { removed: current.length - next.length, alerts: next } };
     });
-    const removed = before - alerts.length;
-    if (removed) await persist();
-    return removed;
+    alerts = result.alerts;
+    loaded = true;
+    return result.removed;
   });
 }
 
@@ -195,10 +247,22 @@ let polling = false;
 // One sweep over all alerts. Called by the server's interval loop.
 export async function pollAlerts(timeZone: string): Promise<void> {
   if (polling) return; // never overlap sweeps
+  const owner = randomUUID();
+  let leaseAcquired = false;
+  try {
+    leaseAcquired = await storeUpdate<{ owner: string; expiresAt: number } | null, boolean>(POLL_LEASE_KEY, null, (lease) => {
+      if (lease?.expiresAt && lease.expiresAt > Date.now() && lease.owner !== owner) return { value: lease, result: false };
+      return { value: { owner, expiresAt: Date.now() + POLL_LEASE_MS }, result: true };
+    });
+  } catch (error) {
+    console.error("Alert poll lease acquire:", error);
+    return;
+  }
+  if (!leaseAcquired) return;
   polling = true;
   try {
     await withAlertLock(async () => {
-      await load();
+      await load(true);
       if (alerts.length === 0) return;
       let changed = false;
       const survivors: Alert[] = [];
@@ -223,6 +287,12 @@ export async function pollAlerts(timeZone: string): Promise<void> {
         console.error("Alert eval error:", e);
         survivors.push(a);
         continue;
+      }
+      let stateChanged = false;
+      if (a.kind === "price" && before.kind === "price") {
+        stateChanged = before.lastValue !== a.lastValue;
+      } else if (a.kind === "score" && before.kind === "score") {
+        stateChanged = before.lastLine !== a.lastLine || before.notified !== a.notified;
       }
       if (res.fire) {
         let delivered = false;
@@ -250,14 +320,35 @@ export async function pollAlerts(timeZone: string): Promise<void> {
         changed = true;
       }
       if (res.done) changed = true;
-      else survivors.push(a);
+      else {
+        // Persist the last observed quote/score even when the threshold was not
+        // reached. Without this, every poll re-evaluated the same historical
+        // value and a restart could replay an old transition.
+        if (stateChanged) changed = true;
+        survivors.push(a);
+      }
       }
       if (changed) {
-        alerts = survivors;
-        await persist();
+        const evaluated = new Map(alerts.map((alert) => [alert.id, alert]));
+        const survivorIds = new Set(survivors.map((alert) => alert.id));
+        const result = await storeUpdate<Alert[], { alerts: Alert[] }>(KEY, [], (stored) => {
+          const current = normalizeAlerts(stored);
+          const next = current.flatMap((alert) => {
+            // Alerts created/cancelled by another instance while this sweep was
+            // evaluating are not in `evaluated` and must be preserved.
+            if (!evaluated.has(alert.id)) return [alert];
+            return survivorIds.has(alert.id) ? [evaluated.get(alert.id)!] : [];
+          });
+          return { value: next, result: { alerts: next } };
+        });
+        alerts = result.alerts;
+        loaded = true;
       }
     });
   } finally {
     polling = false;
+    await storeUpdate<{ owner: string; expiresAt: number } | null, void>(POLL_LEASE_KEY, null, (lease) =>
+      lease?.owner === owner ? { value: null, result: undefined } : { value: lease, result: undefined }
+    ).catch((error) => console.error("Alert poll lease release:", error));
   }
 }

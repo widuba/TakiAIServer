@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { clearPushToken, getPushToken } from "./nudges.js";
 import { forgetToken, sendPush } from "./push.js";
-import { storeGet, storeSet } from "./store.js";
+import { storeGet, storeUpdatePair } from "./store.js";
+import { fetchWithTimeout } from "./util.js";
 import type { UserRecord } from "./users.js";
 
 export type EngagementChannel = "push" | "email";
@@ -128,19 +129,33 @@ async function loadState(identity: string): Promise<EngagementState> {
 }
 
 async function saveCampaign(campaign: EngagementCampaign, countAsSent: boolean): Promise<void> {
-  const state = await loadState(campaign.identity);
-  const existingIndex = state.campaigns.findIndex((item) => item.id === campaign.id);
-  if (existingIndex >= 0) state.campaigns[existingIndex] = campaign;
-  else state.campaigns.push(campaign);
-  state.campaigns = state.campaigns.slice(-100);
-  if (countAsSent) {
-    const category = state.performance[campaign.category] || {};
-    const prior = category[campaign.channel] || { sent: 0, opened: 0 };
-    category[campaign.channel] = { ...prior, sent: prior.sent + 1, lastSentAt: campaign.sentAt };
-    state.performance[campaign.category] = category;
-  }
-  await storeSet(stateKey(campaign.identity), state);
-  await storeSet(campaignKey(campaign.id), campaign);
+  // Keep the campaign record and the identity's aggregate state in one
+  // transaction. Persisting them separately let a click/open land between the
+  // two writes and either disappear from the dashboard or be rejected as an
+  // unknown campaign.
+  await storeUpdatePair<EngagementState, EngagementCampaign | null, void>(
+    { key: stateKey(campaign.identity), fallback: { campaigns: [], performance: {} } },
+    { key: campaignKey(campaign.id), fallback: null },
+    ({ first: raw, second: storedCampaign }) => {
+    const state = raw && typeof raw === "object" ? raw : { campaigns: [], performance: {} };
+    if (!Array.isArray(state.campaigns)) state.campaigns = [];
+    if (!state.performance || typeof state.performance !== "object") state.performance = {};
+    const existingIndex = state.campaigns.findIndex((item) => item.id === campaign.id);
+    const mergedCampaign = storedCampaign
+      ? { ...campaign, openedAt: storedCampaign.openedAt ?? campaign.openedAt, sessionSeconds: storedCampaign.sessionSeconds ?? campaign.sessionSeconds }
+      : campaign;
+    if (existingIndex >= 0) state.campaigns[existingIndex] = mergedCampaign;
+    else state.campaigns.push(mergedCampaign);
+    state.campaigns = state.campaigns.slice(-100);
+    if (countAsSent && existingIndex < 0) {
+      const category = state.performance[campaign.category] || {};
+      const prior = category[campaign.channel] || { sent: 0, opened: 0 };
+      category[campaign.channel] = { ...prior, sent: prior.sent + 1, lastSentAt: campaign.sentAt };
+      state.performance[campaign.category] = category;
+    }
+    return { first: state, second: mergedCampaign, result: undefined };
+    }
+  );
 }
 
 function categoryForFeature(feature: string): EngagementCategory | null {
@@ -246,11 +261,11 @@ export async function sendEmail(opts: { to: string; subject: string; text: strin
   if (!EMAIL_API_KEY || !EMAIL_FROM) return { ok: false, error: "Email provider is not configured" };
   if (!to) return { ok: false, error: "No recipient email" };
   try {
-    const response = await fetch("https://api.resend.com/emails", {
+    const response = await fetchWithTimeout("https://api.resend.com/emails", {
       method: "POST",
       headers: { Authorization: `Bearer ${EMAIL_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({ from: EMAIL_FROM, to: [to], subject: opts.subject, text: opts.text, ...(opts.html ? { html: opts.html } : {}) })
-    });
+    }, 10_000, "Email provider");
     if (!response.ok) return { ok: false, status: response.status, error: `Email provider returned ${response.status}` };
     return { ok: true, status: response.status };
   } catch (error) {
@@ -334,20 +349,38 @@ export async function sendPersonalizedEngagement(
 }
 
 export async function recordEngagementOpen(campaignId: string, identity?: string): Promise<boolean> {
-  const campaign = await storeGet<EngagementCampaign | null>(campaignKey(campaignId), null);
-  if (!campaign || campaign.status !== "sent" || (identity && campaign.identity !== identity)) return false;
-  if (campaign.openedAt) return true;
-  campaign.openedAt = Date.now();
-  const state = await loadState(campaign.identity);
-  const index = state.campaigns.findIndex((item) => item.id === campaign.id);
-  if (index >= 0) state.campaigns[index] = campaign;
-  const category = state.performance[campaign.category] || {};
-  const performance = category[campaign.channel] || { sent: 0, opened: 0 };
-  category[campaign.channel] = { ...performance, opened: performance.opened + 1 };
-  state.performance[campaign.category] = category;
-  await storeSet(stateKey(campaign.identity), state);
-  await storeSet(campaignKey(campaign.id), campaign);
-  return true;
+  // Email links do not carry an identity. Read just enough to discover the
+  // campaign owner, then re-check it inside the pair transaction before
+  // changing either record. Authenticated app opens can skip the discovery
+  // read, but use the same atomic path.
+  let owner = identity || "";
+  if (!owner) {
+    const stored = await storeGet<EngagementCampaign | null>(campaignKey(campaignId), null);
+    owner = stored?.identity || "";
+  }
+  if (!owner) return false;
+  const result = await storeUpdatePair<EngagementCampaign | null, EngagementState, { accepted: boolean; newlyOpened: boolean }>(
+    { key: campaignKey(campaignId), fallback: null },
+    { key: stateKey(owner), fallback: { campaigns: [], performance: {} } },
+    ({ first: stored, second: raw }) => {
+    if (!stored || stored.status !== "sent" || (identity && stored.identity !== identity) || stored.identity !== owner) {
+      return { first: stored, second: raw, result: { accepted: false, newlyOpened: false } };
+    }
+    if (stored.openedAt) return { first: stored, second: raw, result: { accepted: true, newlyOpened: false } };
+    const campaign = { ...stored, openedAt: Date.now() };
+    const state = raw && typeof raw === "object" ? raw : { campaigns: [], performance: {} };
+    if (!Array.isArray(state.campaigns)) state.campaigns = [];
+    if (!state.performance || typeof state.performance !== "object") state.performance = {};
+    const index = state.campaigns.findIndex((item) => item.id === campaign.id);
+    if (index >= 0) state.campaigns[index] = campaign;
+    const category = state.performance[campaign.category] || {};
+    const performance = category[campaign.channel] || { sent: 0, opened: 0 };
+    category[campaign.channel] = { ...performance, opened: performance.opened + 1 };
+    state.performance[campaign.category] = category;
+    return { first: campaign, second: state, result: { accepted: true, newlyOpened: true } };
+    }
+  );
+  return result.accepted;
 }
 
 export async function recordEngagementSession(
@@ -355,23 +388,34 @@ export async function recordEngagementSession(
   identity: string | undefined,
   durationSeconds: number
 ): Promise<boolean> {
-  const campaign = await storeGet<EngagementCampaign | null>(campaignKey(campaignId), null);
-  if (!campaign || (identity && campaign.identity !== identity) || campaign.status !== "sent") return false;
   const duration = Math.max(1, Math.min(6 * 3600, Math.round(Number(durationSeconds) || 0)));
-  campaign.sessionSeconds = (campaign.sessionSeconds || 0) + duration;
-  const state = await loadState(campaign.identity);
-  const index = state.campaigns.findIndex((item) => item.id === campaign.id);
-  if (index >= 0) state.campaigns[index] = campaign;
-  const category = state.performance[campaign.category] || {};
-  const performance = category[campaign.channel] || { sent: 0, opened: 0 };
-  category[campaign.channel] = {
-    ...performance,
-    sessionSeconds: (performance.sessionSeconds || 0) + duration
-  };
-  state.performance[campaign.category] = category;
-  await storeSet(stateKey(campaign.identity), state);
-  await storeSet(campaignKey(campaign.id), campaign);
-  return true;
+  let owner = identity || "";
+  if (!owner) {
+    const stored = await storeGet<EngagementCampaign | null>(campaignKey(campaignId), null);
+    owner = stored?.identity || "";
+  }
+  if (!owner) return false;
+  const result = await storeUpdatePair<EngagementCampaign | null, EngagementState, boolean>(
+    { key: campaignKey(campaignId), fallback: null },
+    { key: stateKey(owner), fallback: { campaigns: [], performance: {} } },
+    ({ first: stored, second: raw }) => {
+    if (!stored || (identity && stored.identity !== identity) || stored.identity !== owner || stored.status !== "sent") {
+      return { first: stored, second: raw, result: false };
+    }
+    const campaign = { ...stored, sessionSeconds: (stored.sessionSeconds || 0) + duration };
+    const state = raw && typeof raw === "object" ? raw : { campaigns: [], performance: {} };
+    if (!Array.isArray(state.campaigns)) state.campaigns = [];
+    if (!state.performance || typeof state.performance !== "object") state.performance = {};
+    const index = state.campaigns.findIndex((item) => item.id === campaign.id);
+    if (index >= 0) state.campaigns[index] = campaign;
+    const category = state.performance[campaign.category] || {};
+    const performance = category[campaign.channel] || { sent: 0, opened: 0 };
+    category[campaign.channel] = { ...performance, sessionSeconds: (performance.sessionSeconds || 0) + duration };
+    state.performance[campaign.category] = category;
+    return { first: campaign, second: state, result: true };
+    }
+  );
+  return result;
 }
 
 export async function engagementSummary(user: UserRecord): Promise<{

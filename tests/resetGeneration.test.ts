@@ -16,6 +16,8 @@ test("billing callbacks, web checkout, and admin remain available after reset", 
   assert.equal(bypassResetGeneration("/api/iap/notifications"), true);
   assert.equal(bypassResetGeneration("/api/credits/account-check"), true);
   assert.equal(bypassResetGeneration("/api/assistant"), false);
-  assert.equal(bypassResetGeneration("/api/register-device"), false);
+  assert.equal(bypassResetGeneration("/api/register-device"), true);
+  assert.equal(bypassResetGeneration("/api/device/info"), true);
+  assert.equal(bypassResetGeneration("/api/web/auth/google"), true);
   assert.equal(bypassResetGeneration("/api/iap/verify"), false);
 });

@@ -1,5 +1,6 @@
 import { generateContent, MAIN_MODEL } from "./ai.js";
 import { withTimeout } from "./util.js";
+import { fetchPublicUrl, readPublicResponseText, validatePublicHttpUrl } from "./urlSafety.js";
 import { GUARDRAILS } from "./persona.js";
 
 /* ============================================================================
@@ -266,12 +267,16 @@ If the page has no real recipe, return {"title":""}.`;
 // datacenter fetch of big recipe sites. No API key.
 async function fetchViaReader(url: string): Promise<string> {
   try {
-    const r: any = await withTimeout(
-      fetch(`https://r.jina.ai/${url}`, { headers: { "Accept": "text/plain", "User-Agent": "TakiAI/1.0" } }),
-      18000, "Recipe reader"
+    const safe = await validatePublicHttpUrl(url);
+    if (!safe) return "";
+    const r = await fetchPublicUrl(
+      `https://r.jina.ai/${safe.toString()}`,
+      { headers: { "Accept": "text/plain", "User-Agent": "TakiAI/1.0" } },
+      18_000,
+      "Recipe reader"
     );
-    if (!r.ok) return "";
-    return (await r.text()).slice(0, 60000);
+    if (!r?.ok) return "";
+    return (await readPublicResponseText(r, 60_000)).slice(0, 60_000);
   } catch (error) {
     console.error("Recipe reader error:", error);
     return "";
@@ -285,21 +290,19 @@ async function fetchViaReader(url: string): Promise<string> {
 //      datacenter request, e.g. AllRecipes/Cloudflare).
 // Returns null if none yield a real recipe.
 export async function importRecipeFromUrl(url: string): Promise<Recipe | null> {
-  if (!/^https?:\/\//i.test(url)) return null;
+  const safeUrl = await validatePublicHttpUrl(url);
+  if (!safeUrl) return null;
+  url = safeUrl.toString();
   let html = "";
   try {
-    const r: any = await withTimeout(
-      fetch(url, {
+    const r = await fetchPublicUrl(url, {
         headers: {
           "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
           "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
           "Accept-Language": "en-US,en;q=0.9"
-        },
-        redirect: "follow"
-      }),
-      12000, "Recipe fetch"
-    );
-    if (r.ok) html = (await r.text()).slice(0, 2_000_000);
+        }
+      }, 12_000, "Recipe fetch");
+    if (r?.ok) html = (await readPublicResponseText(r, 2_000_000)).slice(0, 2_000_000);
   } catch (error) {
     console.error("Recipe fetch error:", error);
   }

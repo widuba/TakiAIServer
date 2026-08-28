@@ -1,5 +1,5 @@
 import { parseHomeCommand, parseMusicCommand } from "./tools.js";
-import { storeGet, storeSet } from "./store.js";
+import { storeGet, storeUpdate } from "./store.js";
 
 /* ============================================================================
  * Custom home routines — one saved phrase fires several device actions.
@@ -167,27 +167,53 @@ function key(deviceId: string): string {
 export async function loadRoutines(deviceId: string): Promise<Routine[]> {
   if (!deviceId) return [];
   const list = await storeGet<Routine[]>(key(deviceId), []);
-  return Array.isArray(list) ? list : [];
+  if (!Array.isArray(list)) return [];
+  return list.flatMap((raw) => {
+    if (!raw || typeof raw !== "object") return [];
+    const name = typeof raw.name === "string" ? canonical(raw.name).slice(0, 40) : "";
+    const steps = Array.isArray(raw.steps) ? raw.steps.flatMap((step: any): RoutineStep[] => {
+      if (!step || typeof step !== "object") return [];
+      if (step.kind === "home" && typeof step.action === "string") {
+        return [{
+          kind: "home",
+          action: step.action.slice(0, 40),
+          ...(typeof step.target === "string" && step.target.trim() ? { target: step.target.trim().slice(0, 120) } : {}),
+          ...(Number.isFinite(Number(step.value)) ? { value: Number(step.value) } : {})
+        }];
+      }
+      if (step.kind === "music" && typeof step.action === "string") {
+        return [{
+          kind: "music",
+          action: step.action.slice(0, 40),
+          ...(typeof step.query === "string" && step.query.trim() ? { query: step.query.trim().slice(0, 200) } : {})
+        }];
+      }
+      return [];
+    }).slice(0, 20) : [];
+    return name && steps.length ? [{ name, steps }] : [];
+  }).slice(-50);
 }
 
 export async function saveRoutine(deviceId: string, routine: Routine): Promise<void> {
   if (!deviceId) return;
-  const list = await loadRoutines(deviceId);
-  const idx = list.findIndex((r) => r.name === routine.name);
-  if (idx >= 0) list[idx] = routine;
-  else list.push(routine);
-  // Cap so a runaway client can't bloat the store.
-  await storeSet(key(deviceId), list.slice(-50));
+  await storeUpdate<Routine[], void>(key(deviceId), [], (stored) => {
+    const list = Array.isArray(stored) ? stored : [];
+    const idx = list.findIndex((r) => r.name === routine.name);
+    if (idx >= 0) list[idx] = routine;
+    else list.push(routine);
+    // Cap so a runaway client can't bloat the store.
+    return { value: list.slice(-50), result: undefined };
+  });
 }
 
 export async function deleteRoutine(deviceId: string, name: string): Promise<boolean> {
   if (!deviceId) return false;
-  const list = await loadRoutines(deviceId);
   const target = canonical(name);
-  const next = list.filter((r) => r.name !== target);
-  if (next.length === list.length) return false;
-  await storeSet(key(deviceId), next);
-  return true;
+  return storeUpdate<Routine[], boolean>(key(deviceId), [], (stored) => {
+    const list = Array.isArray(stored) ? stored : [];
+    const next = list.filter((r) => r.name !== target);
+    return { value: next, result: next.length !== list.length };
+  });
 }
 
 // Match a spoken command against a saved routine name. Kept strict: the whole

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isKnownIdentity, issueDeviceCredential, verifyDeviceCredential } from "../src/identity.js";
+import { isKnownIdentity, issueDeviceCredential, verifyDeviceCredential, issueWebSession, revokeWebAuthentication, verifyWebSession } from "../src/identity.js";
 import { bypassDeviceAuth } from "../src/deviceAuth.js";
 import { linkApple } from "../src/safety.js";
 import { storeDelete, storeSet } from "../src/store.js";
@@ -62,4 +62,22 @@ test("browser checkout and public account lookup do not require a device credent
   }
   assert.equal(bypassDeviceAuth("/api/assistant"), false);
   assert.equal(bypassDeviceAuth("/api/admin/full-reset"), true);
+});
+
+test("web sessions are signed, expire, and revoke with the web-auth marker", async () => {
+  const identity = `google:web-session-${Date.now()}`;
+  try {
+    await storeSet(`webauth:${identity}`, true);
+    await storeSet(`user:${identity}`, { identity, firstSeenAt: Date.now(), updatedAt: Date.now() });
+    const session = await issueWebSession(identity);
+    assert.ok(session);
+    assert.equal(await verifyWebSession(identity, session), true);
+    await revokeWebAuthentication(identity);
+    assert.equal(await verifyWebSession(identity, session), false);
+  } finally {
+    await Promise.all([
+      storeDelete(`webauth:${identity}`),
+      storeDelete(`user:${identity}`)
+    ]);
+  }
 });

@@ -5,9 +5,9 @@ import { addAlert, cancelAlerts, clearAlertsForReset, listAlerts } from "../src/
 import { storeDelete } from "../src/store.js";
 
 test("proactive alerts are isolated by physical device", async (t) => {
-  clearAlertsForReset();
+  await clearAlertsForReset();
   t.after(async () => {
-    clearAlertsForReset();
+    await clearAlertsForReset();
     await storeDelete("alerts");
   });
 

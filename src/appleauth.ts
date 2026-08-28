@@ -1,5 +1,6 @@
 import { createRemoteJWKSet, importPKCS8, jwtVerify, SignJWT } from "jose";
 import fs from "node:fs";
+import { fetchWithTimeout, readResponseJsonLimited } from "./util.js";
 
 /* ============================================================================
  * Sign in with Apple — verify the identity token the device gets from Apple.
@@ -70,7 +71,7 @@ export async function revokeAppleAuthorizationCode(authorizationCode: string): P
       .setIssuedAt()
       .setExpirationTime("5m")
       .sign(privateKey);
-    const tokenResponse = await fetch(`${APPLE_ISSUER}/auth/token`, {
+    const tokenResponse = await fetchWithTimeout(`${APPLE_ISSUER}/auth/token`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -79,14 +80,14 @@ export async function revokeAppleAuthorizationCode(authorizationCode: string): P
         code: authorizationCode,
         grant_type: "authorization_code"
       })
-    });
-    const tokens: any = await tokenResponse.json().catch(() => ({}));
+    }, 10_000, "Apple token exchange");
+    const tokens: any = await readResponseJsonLimited<any>(tokenResponse, 64_000).catch(() => ({}));
     const token = String(tokens.refresh_token || tokens.access_token || "");
     if (!tokenResponse.ok || !token) {
       console.error("Apple authorization-code exchange failed:", tokenResponse.status);
       return false;
     }
-    const revokeResponse = await fetch(`${APPLE_ISSUER}/auth/revoke`, {
+    const revokeResponse = await fetchWithTimeout(`${APPLE_ISSUER}/auth/revoke`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -95,7 +96,7 @@ export async function revokeAppleAuthorizationCode(authorizationCode: string): P
         token,
         token_type_hint: tokens.refresh_token ? "refresh_token" : "access_token"
       })
-    });
+    }, 10_000, "Apple token revoke");
     if (!revokeResponse.ok) console.error("Apple token revocation failed:", revokeResponse.status);
     return revokeResponse.ok;
   } catch (error) {

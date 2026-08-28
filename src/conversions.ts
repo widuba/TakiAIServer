@@ -1,4 +1,4 @@
-import { withTimeout } from "./util.js";
+import { fetchWithTimeout, readResponseJsonLimited } from "./util.js";
 
 /* ============================================================================
  * Unit & currency conversion. Units convert exactly in code (no LLM). Currency
@@ -164,8 +164,8 @@ async function convertCurrency(value: number, from: string, to: string): Promise
   let rate: number | null = cached && Date.now() - cached.at < 3600_000 ? cached.rate : null;
   if (rate == null) {
     try {
-      const r: any = await withTimeout(fetch(`https://api.frankfurter.app/latest?from=${from}&to=${to}`), 7000, "FX");
-      const d = await r.json();
+      const r: any = await fetchWithTimeout(`https://api.frankfurter.app/latest?from=${from}&to=${to}`, {}, 7000, "FX");
+      const d = await readResponseJsonLimited<any>(r, 128_000);
       rate = d?.rates?.[to] ?? null;
       if (rate != null) rateCache.set(key, { at: Date.now(), rate });
     } catch (e) {

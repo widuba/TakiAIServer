@@ -1,5 +1,6 @@
 import { generateContent, MAIN_MODEL } from "./ai.js";
 import { withTimeout } from "./util.js";
+import { fetchPublicUrl, readPublicResponseText, validatePublicHttpUrl } from "./urlSafety.js";
 import { GUARDRAILS, personaPromptBlock } from "./persona.js";
 import type { ConversationState } from "./types.js";
 
@@ -26,12 +27,16 @@ export function looksLikeUrlSummarize(message: string): boolean {
 
 async function fetchReadable(url: string): Promise<string> {
   try {
-    const r: any = await withTimeout(
-      fetch(`https://r.jina.ai/${url}`, { headers: { Accept: "text/plain", "User-Agent": "TakiAI/1.0" } }),
-      18000, "URL reader"
+    const safe = await validatePublicHttpUrl(url);
+    if (!safe) return "";
+    const r = await fetchPublicUrl(
+      `https://r.jina.ai/${safe.toString()}`,
+      { headers: { Accept: "text/plain", "User-Agent": "TakiAI/1.0" } },
+      18_000,
+      "URL reader"
     );
-    if (!r.ok) return "";
-    return (await r.text()).slice(0, 40000);
+    if (!r?.ok) return "";
+    return (await readPublicResponseText(r, 40_000)).slice(0, 40_000);
   } catch (error) {
     console.error("URL reader error:", error);
     return "";

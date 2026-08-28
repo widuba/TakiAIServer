@@ -20,6 +20,82 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, label: string): 
   });
 }
 
+/**
+ * Fetch with an AbortController-backed deadline.  The old withTimeout helper
+ * only stopped awaiting a request; the underlying socket and response body
+ * could continue consuming resources after a provider stalled.  Network
+ * callers should use this helper whenever they own the fetch.
+ */
+export async function fetchWithTimeout(
+  input: string | URL | Request,
+  init: RequestInit = {},
+  ms = 10_000,
+  label = "Network request"
+): Promise<Response> {
+  const controller = new AbortController();
+  const upstream = init.signal;
+  let onAbort: (() => void) | undefined;
+  if (upstream) {
+    if (upstream.aborted) controller.abort(upstream.reason);
+    else {
+      onAbort = () => controller.abort(upstream.reason);
+      upstream.addEventListener("abort", onAbort, { once: true });
+    }
+  }
+  const timer = setTimeout(() => controller.abort(new Error(`${label} timed out`)), Math.max(1, ms));
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(`${label} timed out`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    if (onAbort) upstream?.removeEventListener("abort", onAbort);
+  }
+}
+
+/** Read a response body without allowing a provider to allocate unbounded RAM. */
+export async function readResponseBytesLimited(response: Response, maxBytes = 1_000_000): Promise<Uint8Array> {
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      const chunk = next.value instanceof Uint8Array ? next.value : new Uint8Array(next.value);
+      const remaining = Math.max(0, maxBytes - total);
+      if (remaining > 0) {
+        const part = chunk.byteLength <= remaining ? chunk : chunk.slice(0, remaining);
+        chunks.push(part);
+        total += part.byteLength;
+      }
+      if (total >= maxBytes) {
+        try { await reader.cancel(); } catch { /* best effort */ }
+        break;
+      }
+    }
+  } finally {
+    try { reader.releaseLock(); } catch { /* best effort */ }
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { out.set(chunk, offset); offset += chunk.byteLength; }
+  return out;
+}
+
+export async function readResponseBodyLimited(response: Response, maxBytes = 1_000_000): Promise<string> {
+  return new TextDecoder().decode(await readResponseBytesLimited(response, maxBytes));
+}
+
+/** Parse a JSON response after applying the same byte cap used for text bodies. */
+export async function readResponseJsonLimited<T = unknown>(response: Response, maxBytes = 1_000_000): Promise<T> {
+  const text = await readResponseBodyLimited(response, maxBytes);
+  if (!text.trim()) throw new Error("Response body was empty");
+  return JSON.parse(text) as T;
+}
+
 export function cleanJson(value: string) {
   return value
     .trim()

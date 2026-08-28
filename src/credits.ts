@@ -1,4 +1,4 @@
-import { storeGet, storeSet, storeUpdate, isDurable } from "./store.js";
+import { storeGet, storeUpdate, storeUpdatePair, isDurable } from "./store.js";
 import { CREDIT_USD, sttCostUsd, ttsCostUsd } from "./metering.js";
 
 export { CREDIT_USD } from "./metering.js";
@@ -242,15 +242,99 @@ function emptyAccount(deviceId: string): CreditAccount {
 // the unused portion of the new Voice Credit allowance for their current cycle;
 // no AI balance is reduced or replaced during migration.
 function normalizeAccount(acct: CreditAccount, deviceId: string): CreditAccount {
+  if (!acct || typeof acct !== "object" || Array.isArray(acct)) acct = emptyAccount(deviceId);
   acct.deviceId = deviceId;
   if (!(["free", "plus", "plus_voice", "pro"] as string[]).includes(acct.tier)) acct.tier = "free";
   if (!Array.isArray(acct.grants)) acct.grants = [];
+  acct.grants = acct.grants.flatMap((raw: any, index): CreditGrant[] => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+    const amount = Number(raw.amount);
+    const remaining = Number(raw.remaining);
+    const grantedAt = Number(raw.grantedAt);
+    const expiresAt = Number(raw.expiresAt);
+    if (!Number.isFinite(amount) || !Number.isFinite(remaining) || !Number.isFinite(expiresAt)) return [];
+    const safeAmount = Math.min(100_000_000, Math.max(0, Math.floor(amount)));
+    const safeRemaining = Math.max(0, Math.min(safeAmount, Math.floor(remaining)));
+    if (safeAmount <= 0 || safeRemaining <= 0) return [];
+    return [{
+      id: typeof raw.id === "string" && raw.id.trim() ? raw.id.trim().slice(0, 128) : `legacy_${deviceId}_${index}`,
+      amount: safeAmount,
+      remaining: safeRemaining,
+      grantedAt: Number.isFinite(grantedAt) ? Math.max(0, Math.floor(grantedAt)) : 0,
+      expiresAt: Math.max(0, Math.floor(expiresAt)),
+      source: typeof raw.source === "string" && raw.source.trim() ? raw.source.trim().slice(0, 160) : "legacy"
+    }];
+  }).slice(-1_000);
   if (!Array.isArray(acct.grantLedger)) acct.grantLedger = [];
+  acct.grantLedger = acct.grantLedger
+    .filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry))
+    .map((entry: any) => ({
+      userId: String(entry.userId || deviceId).slice(0, 256),
+      subscriptionId: String(entry.subscriptionId || "").slice(0, 256),
+      transactionId: String(entry.transactionId || "").slice(0, 256),
+      productId: String(entry.productId || "").slice(0, 256),
+      periodStart: entry.periodStart == null ? null : Number.isFinite(Number(entry.periodStart)) ? Number(entry.periodStart) : null,
+      periodEnd: entry.periodEnd == null ? null : Number.isFinite(Number(entry.periodEnd)) ? Number(entry.periodEnd) : null,
+      aiCreditsGranted: Math.min(100_000_000, Math.max(0, Math.floor(Number(entry.aiCreditsGranted) || 0))),
+      voiceCreditsGranted: Math.min(1_000_000, Math.max(0, Math.floor(Number(entry.voiceCreditsGranted) || 0))),
+      idempotencyKey: String(entry.idempotencyKey || "").slice(0, 256),
+      createdAt: Number.isFinite(Number(entry.createdAt)) ? Math.max(0, Number(entry.createdAt)) : 0,
+      reason: String(entry.reason || "subscription_cycle").slice(0, 120)
+    }))
+    .slice(-500);
   if (!Array.isArray(acct.usageLedger)) acct.usageLedger = [];
+  acct.usageLedger = acct.usageLedger
+    .filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry))
+    .map((entry: any): CreditUsageTransaction => ({
+      userId: String(entry.userId || deviceId).slice(0, 256),
+      requestId: String(entry.requestId || "").slice(0, 256),
+      mode: entry.mode === "voice" ? "voice" : "text",
+      normalAiCredits: Math.min(100_000_000, Math.max(0, Math.floor(Number(entry.normalAiCredits) || 0))),
+      voiceSurchargeCredits: Math.min(100_000_000, Math.max(0, Math.floor(Number(entry.voiceSurchargeCredits) || 0))),
+      voiceCreditsCharged: Math.min(1_000_000, Math.max(0, Math.floor(Number(entry.voiceCreditsCharged) || 0))),
+      totalAiCreditsCharged: Math.min(100_000_000, Math.max(0, Math.floor(Number(entry.totalAiCreditsCharged) || 0))),
+      aiCreditBalanceAfter: Math.min(100_000_000, Math.max(0, Math.floor(Number(entry.aiCreditBalanceAfter) || 0))),
+      voiceCreditBalanceAfter: Math.min(1_000_000, Math.max(0, Math.floor(Number(entry.voiceCreditBalanceAfter) || 0))),
+      createdAt: Number.isFinite(Number(entry.createdAt)) ? Math.max(0, Number(entry.createdAt)) : 0,
+      status: entry.status === "reversed" ? "reversed" : entry.status === "rejected" ? "rejected" : "charged",
+      ...(Number.isFinite(Number(entry.reversedAt)) ? { reversedAt: Math.max(0, Number(entry.reversedAt)) } : {})
+    }))
+    .slice(-2_000);
   if (!Array.isArray(acct.adminAdjustments)) acct.adminAdjustments = [];
   acct.adminAdjustments = acct.adminAdjustments
-    .filter((adjustment) => adjustment && typeof adjustment === "object")
+    .filter((adjustment) => adjustment && typeof adjustment === "object" && !Array.isArray(adjustment))
+    .map((adjustment: any) => ({
+      id: String(adjustment.id || "").slice(0, 128),
+      amount: Math.min(100_000_000, Math.max(0, Math.floor(Number(adjustment.amount) || 0))),
+      reason: String(adjustment.reason || "Administrative credit grant").slice(0, 240),
+      grantedAt: Number.isFinite(Number(adjustment.grantedAt)) ? Math.max(0, Number(adjustment.grantedAt)) : 0,
+      expiresAt: Number.isFinite(Number(adjustment.expiresAt)) ? Math.max(0, Number(adjustment.expiresAt)) : 0,
+      balanceAfter: Math.min(100_000_000, Math.max(0, Math.floor(Number(adjustment.balanceAfter) || 0)))
+    }))
     .slice(-200);
+  if (!Array.isArray(acct.processedTx)) acct.processedTx = [];
+  acct.processedTx = acct.processedTx.filter((id): id is string => typeof id === "string" && id.length <= 256).slice(-500);
+  if (!Array.isArray(acct.processedConsumableTx)) acct.processedConsumableTx = [];
+  acct.processedConsumableTx = acct.processedConsumableTx.filter((id): id is string => typeof id === "string" && id.length <= 256).slice(-500);
+  if (!Array.isArray(acct.processedWebTopups)) acct.processedWebTopups = [];
+  acct.processedWebTopups = acct.processedWebTopups.filter((id): id is string => typeof id === "string" && id.length <= 256).slice(-500);
+  if (!Array.isArray(acct.retiredSubscriptionIds)) acct.retiredSubscriptionIds = [];
+  acct.retiredSubscriptionIds = acct.retiredSubscriptionIds.filter((id): id is string => typeof id === "string" && id.length <= 256).slice(-200);
+  if (!Array.isArray(acct.topupAllowances)) acct.topupAllowances = [];
+  acct.topupAllowances = acct.topupAllowances
+    .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+    .map((item: any) => ({
+      id: String(item.id || "").slice(0, 128),
+      amount: Math.min(100_000_000, Math.max(0, Math.floor(Number(item.amount) || 0))),
+      expiresAt: Number.isFinite(Number(item.expiresAt)) ? Math.max(0, Number(item.expiresAt)) : 0
+    }))
+    .filter((item) => item.id && item.amount > 0 && item.expiresAt > 0)
+    .slice(-1_000);
+  const statusValues: SubscriptionStatus[] = ["none", "active", "cancelled", "billing_retry", "grace", "expired", "revoked"];
+  if (!statusValues.includes(acct.subscriptionStatus as SubscriptionStatus)) acct.subscriptionStatus = acct.tier === "free" ? "none" : "active";
+  acct.usageRemainderMicros = Number.isFinite(Number(acct.usageRemainderMicros))
+    ? Math.max(0, Math.floor(Number(acct.usageRemainderMicros)) % 1000)
+    : 0;
   if ((acct.schemaVersion || 0) < 2) {
     const alreadyUsed = Math.max(0, Math.floor(acct.voiceCycleCount || 0));
     const migratedRemaining = Math.max(0, TIERS[acct.tier].voiceCreditsPerCycle - alreadyUsed);
@@ -260,7 +344,15 @@ function normalizeAccount(acct: CreditAccount, deviceId: string): CreditAccount 
     acct.billingPeriodEnd = acct.billingPeriodEnd ?? null;
     acct.schemaVersion = 2;
   }
-  acct.voiceCredits = Math.max(0, Math.floor(acct.voiceCredits || 0));
+  acct.voiceCredits = Number.isFinite(Number(acct.voiceCredits)) ? Math.min(1_000_000, Math.max(0, Math.floor(Number(acct.voiceCredits)))) : 0;
+  acct.voiceCount = Number.isFinite(Number(acct.voiceCount)) ? Math.min(100_000_000, Math.max(0, Math.floor(Number(acct.voiceCount)))) : 0;
+  acct.voiceCycleCount = Number.isFinite(Number(acct.voiceCycleCount)) ? Math.min(1_000_000, Math.max(0, Math.floor(Number(acct.voiceCycleCount)))) : 0;
+  acct.billingPeriodStart = acct.billingPeriodStart == null ? null : Number.isFinite(Number(acct.billingPeriodStart)) ? Math.max(0, Number(acct.billingPeriodStart)) : null;
+  acct.billingPeriodEnd = acct.billingPeriodEnd == null ? null : Number.isFinite(Number(acct.billingPeriodEnd)) ? Math.max(0, Number(acct.billingPeriodEnd)) : null;
+  acct.updatedAt = Number.isFinite(Number(acct.updatedAt)) ? Math.max(0, Number(acct.updatedAt)) : 0;
+  acct.schemaVersion = Number.isFinite(Number(acct.schemaVersion)) ? Math.max(0, Math.floor(Number(acct.schemaVersion))) : 0;
+  acct.starterGiven = acct.starterGiven === true;
+  acct.hasPurchasedCredits = acct.hasPurchasedCredits === true;
   acct.subscriptionStatus ||= acct.tier === "free" ? "none" : "active";
   return acct;
 }
@@ -321,11 +413,6 @@ async function load(deviceId: string): Promise<CreditAccount> {
   }
   rollUsageWindows(acct, now);
   return acct;
-}
-
-async function save(acct: CreditAccount): Promise<void> {
-  acct.updatedAt = Date.now();
-  await storeSet(keyFor(acct.deviceId), acct);
 }
 
 function addGrant(acct: CreditAccount, source: string, amount: number, expiresAt?: number): CreditGrant | null {
@@ -577,8 +664,10 @@ function nextUTCMonth(now: number): number {
 function rollUsageWindows(acct: CreditAccount, now = Date.now()): void {
   const day = utcDayKey(now);
   const month = utcMonthKey(now);
-  if (acct.dailyUsage?.key !== day) acct.dailyUsage = { key: day, used: 0 };
-  if (acct.monthlyUsage?.key !== month) acct.monthlyUsage = { key: month, used: 0 };
+  const dayUsed = acct.dailyUsage && Number.isFinite(Number(acct.dailyUsage.used)) ? Math.max(0, Math.floor(Number(acct.dailyUsage.used))) : 0;
+  const monthUsed = acct.monthlyUsage && Number.isFinite(Number(acct.monthlyUsage.used)) ? Math.max(0, Math.floor(Number(acct.monthlyUsage.used))) : 0;
+  acct.dailyUsage = acct.dailyUsage?.key === day ? { key: day, used: dayUsed } : { key: day, used: 0 };
+  acct.monthlyUsage = acct.monthlyUsage?.key === month ? { key: month, used: monthUsed } : { key: month, used: 0 };
 }
 
 export function usageLimitsFor(tier: Tier, additionalCredits: number): { daily: number; monthly: number } {
@@ -651,10 +740,9 @@ function summarize(acct: CreditAccount): CreditSummary {
 
 // Record a FREE voice turn against the per-cycle allowance. Returns the new count.
 export async function noteFreeVoice(identity: string): Promise<number> {
-  return withLock(identity, async () => {
-    const acct = await load(identity);
+  return updateAccount(identity, (acct) => {
+    ensureFreeCycle(acct);
     acct.voiceCycleCount = (acct.voiceCycleCount || 0) + 1;
-    await save(acct);
     return acct.voiceCycleCount;
   });
 }
@@ -832,10 +920,9 @@ export async function grantForConsumableTransaction(
 
 // Count a voice question (for the free-tier cap). Returns the new total.
 export async function noteVoiceQuestion(identity: string): Promise<number> {
-  return withLock(identity, async () => {
-    const acct = await load(identity);
+  return updateAccount(identity, (acct) => {
+    ensureFreeCycle(acct);
     acct.voiceCount = (acct.voiceCount || 0) + 1;
-    await save(acct);
     return acct.voiceCount;
   });
 }
@@ -868,8 +955,7 @@ export async function grantTier(deviceId: string, tier: Tier): Promise<CreditSum
 // Spend `cost` credits, consuming the SOONEST-expiring grants first. Clamps at 0
 // (a last question may slightly overspend rather than be blocked mid-answer).
 export async function spend(deviceId: string, cost: number): Promise<CreditSummary & { spent: number }> {
-  return withLock(deviceId, async () => {
-    const acct = await load(deviceId);
+  return updateAccount(deviceId, (acct) => {
     ensureFreeCycle(acct);
     const now = Date.now();
     let need = Math.max(0, Math.round(cost));
@@ -887,7 +973,6 @@ export async function spend(deviceId: string, cost: number): Promise<CreditSumma
     rollUsageWindows(acct, now);
     acct.dailyUsage!.used += actualSpent;
     acct.monthlyUsage!.used += actualSpent;
-    await save(acct);
     return { ...summarize(acct), spent: actualSpent };
   });
 }
@@ -895,8 +980,7 @@ export async function spend(deviceId: string, cost: number): Promise<CreditSumma
 // Spend exact list-price vendor usage without rounding every request up. Costs
 // below one credit accumulate until they reach exactly $0.001.
 export async function spendUsageUsd(deviceId: string, costUsd: number): Promise<CreditSummary & { spent: number; usageUsd: number }> {
-  return withLock(deviceId, async () => {
-    const acct = await load(deviceId);
+  return updateAccount(deviceId, (acct) => {
     ensureFreeCycle(acct);
     const now = Date.now();
     const costMicros = Math.max(0, Math.round(costUsd * 1_000_000));
@@ -918,7 +1002,6 @@ export async function spendUsageUsd(deviceId: string, costUsd: number): Promise<
     rollUsageWindows(acct, now);
     acct.dailyUsage!.used += actualSpent;
     acct.monthlyUsage!.used += actualSpent;
-    await save(acct);
     return { ...summarize(acct), spent: actualSpent, usageUsd: costMicros / 1_000_000 };
   });
 }
@@ -1051,11 +1134,31 @@ export async function mergeCredits(
 ): Promise<CreditSummary> {
   if (!fromId || !toId || fromId === toId) return summary(toId);
   return withLocks([fromId, toId], async () => {
-    const from = await load(fromId);
-    const to = await load(toId);
-    const now = Date.now();
-    const mode = options.subscriptionMode || "keep";
-    for (const g of from.grants) {
+    const merged = await storeUpdatePair<CreditAccount, CreditAccount, CreditSummary>(
+      { key: keyFor(fromId), fallback: emptyAccount(fromId) },
+      { key: keyFor(toId), fallback: emptyAccount(toId) },
+      ({ first: rawFirst, second: rawSecond }) => {
+        // The pair helper passes values in caller order even though the
+        // database locks keys alphabetically.
+        const from = normalizeAccount(rawFirst, fromId);
+        const to = normalizeAccount(rawSecond, toId);
+        // `load` also expires grants, rolls usage windows, and backfills top-up
+        // allowances. Reproduce that normalization inside the transaction so
+        // the two ledgers are never persisted in a half-migrated state.
+        const now = Date.now();
+        for (const account of [from, to]) {
+          for (const grant of account.grants) {
+            if (isPurchasedGrant(grant) && grant.expiresAt >= NON_EXPIRING_GRANT_DATE) {
+              grant.expiresAt = grant.grantedAt + GRANT_EXPIRY_DAYS * 86400000;
+            }
+          }
+          account.grants = account.grants.filter((grant) => grant.expiresAt > now && grant.remaining > 0);
+          if (!Array.isArray(account.topupAllowances)) account.topupAllowances = [];
+          account.topupAllowances = account.topupAllowances.filter((item) => item.expiresAt > now && item.amount > 0);
+          rollUsageWindows(account, now);
+        }
+        const mode = options.subscriptionMode || "keep";
+        for (const g of from.grants) {
       if (g.expiresAt <= now || g.remaining <= 0) continue;
       if (g.source === "free_starter" && (to.tier !== "free" || to.grants.some((grant) => grant.source === "free_starter"))) continue;
       if (g.source.startsWith("subscription:")) {
@@ -1079,29 +1182,41 @@ export async function mergeCredits(
         }
       }
       to.grants.push(g);
-    }
-    to.topupAllowances = [...(to.topupAllowances || []), ...(from.topupAllowances || [])]
-      .filter((item, index, all) => all.findIndex((candidate) => candidate.id === item.id) === index);
-    if (mode === "keep") to.tier = higherTier(to.tier, from.tier);
-    to.starterGiven = to.starterGiven || from.starterGiven;
-    to.processedTx = [...(to.processedTx || []), ...(from.processedTx || [])].slice(-200);
-    to.processedConsumableTx = [...(to.processedConsumableTx || []), ...(from.processedConsumableTx || [])]
-      .filter((id, index, all) => all.indexOf(id) === index)
-      .slice(-500);
-    to.processedWebTopups = [...(to.processedWebTopups || []), ...(from.processedWebTopups || [])]
-      .filter((id, index, all) => all.indexOf(id) === index)
-      .slice(-500);
-    to.adminAdjustments = [...(to.adminAdjustments || []), ...(from.adminAdjustments || [])]
-      .sort((a, b) => a.grantedAt - b.grantedAt)
-      .slice(-200);
-    to.voiceCount = Math.max(0, to.voiceCount || 0) + Math.max(0, from.voiceCount || 0);
-    to.voiceCycleCount = Math.max(to.voiceCycleCount || 0, from.voiceCycleCount || 0);
-    to.hasPurchasedCredits = to.hasPurchasedCredits === true || from.hasPurchasedCredits === true
-      || to.grants.some(isPurchasedGrant);
-    await save(to);
-    // Empty the source so its credits can't be claimed again.
-    await save({ deviceId: fromId, tier: "free", grants: [], starterGiven: true, processedTx: [], processedConsumableTx: [], processedWebTopups: [], topupAllowances: [], voiceCount: 0, voiceCycleCount: 0, updatedAt: Date.now() });
-    return summarize(to);
+        }
+        to.topupAllowances = [...(to.topupAllowances || []), ...(from.topupAllowances || [])]
+          .filter((item, index, all) => all.findIndex((candidate) => candidate.id === item.id) === index);
+        if (mode === "keep") to.tier = higherTier(to.tier, from.tier);
+        to.starterGiven = to.starterGiven || from.starterGiven;
+        to.processedTx = [...(to.processedTx || []), ...(from.processedTx || [])]
+          .filter((id, index, all) => all.indexOf(id) === index).slice(-200);
+        to.processedConsumableTx = [...(to.processedConsumableTx || []), ...(from.processedConsumableTx || [])]
+          .filter((id, index, all) => all.indexOf(id) === index).slice(-500);
+        to.processedWebTopups = [...(to.processedWebTopups || []), ...(from.processedWebTopups || [])]
+          .filter((id, index, all) => all.indexOf(id) === index).slice(-500);
+        to.adminAdjustments = [...(to.adminAdjustments || []), ...(from.adminAdjustments || [])]
+          .sort((a, b) => a.grantedAt - b.grantedAt).slice(-200);
+        to.voiceCount = Math.max(0, to.voiceCount || 0) + Math.max(0, from.voiceCount || 0);
+        to.voiceCycleCount = Math.max(to.voiceCycleCount || 0, from.voiceCycleCount || 0);
+        to.hasPurchasedCredits = to.hasPurchasedCredits === true || from.hasPurchasedCredits === true
+          || to.grants.some(isPurchasedGrant);
+        const emptied: CreditAccount = {
+          deviceId: fromId,
+          tier: "free",
+          grants: [],
+          starterGiven: true,
+          processedTx: [],
+          processedConsumableTx: [],
+          processedWebTopups: [],
+          topupAllowances: [],
+          voiceCount: 0,
+          voiceCycleCount: 0,
+          updatedAt: Date.now()
+        };
+        to.updatedAt = Date.now();
+        return { first: emptied, second: to, result: summarize(to) };
+      }
+    );
+    return merged;
   });
 }
 
@@ -1133,29 +1248,26 @@ export async function revokeSubscription(identity: string, context: Subscription
 }
 
 export async function revokeMergedSubscriptionCredits(identity: string, originalTransactionId: string): Promise<void> {
-  return withLock(identity, async () => {
-    const acct = await load(identity);
+  return updateAccount(identity, (acct) => {
     const source = `topup:merged_subscription:${originalTransactionId}`;
     const removedIds = new Set(acct.grants.filter((grant) => grant.source === source).map((grant) => grant.id));
     acct.grants = acct.grants.filter((grant) => grant.source !== source);
     acct.topupAllowances = (acct.topupAllowances || []).filter((allowance) => !removedIds.has(allowance.id));
     acct.retiredSubscriptionIds = (acct.retiredSubscriptionIds || []).filter((id) => id !== originalTransactionId);
-    await save(acct);
   });
 }
 
 export async function clearRetiredSubscription(identity: string, originalTransactionId: string): Promise<void> {
-  return withLock(identity, async () => {
-    const acct = await load(identity);
+  return updateAccount(identity, (acct) => {
     acct.retiredSubscriptionIds = (acct.retiredSubscriptionIds || []).filter((id) => id !== originalTransactionId);
-    await save(acct);
   });
 }
 
 // Dev: wipe a device's credits.
 export async function reset(deviceId: string): Promise<void> {
-  return withLock(deviceId, async () => {
-    await save({ deviceId, tier: "free", grants: [], starterGiven: false, updatedAt: Date.now() });
+  await updateAccount(deviceId, (acct) => {
+    // Keep the account shape normalized while clearing all credit-bearing state.
+    Object.assign(acct, { tier: "free", grants: [], voiceCredits: 0, subscriptionStatus: "none", starterGiven: false, processedTx: [], processedConsumableTx: [], processedWebTopups: [], topupAllowances: [], voiceCount: 0, voiceCycleCount: 0, usageRemainderMicros: 0, hasPurchasedCredits: false, retiredSubscriptionIds: [] });
   });
 }
 

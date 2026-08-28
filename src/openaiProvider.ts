@@ -5,6 +5,8 @@
  * using the same internal interfaces.
  */
 
+import { readResponseBodyLimited, readResponseJsonLimited } from "./util.js";
+
 export type FetchLike = typeof fetch;
 
 export class UnsupportedOpenAIInputError extends Error {
@@ -262,11 +264,14 @@ function requestTimeout(args: any): {
   cancel: () => void;
 } {
   const requested = Number(args?.config?.providerAttemptTimeoutMs ?? args?.config?.provider_attempt_timeout_ms);
-  if (!Number.isFinite(requested) || requested <= 0) {
-    return { didTimeOut: () => false, cancel: () => {} };
-  }
+  // Every provider attempt needs a hard upper bound, even when an older caller
+  // did not set the compatibility-only override. Otherwise an aborted outer
+  // tool timeout leaves the OpenAI socket running until the platform kills the
+  // request and can multiply concurrency during an outage.
+  const timeoutMs = Number.isFinite(requested) && requested > 0
+    ? Math.max(25, Math.min(45_000, Math.floor(requested)))
+    : 40_000;
   const controller = new AbortController();
-  const timeoutMs = Math.max(25, Math.min(45_000, Math.floor(requested)));
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
@@ -294,10 +299,10 @@ export async function generateOpenAIContent(
       signal: timeout.signal
     });
     if (!response.ok) {
-      const body = await response.text().catch(() => "");
+      const body = await readResponseBodyLimited(response, 64_000).catch(() => "");
       throw new OpenAIHTTPError(response.status, apiErrorMessage(response.status, body), body);
     }
-    return normalizeOpenAIResponse(await response.json());
+    return normalizeOpenAIResponse(await readResponseJsonLimited<any>(response, 2_000_000));
   } catch (error) {
     if (timeout.didTimeOut()) {
       throw new OpenAIHTTPError(408, `OpenAI model ${selectedModel} timed out.`);
@@ -322,20 +327,28 @@ async function* sseEvents(body: ReadableStream<Uint8Array>): AsyncGenerator<any>
     return JSON.parse(data);
   };
 
-  while (true) {
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-    const blocks = buffer.split(/\r?\n\r?\n/);
-    buffer = blocks.pop() || "";
-    for (const block of blocks) {
-      const event = parseBlock(block);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const blocks = buffer.split(/\r?\n\r?\n/);
+      buffer = blocks.pop() || "";
+      for (const block of blocks) {
+        const event = parseBlock(block);
+        if (event) yield event;
+      }
+      if (done) break;
+    }
+    if (buffer.trim()) {
+      const event = parseBlock(buffer);
       if (event) yield event;
     }
-    if (done) break;
-  }
-  if (buffer.trim()) {
-    const event = parseBlock(buffer);
-    if (event) yield event;
+  } finally {
+    // A failed consumer (provider error, timeout, or client cancellation) can
+    // stop iterating before the response stream reaches EOF. Cancel the body so
+    // the undrained socket is released instead of accumulating open streams.
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
 }
 
@@ -354,7 +367,7 @@ export async function* generateOpenAIContentStream(
       signal: timeout.signal
     });
     if (!response.ok) {
-      const body = await response.text().catch(() => "");
+      const body = await readResponseBodyLimited(response, 64_000).catch(() => "");
       throw new OpenAIHTTPError(response.status, apiErrorMessage(response.status, body), body);
     }
     if (!response.body) throw new OpenAIHTTPError(502, "OpenAI returned an empty response stream.");

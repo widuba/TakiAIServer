@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { generateContent, ACTIVE_AI_PROVIDER, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, TIME_ZONE } from "./ai.js";
 import { parse as parseHtml } from "node-html-parser";
-import { safeParseJsonObject, withTimeout } from "./util.js";
+import { fetchWithTimeout, readResponseJsonLimited, readResponseBodyLimited, safeParseJsonObject, withTimeout } from "./util.js";
 import { storeDelete, storeGet, storeSet } from "./store.js";
 import type { AssistantSource } from "./types.js";
 import {
@@ -47,9 +47,9 @@ async function fetchYahooJson(path: string, label: string): Promise<any> {
   let lastError: unknown = null;
   for (const host of ["query1.finance.yahoo.com", "query2.finance.yahoo.com"]) {
     try {
-      const response: any = await withTimeout(fetch(`https://${host}${path}`, { headers: PRICE_HEADERS }), 6500, label);
+      const response: any = await fetchWithTimeout(`https://${host}${path}`, { headers: PRICE_HEADERS }, 6500, label);
       if (!response.ok) throw new Error(`${label} returned ${response.status}`);
-      return await response.json();
+      return await readResponseJsonLimited(response, 1_000_000);
     } catch (error) {
       lastError = error;
     }
@@ -245,15 +245,17 @@ async function fetchCryptoQuote(query: string): Promise<TrackerSnapshot | null> 
   try {
     let id = CRYPTO_IDS[word];
     if (!id) {
-      const s: any = await withTimeout(fetch(`https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(word)}`), 6000, "Crypto search");
-      id = (await s.json())?.coins?.[0]?.id;
+      const s: any = await fetchWithTimeout(`https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(word)}`, {}, 6000, "Crypto search");
+      id = (await readResponseJsonLimited<any>(s, 256_000))?.coins?.[0]?.id;
     }
     if (!id) return null;
-    const r: any = await withTimeout(
-      fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd&include_24hr_change=true`),
-      6000, "Crypto price"
+    const r: any = await fetchWithTimeout(
+      `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd&include_24hr_change=true`,
+      {},
+      6000,
+      "Crypto price"
     );
-    const info = r?.ok ? (await r.json())?.[id] : null;
+    const info = r?.ok ? (await readResponseJsonLimited<any>(r, 256_000))?.[id] : null;
     if (!info || typeof info.usd !== "number") return await fetchCryptoViaYahoo(id, displayName);
     const chg = typeof info.usd_24h_change === "number" ? info.usd_24h_change : null;
     const trend = chg == null ? "flat" : chg >= 0 ? "up" : "down";
@@ -447,9 +449,9 @@ async function fetchEspnSportsScore(query: string, timeZone: string): Promise<Tr
   const snapshots = await Promise.all(uniquePaths.map(async (path) => {
     try {
       const sourceUrl = `https://site.api.espn.com/apis/site/v2/sports/${path}/scoreboard?dates=${sportsDateKey(timeZone)}&limit=100`;
-      const response: any = await withTimeout(fetch(sourceUrl, { headers: PRICE_HEADERS }), 8000, "Sports scoreboard");
+      const response: any = await fetchWithTimeout(sourceUrl, { headers: PRICE_HEADERS }, 8000, "Sports scoreboard");
       if (!response.ok) return null;
-      const snapshot = espnSportsSnapshotFromResponse(await response.json(), query, timeZone);
+      const snapshot = espnSportsSnapshotFromResponse(await readResponseJsonLimited(response, 2_000_000), query, timeZone);
       return snapshot ? { ...snapshot, sources: [{ title: "espn.com", url: sourceUrl }] } : null;
     } catch (error) {
       console.error("Sports scoreboard error:", error);
@@ -469,9 +471,9 @@ async function fetchMlbBravesScore(query: string, timeZone: string): Promise<Tra
   const end = `${part("year")}-${part("month")}-${part("day")}`;
   const sourceUrl = `https://statsapi.mlb.com/api/v1/schedule?sportId=1&teamId=144&startDate=${start}&endDate=${end}&hydrate=team,venue`;
   try {
-    const response: any = await withTimeout(fetch(sourceUrl, { headers: PRICE_HEADERS }), 8_000, "MLB scoreboard");
+    const response: any = await fetchWithTimeout(sourceUrl, { headers: PRICE_HEADERS }, 8_000, "MLB scoreboard");
     if (!response.ok) return null;
-    const payload: any = await response.json();
+    const payload: any = await readResponseJsonLimited(response, 2_000_000);
     const games = (Array.isArray(payload?.dates) ? payload.dates : [])
       .flatMap((date: any) => Array.isArray(date?.games) ? date.games : [])
       .filter((game: any) => {
@@ -613,9 +615,9 @@ export function appleMacPriceSnapshotFromHtml(html: string, query: string): Trac
 async function fetchAppleMacPriceSnapshot(query: string): Promise<TrackerSnapshot | null> {
   if (!requestedAppleMacProducts(query).length) return null;
   try {
-    const response: any = await withTimeout(fetch(APPLE_MAC_STORE_URL, { headers: PRICE_HEADERS }), 8000, "Apple Store prices");
+    const response: any = await fetchWithTimeout(APPLE_MAC_STORE_URL, { headers: PRICE_HEADERS }, 8000, "Apple Store prices");
     if (!response.ok) return null;
-    return appleMacPriceSnapshotFromHtml(await response.text(), query);
+    return appleMacPriceSnapshotFromHtml(await readResponseBodyLimited(response, 2_000_000), query);
   } catch (error) {
     console.error("Apple Store price error:", error);
     return null;
@@ -762,9 +764,9 @@ async function fetchFlightStatsStatus(query: string): Promise<TrackerSnapshot | 
   if (!match) return null;
   const sourceUrl = `https://www.flightstats.com/v2/flight-tracker/${encodeURIComponent(match[1])}/${encodeURIComponent(match[2])}`;
   try {
-    const response: any = await withTimeout(fetch(sourceUrl, { headers: PRICE_HEADERS }), 10000, "FlightStats");
+    const response: any = await fetchWithTimeout(sourceUrl, { headers: PRICE_HEADERS }, 10000, "FlightStats");
     if (!response.ok) return null;
-    return flightStatsSnapshotFromHtml(await response.text(), flight, sourceUrl);
+    return flightStatsSnapshotFromHtml(await readResponseBodyLimited(response, 2_000_000), flight, sourceUrl);
   } catch (error) {
     console.error("FlightStats error:", error);
     return null;
@@ -880,17 +882,17 @@ export function ship24StatusFromResponse(data: any): Ship24Status | null {
 }
 
 async function createShip24Tracker(number: string): Promise<Ship24TrackerRecord | null> {
-  const response: any = await withTimeout(fetch("https://api.ship24.com/public/v1/trackers", {
+  const response: any = await fetchWithTimeout("https://api.ship24.com/public/v1/trackers", {
     method: "POST",
     headers: ship24Headers(),
     // Ship24 recommends auto-detection unless a verified courier code is known.
     body: JSON.stringify({ trackingNumber: number })
-  }), 12000, "Ship24 create tracker");
+  }, 12000, "Ship24 create tracker");
   if (!response.ok) {
-    console.error("Ship24 create", response.status, (await response.text().catch(() => "")).slice(0, 160));
+    console.error("Ship24 create", response.status, (await readResponseBodyLimited(response, 8_000).catch(() => "")).slice(0, 160));
     return null;
   }
-  const data = await response.json();
+  const data: any = await readResponseJsonLimited(response, 512_000);
   const trackerId = String(data?.data?.tracker?.trackerId || "").trim();
   if (!trackerId) return null;
   const record = { trackerId, trackingNumber: number, createdAt: Date.now() };
@@ -906,19 +908,21 @@ async function fetchShip24Status(number: string): Promise<Ship24Status | null> {
     if (!record?.trackerId) record = await createShip24Tracker(number);
     if (!record?.trackerId) return null;
 
-    const response: any = await withTimeout(fetch(
+    const response: any = await fetchWithTimeout(
       `https://api.ship24.com/public/v1/trackers/${encodeURIComponent(record.trackerId)}/results`,
-      { headers: ship24Headers() }
-    ), 12000, "Ship24 tracker results");
+      { headers: ship24Headers() },
+      12000,
+      "Ship24 tracker results"
+    );
     if (response.status === 404) {
       await storeDelete(key);
       return null;
     }
     if (!response.ok) {
-      console.error("Ship24 results", response.status, (await response.text().catch(() => "")).slice(0, 160));
+      console.error("Ship24 results", response.status, (await readResponseBodyLimited(response, 8_000).catch(() => "")).slice(0, 160));
       return null;
     }
-    return ship24StatusFromResponse(await response.json());
+    return ship24StatusFromResponse(await readResponseJsonLimited(response, 1_000_000));
   } catch (error) {
     console.error("Ship24 error:", error);
     return null;

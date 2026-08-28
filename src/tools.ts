@@ -7,6 +7,7 @@ import type { TakiModelKey } from "./ai.js";
 import { isoFromYmdTime, addMinutesToIsoLocal, addDaysToYmd, ymdInTimeZone, briefForVoice, progressiveVoiceBundles } from "./util.js";
 import { extractFlightCode, hasExplicitFinanceCue, hasProductPriceCue } from "./entityClassifier.js";
 import { getCurrentMovieRecommendationEvidence } from "./currentRecommendations.js";
+import { validatePublicHttpUrl } from "./urlSafety.js";
 
 function isValidTimeZone(tz: string): boolean {
   try {
@@ -70,7 +71,7 @@ function isoFromLocalParts(
   return { startDate, endDate: addMinutesToIsoLocal(startDate, 120) };
 }
 import type { AssistantResponse, ConversationState, DeviceLocation, DeviceWeather } from "./types.js";
-import { safeParseJsonObject, withTimeout } from "./util.js";
+import { fetchWithTimeout, readResponseJsonLimited, safeParseJsonObject, withTimeout } from "./util.js";
 
 /* ============================================================================
  * Tools the planner can invoke. Each tool is a self-contained capability with
@@ -93,14 +94,15 @@ async function reverseGeocodeDeviceLocation(deviceLocation: any): Promise<string
   const { latitude, longitude } = deviceLocation;
 
   try {
-    const response = await withTimeout(
-      fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${encodeURIComponent(latitude)}&longitude=${encodeURIComponent(longitude)}&localityLanguage=en`),
+    const response = await fetchWithTimeout(
+      `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${encodeURIComponent(latitude)}&longitude=${encodeURIComponent(longitude)}&localityLanguage=en`,
+      {},
       7000,
       "Reverse geocode"
     );
     if (!response.ok) throw new Error(`Reverse geocode failed: ${response.status}`);
 
-    const d: any = await response.json();
+    const d: any = await readResponseJsonLimited(response, 256_000);
     const city = d.city || d.locality || "";
     const state = d.principalSubdivision || "";
     let country = String(d.countryName || "").replace(/\s*\(the\)\s*$/i, "").trim();
@@ -240,14 +242,14 @@ function extractWeatherLocation(message: string) {
 // if it can't resolve anything.
 async function geocodeCity(query: string): Promise<{ latitude: number; longitude: number; name: string } | null> {
   try {
-    const r: any = await withTimeout(
-      fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=jsonv2&addressdetails=1&limit=5`, {
+    const r: any = await fetchWithTimeout(
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=jsonv2&addressdetails=1&limit=5`, {
         headers: { "User-Agent": "Taki AI weather assistant (support@takiai.app)" }
-      }),
+      },
       8000,
       "Geocoding"
     );
-    const arr = await r.json();
+    const arr = await readResponseJsonLimited<any[]>(r, 256_000);
     if (!Array.isArray(arr) || !arr.length) return null;
     // Prefer an actual city/town over a county/region with the same name
     // ("jasper georgia" -> the town of Jasper, not Jasper County).
@@ -338,14 +340,14 @@ export function eventQueryFromLiveActivityMessage(message: string): string {
 // city, so routing goes to the actual venue.
 async function geocodePlace(query: string): Promise<{ latitude: number; longitude: number; name: string } | null> {
   try {
-    const r: any = await withTimeout(
-      fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=jsonv2&addressdetails=1&limit=1`, {
+    const r: any = await fetchWithTimeout(
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=jsonv2&addressdetails=1&limit=1`, {
         headers: { "User-Agent": "Taki AI weather assistant (support@takiai.app)" }
-      }),
+      },
       8000,
       "Place geocoding"
     );
-    const arr = await r.json();
+    const arr = await readResponseJsonLimited<any[]>(r, 256_000);
     if (!Array.isArray(arr) || !arr.length || !arr[0].lat || !arr[0].lon) return null;
     const f = arr[0];
     const name = String(f.name || String(f.display_name || query).split(",")[0]).trim();
@@ -479,12 +481,13 @@ export async function getTravelTime(
   if (m === "driving") params.set("traffic_model", "best_guess");
 
   try {
-    const r: any = await withTimeout(
-      fetch(`https://maps.googleapis.com/maps/api/directions/json?${params.toString()}`),
+    const r: any = await fetchWithTimeout(
+      `https://maps.googleapis.com/maps/api/directions/json?${params.toString()}`,
+      {},
       9000,
       "Directions"
     );
-    const data = await r.json();
+    const data = await readResponseJsonLimited<any>(r, 1_000_000);
     if (data.status !== "OK" || !Array.isArray(data.routes) || !data.routes.length) return null;
     const leg = data.routes[0].legs?.[0];
     if (!leg) return null;
@@ -1587,8 +1590,8 @@ const isRainyText = (s?: string) => /rain|shower|snow|sleet|storm|drizzle|thunde
 async function getNwsWeather(lat: number, lon: number, userTz: string): Promise<WeatherData | null> {
   const headers = { "User-Agent": "Taki AI weather assistant (contact: support@takiai.app)", Accept: "application/geo+json" };
   const getJson = async (url: string, label: string) => {
-    const r: any = await withTimeout(fetch(url, { headers }), 7000, label);
-    return r.ok ? r.json() : null;
+    const r: any = await fetchWithTimeout(url, { headers }, 7000, label);
+    return r.ok ? readResponseJsonLimited<any>(r, 1_000_000) : null;
   };
   try {
     const pd = await getJson(`https://api.weather.gov/points/${lat.toFixed(4)},${lon.toFixed(4)}`, "NWS points");
@@ -1671,8 +1674,8 @@ async function getOpenMeteoWeather(lat: number, lon: number, fallbackTz: string)
   });
   try {
     const sourceUrl = `https://api.open-meteo.com/v1/forecast?${params.toString()}`;
-    const r: any = await withTimeout(fetch(sourceUrl), 8000, "Weather");
-    const data = await r.json();
+    const r: any = await fetchWithTimeout(sourceUrl, {}, 8000, "Weather");
+    const data = await readResponseJsonLimited<any>(r, 512_000);
     const current = data.current;
     const daily = data.daily;
     if (!current || !daily) return null;
@@ -1913,17 +1916,18 @@ export async function getCryptoPrice(message: string): Promise<AssistantResponse
   try {
     let id = CRYPTO_IDS[word];
     if (!id) {
-      const s: any = await withTimeout(fetch(`https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(word)}`), 6000, "Crypto search");
-      const sd = await s.json();
+      const s: any = await fetchWithTimeout(`https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(word)}`, {}, 6000, "Crypto search");
+      const sd = await readResponseJsonLimited<any>(s, 512_000);
       id = sd?.coins?.[0]?.id;
     }
     if (!id) return null;
-    const r: any = await withTimeout(
-      fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd&include_24hr_change=true`),
+    const r: any = await fetchWithTimeout(
+      `https://api.coingecko.com/api/v3/simple/price?ids=${id}&vs_currencies=usd&include_24hr_change=true`,
+      {},
       6000,
       "Crypto price"
     );
-    const d = await r.json();
+    const d = await readResponseJsonLimited<any>(r, 512_000);
     const info = d?.[id];
     if (!info || typeof info.usd !== "number") return null;
     const chg = typeof info.usd_24h_change === "number" ? info.usd_24h_change : null;
@@ -1994,8 +1998,9 @@ export async function getStockPrice(message: string): Promise<AssistantResponse 
     // Always resolve through search — it maps both company names ("nvidia") AND
     // tickers ("NVDA"/"aapl") to the correct symbol. (Guessing a ticker from the
     // text is unreliable — "NVIDIA" is not a ticker.)
-    const s: any = await withTimeout(
-      fetch(`https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(entity)}&quotesCount=3&newsCount=0`, { headers: PRICE_HEADERS }),
+    const s: any = await fetchWithTimeout(
+      `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(entity)}&quotesCount=3&newsCount=0`,
+      { headers: PRICE_HEADERS },
       6000,
       "Stock search"
     );
@@ -2003,19 +2008,20 @@ export async function getStockPrice(message: string): Promise<AssistantResponse 
     // Requests"). Parsing that as JSON threw, which the catch below turned into
     // a silent null and a confusing "I can't verify that" refusal.
     if (!s?.ok) return null;
-    const sd = await s.json();
+    const sd = await readResponseJsonLimited<any>(s, 512_000);
     const q = (sd?.quotes || []).find((x: any) => x?.symbol && (x.quoteType === "EQUITY" || x.quoteType === "ETF")) || (sd?.quotes || [])[0];
     if (!q?.symbol) return null;
     const symbol = q.symbol;
     const name = q.shortname || q.longname || q.symbol;
     // includePrePost gives the latest traded price INCLUDING pre/after-hours.
-    const r: any = await withTimeout(
-      fetch(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1m&range=1d&includePrePost=true`, { headers: PRICE_HEADERS }),
+    const r: any = await fetchWithTimeout(
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1m&range=1d&includePrePost=true`,
+      { headers: PRICE_HEADERS },
       6000,
       "Stock price"
     );
     if (!r?.ok) return null;
-    const d = await r.json();
+    const d = await readResponseJsonLimited<any>(r, 1_000_000);
     const result = d?.chart?.result?.[0];
     const meta = result?.meta;
     if (!meta) return null;
@@ -2071,12 +2077,13 @@ export async function getLotteryAnswer(message: string): Promise<AssistantRespon
   const isMega = /\bmega ?millions\b/.test(m) && !/powerball/.test(m);
   try {
     if (isMega) {
-      const r: any = await withTimeout(
-        fetch("https://data.ny.gov/resource/5xaw-6ayf.json?$limit=1&$order=draw_date%20DESC"),
+      const r: any = await fetchWithTimeout(
+        "https://data.ny.gov/resource/5xaw-6ayf.json?$limit=1&$order=draw_date%20DESC",
+        {},
         7000,
         "Mega Millions"
       );
-      const e = (await r.json())?.[0];
+      const e = (await readResponseJsonLimited<any[]>(r, 256_000))?.[0];
       if (!e?.winning_numbers) return null;
       const nums = String(e.winning_numbers).trim().split(/\s+/).join(", ");
       const date = lotteryDrawDate(e.draw_date);
@@ -2086,12 +2093,13 @@ export async function getLotteryAnswer(message: string): Promise<AssistantRespon
         sources: [{ title: "data.ny.gov", url: "https://data.ny.gov/resource/5xaw-6ayf.json?$limit=1&$order=draw_date%20DESC" }]
       };
     }
-    const r: any = await withTimeout(
-      fetch("https://data.ny.gov/resource/d6yy-54nr.json?$limit=1&$order=draw_date%20DESC"),
+    const r: any = await fetchWithTimeout(
+      "https://data.ny.gov/resource/d6yy-54nr.json?$limit=1&$order=draw_date%20DESC",
+      {},
       7000,
       "Powerball"
     );
-    const e = (await r.json())?.[0];
+    const e = (await readResponseJsonLimited<any[]>(r, 256_000))?.[0];
     if (!e?.winning_numbers) return null;
     const parts = String(e.winning_numbers).trim().split(/\s+/);
     const white = parts.slice(0, 5).join(", ");
@@ -2892,9 +2900,9 @@ async function findBravesFutureEvents(count: number, timeZone: string): Promise<
   const endDate = addDaysToYmd(startDate, 21);
   const url = `https://statsapi.mlb.com/api/v1/schedule?sportId=1&teamId=144&startDate=${startDate}&endDate=${endDate}&hydrate=team,venue`;
   try {
-    const response = await withTimeout(fetch(url, { headers: { Accept: "application/json" } }), 8_000, "MLB schedule");
+    const response = await fetchWithTimeout(url, { headers: { Accept: "application/json" } }, 8_000, "MLB schedule");
     if (!response.ok) return [];
-    const payload: any = await response.json();
+    const payload: any = await readResponseJsonLimited(response, 2_000_000);
     const games = (Array.isArray(payload?.dates) ? payload.dates : [])
       .flatMap((date: any) => Array.isArray(date?.games) ? date.games : [])
       .filter((game: any) => Date.parse(String(game?.gameDate || "")) > now.getTime())
@@ -3509,15 +3517,17 @@ export async function answerAboutAttachments(
     const name = String(attachment.name || "Attachment").slice(0, 160);
     if (attachment.kind === "url" && attachment.url) {
       const url = attachment.url.trim();
-      if (!/^https?:\/\//i.test(url)) continue;
-      sources.push({ title: name || new URL(url).hostname, url });
-      const youtubeInputURL = youtubeVideoInputURL(url);
+      const safeUrl = await validatePublicHttpUrl(url);
+      if (!safeUrl) continue;
+      const safeUrlString = safeUrl.toString();
+      sources.push({ title: name || safeUrl.hostname, url: safeUrlString });
+      const youtubeInputURL = youtubeVideoInputURL(safeUrlString);
       if (youtubeInputURL) {
         parts.push({ fileData: { fileUri: youtubeInputURL } });
-        parts.push({ text: `The preceding item is the public YouTube source ${url}.` });
+        parts.push({ text: `The preceding item is the public YouTube source ${safeUrlString}.` });
       } else {
         needsURLContext = true;
-        parts.push({ text: `Use this public webpage as a primary source: ${url}` });
+        parts.push({ text: `Use this public webpage as a primary source: ${safeUrlString}` });
       }
       continue;
     }

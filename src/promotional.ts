@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import { storeDelete, storeGet, storeSet } from "./store.js";
+import { storeGet, storeSet, storeUpdate } from "./store.js";
+import { fetchWithTimeout } from "./util.js";
 import type { UserRecord } from "./users.js";
 
 type SubscriberStatus = "subscribed" | "unsubscribed";
@@ -52,12 +53,19 @@ function escapeAttribute(value: string): string { return escapeHtml(value).repla
 
 async function indexedIds(): Promise<string[]> {
   const index = await storeGet<{ ids?: unknown }>(INDEX_KEY, { ids: [] });
-  return Array.isArray(index.ids) ? index.ids.filter((id): id is string => typeof id === "string") : [];
+  return Array.isArray(index.ids)
+    ? [...new Set(index.ids.filter((id): id is string => typeof id === "string" && /^[a-f0-9]{64}$/.test(id)))].slice(-100_000)
+    : [];
 }
 
 async function addToIndex(id: string): Promise<void> {
-  const ids = await indexedIds();
-  if (!ids.includes(id)) await storeSet(INDEX_KEY, { ids: [...ids, id] });
+  await storeUpdate<{ ids?: unknown }, void>(INDEX_KEY, { ids: [] }, (current) => {
+    const ids = Array.isArray(current?.ids)
+      ? [...new Set(current.ids.filter((value): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value)))]
+      : [];
+    const next = ids.includes(id) ? ids : [...ids, id];
+    return { value: { ids: next.slice(-100_000) }, result: undefined };
+  });
 }
 
 export function isPromotionalEmailConfigured(): boolean { return Boolean(API_KEY()); }
@@ -75,20 +83,21 @@ export async function enrollApplePromotionalSubscriber(input: { email?: string; 
   if (!email) return null;
   const id = emailId(email);
   const now = Date.now();
-  const prior = await storeGet<PromotionalSubscriber | null>(subscriberKey(id), null);
-  const next: PromotionalSubscriber = {
-    id,
-    email,
-    status: prior?.status === "unsubscribed" ? "unsubscribed" : "subscribed",
-    source: "apple_sign_in",
-    enrolledAt: Number(prior?.enrolledAt || now),
-    updatedAt: now,
-    ...(prior?.unsubscribedAt ? { unsubscribedAt: prior.unsubscribedAt } : {}),
-    appleSubs: unique([...(prior?.appleSubs || []), String(input.appleSub || "").trim()], 20),
-    identities: unique([...(prior?.identities || []), String(input.identity || "").trim()], 50),
-    ...(prior?.lastSentAt ? { lastSentAt: prior.lastSentAt } : {})
-  };
-  await storeSet(subscriberKey(id), next);
+  const next = await storeUpdate<PromotionalSubscriber | null, PromotionalSubscriber>(subscriberKey(id), null, (prior) => {
+    const value: PromotionalSubscriber = {
+      id,
+      email,
+      status: prior?.status === "unsubscribed" ? "unsubscribed" : "subscribed",
+      source: "apple_sign_in",
+      enrolledAt: Number(prior?.enrolledAt || now),
+      updatedAt: now,
+      ...(prior?.unsubscribedAt ? { unsubscribedAt: prior.unsubscribedAt } : {}),
+      appleSubs: unique([...(prior?.appleSubs || []), String(input.appleSub || "").trim()], 20),
+      identities: unique([...(prior?.identities || []), String(input.identity || "").trim()], 50),
+      ...(prior?.lastSentAt ? { lastSentAt: prior.lastSentAt } : {})
+    };
+    return { value, result: value };
+  });
   await addToIndex(id);
   return next;
 }
@@ -114,21 +123,24 @@ export async function removeApplePromotionalSubscriber(appleSub: string): Promis
   const ids = await indexedIds();
   const retainedIds: string[] = [];
   for (const id of ids) {
-    const subscriber = await storeGet<PromotionalSubscriber | null>(subscriberKey(id), null);
-    if (!subscriber) continue;
-    if (!subscriber.appleSubs.includes(sub)) { retainedIds.push(id); continue; }
-    subscriber.appleSubs = subscriber.appleSubs.filter((value) => value !== sub);
-    subscriber.identities = subscriber.identities.filter((identity) => identity !== `apple:${sub}`);
-    if (!subscriber.appleSubs.length) {
-      await storeDelete(subscriberKey(id));
-      continue;
-    }
-    subscriber.updatedAt = Date.now();
-    await storeSet(subscriberKey(id), subscriber);
-    retainedIds.push(id);
+    const result = await storeUpdate<PromotionalSubscriber | null, { keep: boolean }>(subscriberKey(id), null, (stored) => {
+      if (!stored) return { value: null, result: { keep: false } };
+      if (!stored.appleSubs.includes(sub)) return { value: stored, result: { keep: true } };
+      const appleSubs = stored.appleSubs.filter((value) => value !== sub);
+      const identities = stored.identities.filter((identity) => identity !== `apple:${sub}`);
+      if (!appleSubs.length) return { value: null, result: { keep: false } };
+      return { value: { ...stored, appleSubs, identities, updatedAt: Date.now() }, result: { keep: true } };
+    });
+    if (result.keep) retainedIds.push(id);
   }
-  if (retainedIds.length) await storeSet(INDEX_KEY, { ids: retainedIds });
-  else await storeDelete(INDEX_KEY);
+  await storeUpdate<{ ids?: unknown }, void>(INDEX_KEY, { ids: [] }, (current) => {
+    const currentIds = Array.isArray(current?.ids) ? current.ids.filter((id): id is string => typeof id === "string") : [];
+    // Keep records enrolled by a concurrent request while removing the
+    // subscribers that this Apple authorization explicitly deleted.
+    const retained = new Set(retainedIds);
+    const snapshotIds = new Set(ids);
+    return { value: { ids: currentIds.filter((id) => !snapshotIds.has(id) || retained.has(id)) }, result: undefined };
+  });
 }
 
 export async function promotionalSummary(): Promise<{
@@ -140,7 +152,7 @@ export async function promotionalSummary(): Promise<{
   const subscribers = await promotionalSubscribers();
   const campaignIndex = await storeGet<{ ids?: unknown }>("marketing:campaigns", { ids: [] });
   const campaignIds = Array.isArray(campaignIndex.ids)
-    ? campaignIndex.ids.filter((id): id is string => typeof id === "string")
+    ? [...new Set(campaignIndex.ids.filter((id): id is string => typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id)))].slice(-100)
     : [];
   const campaigns = (await Promise.all(campaignIds.map((id) => storeGet<PromotionalCampaign | null>(campaignKey(id), null))))
     .filter((campaign): campaign is PromotionalCampaign => Boolean(campaign))
@@ -164,16 +176,17 @@ function signToken(id: string): string {
 
 function unsubscribeId(token: unknown): string | null {
   const secret = UNSUBSCRIBE_SECRET();
-  if (!secret || typeof token !== "string") return null;
+  if (!secret || typeof token !== "string" || token.length > 4096) return null;
   const [body, suppliedSignature] = token.split(".");
-  if (!body || !suppliedSignature) return null;
+  if (!body || !suppliedSignature || token.split(".").length !== 2 || !/^[A-Za-z0-9_-]+$/.test(body) || !/^[A-Za-z0-9_-]+$/.test(suppliedSignature)) return null;
   const expected = createHmac("sha256", secret).update(body).digest("base64url");
   const supplied = Buffer.from(suppliedSignature);
   const wanted = Buffer.from(expected);
   if (supplied.length !== wanted.length || !timingSafeEqual(supplied, wanted)) return null;
   try {
     const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as { id?: unknown; exp?: unknown };
-    return typeof payload.id === "string" && /^[a-f0-9]{64}$/.test(payload.id) && Number(payload.exp) >= Date.now() ? payload.id : null;
+    const exp = Number(payload.exp);
+    return typeof payload.id === "string" && /^[a-f0-9]{64}$/.test(payload.id) && Number.isSafeInteger(exp) && exp >= Date.now() ? payload.id : null;
   } catch { return null; }
 }
 
@@ -182,10 +195,11 @@ export async function unsubscribePromotionalEmail(token: unknown): Promise<boole
   if (!id) return false;
   const subscriber = await storeGet<PromotionalSubscriber | null>(subscriberKey(id), null);
   if (!subscriber) return false;
-  subscriber.status = "unsubscribed";
-  subscriber.unsubscribedAt = Date.now();
-  subscriber.updatedAt = subscriber.unsubscribedAt;
-  await storeSet(subscriberKey(id), subscriber);
+  await storeUpdate<PromotionalSubscriber | null, boolean>(subscriberKey(id), null, (subscriber) => {
+    if (!subscriber) return { value: null, result: false };
+    const at = Date.now();
+    return { value: { ...subscriber, status: "unsubscribed", unsubscribedAt: at, updatedAt: at }, result: true };
+  });
   return true;
 }
 
@@ -203,17 +217,18 @@ function campaignHtml(input: { subject: string; body: string; ctaLabel?: string;
 }
 
 async function addCampaign(campaign: PromotionalCampaign): Promise<void> {
-  const index = await storeGet<{ ids?: unknown }>("marketing:campaigns", { ids: [] });
-  const ids = Array.isArray(index.ids) ? index.ids.filter((id): id is string => typeof id === "string") : [];
   await storeSet(campaignKey(campaign.id), campaign);
-  await storeSet("marketing:campaigns", { ids: [...new Set([campaign.id, ...ids])].slice(0, 100) });
+  await storeUpdate<{ ids?: unknown }, void>("marketing:campaigns", { ids: [] }, (current) => {
+    const ids = Array.isArray(current?.ids) ? current.ids.filter((id): id is string => typeof id === "string") : [];
+    return { value: { ids: [...new Set([campaign.id, ...ids])].slice(0, 100) }, result: undefined };
+  });
 }
 
 async function sendOne(subscriber: PromotionalSubscriber, campaign: PromotionalCampaign): Promise<{ ok: boolean; error?: string }> {
   const url = unsubscribeUrl(subscriber);
   const text = `${campaign.body}${campaign.ctaLabel && campaign.ctaUrl ? `\n\n${campaign.ctaLabel}: ${campaign.ctaUrl}` : ""}\n\nUnsubscribe from promotional emails: ${url}\n${POSTAL_ADDRESS()}`;
   try {
-    const response = await fetch("https://api.resend.com/emails", {
+    const response = await fetchWithTimeout("https://api.resend.com/emails", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${API_KEY()}`,
@@ -230,11 +245,13 @@ async function sendOne(subscriber: PromotionalSubscriber, campaign: PromotionalC
           "X-Entity-Ref-ID": campaign.id
         }
       })
-    });
+    }, 12_000, "Promotional email");
     if (!response.ok) return { ok: false, error: `Resend returned ${response.status}` };
-    subscriber.lastSentAt = Date.now();
-    subscriber.updatedAt = subscriber.lastSentAt;
-    await storeSet(subscriberKey(subscriber.id), subscriber);
+    const sentAt = Date.now();
+    await storeUpdate<PromotionalSubscriber | null, void>(subscriberKey(subscriber.id), null, (stored) => {
+      if (!stored) return { value: null, result: undefined };
+      return { value: { ...stored, lastSentAt: sentAt, updatedAt: sentAt }, result: undefined };
+    });
     return { ok: true };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : "Email request failed" };

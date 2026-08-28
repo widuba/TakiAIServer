@@ -1,5 +1,5 @@
 import { MAX_VOICE_INPUT_MS } from "./credits.js";
-import { withTimeout } from "./util.js";
+import { fetchWithTimeout, readResponseBodyLimited, readResponseBytesLimited, readResponseJsonLimited } from "./util.js";
 
 /* ============================================================================
  * Voice mode (Phase 1) — ElevenLabs speech-to-text + text-to-speech. The key
@@ -83,19 +83,16 @@ export async function transcribe(audioBase64: string, mime = "audio/m4a", speech
     form.append("tag_audio_events", "false");
     form.append("diarize", "false");
     for (const keyterm of normalizeSpeechKeyterms(speechHints)) form.append("keyterms", keyterm);
-    const res: any = await withTimeout(
-      fetch("https://api.elevenlabs.io/v1/speech-to-text", {
+    const res: any = await fetchWithTimeout("https://api.elevenlabs.io/v1/speech-to-text", {
         method: "POST",
         headers: { "xi-api-key": ELEVEN_KEY },
         body: form as any
-      }),
-      20000, "STT"
-    );
+      }, 20_000, "STT");
     if (!res.ok) {
-      console.error("STT error:", res.status, (await res.text().catch(() => "")).slice(0, 200));
+      console.error("STT error:", res.status, (await readResponseBodyLimited(res, 8_000).catch(() => "")).slice(0, 200));
       return "";
     }
-    const data = await res.json();
+    const data = await readResponseJsonLimited<any>(res, 256_000);
     if (typeof data?.text !== "string") return "";
     // Belt-and-suspenders: strip any residual "(footsteps)"-style audio-event
     // tags (single short parentheticals with no sentence punctuation).
@@ -115,12 +112,9 @@ export async function listVoices(): Promise<{ id: string; name: string }[]> {
   if (!ELEVEN_KEY) return [];
   if (voiceListCache && voiceListCache.expiresAt > Date.now()) return voiceListCache.voices;
   try {
-    const res: any = await withTimeout(
-      fetch("https://api.elevenlabs.io/v1/voices", { headers: { "xi-api-key": ELEVEN_KEY } }),
-      12000, "Voices"
-    );
+    const res: any = await fetchWithTimeout("https://api.elevenlabs.io/v1/voices", { headers: { "xi-api-key": ELEVEN_KEY } }, 12_000, "Voices");
     if (!res.ok) return [];
-    const data = await res.json();
+    const data = await readResponseJsonLimited<any>(res, 1_000_000);
     const voices = (Array.isArray(data?.voices) ? data.voices : [])
       .map((v: any) => ({ id: String(v.voice_id || ""), name: String(v.name || "Voice") }))
       .filter((v: { id: string }) => v.id);
@@ -271,8 +265,7 @@ export async function synthesize(text: string, voiceId?: string, variability?: n
   try {
     // Higher MP3 bitrate improves consonant clarity without changing ElevenLabs'
     // per-character charge. Flash v2.5 remains the low-latency, half-price model.
-    const res: any = await withTimeout(
-      fetch(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(vid)}?output_format=mp3_44100_128`, {
+    const res: any = await fetchWithTimeout(`https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(vid)}?output_format=mp3_44100_128`, {
         method: "POST",
         headers: { "xi-api-key": ELEVEN_KEY, "Content-Type": "application/json", Accept: "audio/mpeg" },
         body: JSON.stringify({
@@ -284,14 +277,14 @@ export async function synthesize(text: string, voiceId?: string, variability?: n
             use_speaker_boost: true
           }
         })
-      }),
-      20000, "TTS"
-    );
+      }, 20_000, "TTS");
     if (!res.ok) {
-      console.error("TTS error:", res.status, (await res.text().catch(() => "")).slice(0, 200));
+      console.error("TTS error:", res.status, (await readResponseBodyLimited(res, 8_000).catch(() => "")).slice(0, 200));
       return "";
     }
-    const buf = Buffer.from(await res.arrayBuffer());
+    const contentLength = Number(res.headers.get("content-length") || 0);
+    if (contentLength > 8 * 1024 * 1024) return "";
+    const buf = Buffer.from(await readResponseBytesLimited(res, 8 * 1024 * 1024));
     return buf.toString("base64");
   } catch (error) {
     console.error("Synthesize error:", error);

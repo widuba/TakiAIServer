@@ -12,8 +12,7 @@ const customerFiles = [
   "app/ios/App/App/Taki.storekit",
   "website/index.html",
   "website/buy/index.html",
-  "website/support/index.html",
-  "website/app/app.js"
+  "website/support/index.html"
 ];
 
 const contents = customerFiles.map((file) => [file, readFileSync(resolve(root, file), "utf8")] as const);
