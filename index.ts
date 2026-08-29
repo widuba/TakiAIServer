@@ -29,8 +29,8 @@ import { measureUsage, sttCostUsd, totalUsageUsd, ttsCostUsd } from "./src/meter
 import { decideAssistantCharge, planCorrectionSynthesis, usageBlockFor, usageBlockedPayload, voiceTurnEstimateCredits } from "./src/usage.js";
 import { verifyTransaction, verifyCreditTransaction, claimCreditTransaction, transferCreditTransaction, rebindCreditTransactions, linkTransactionIdentity, transferSubscriptionIdentity, claimSubscriptionPeriod, releaseSubscriptionPeriod, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
 import { revokeAppleAuthorizationCode, verifyAppleIdentityToken } from "./src/appleauth.js";
-import { purgeAppleAccount, purgeStandaloneAccount } from "./src/accountDeletion.js";
-import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, reinstate, terminateAndBan, unban, warnUser, suspendAccount, acknowledgeNotice, safetyDetailFor, allSafetyAccounts, retireBannedIps, retiredBannedIps, reviewQueue, linkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG } from "./src/safety.js";
+import { isPrivacyDeletedDevice, purgeAppleAccount, purgeDeviceAccount, purgeStandaloneAccount } from "./src/accountDeletion.js";
+import { recordAssoc, associationsFor, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, reinstate, terminateAndBan, unban, warnUser, suspendAccount, acknowledgeNotice, safetyDetailFor, allSafetyAccounts, retireBannedIps, retiredBannedIps, reviewQueue, linkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG } from "./src/safety.js";
 import { queueContextualSafetyReview } from "./src/safetyReview.js";
 import { noteUser, noteUserStrict, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, noteInteraction, noteChannelCost, noteSession, noteEngagementPreferences, noteBillingEvent, userForIdentity, identitiesForIp, allUsers, deleteUser, type UserRecord } from "./src/users.js";
 import { TIERS } from "./src/credits.js";
@@ -305,6 +305,7 @@ app.use(cors({
     else callback(new Error("Origin is not allowed"));
   },
   credentials: false,
+  exposedHeaders: ["X-Taki-Account-Deleted"],
   maxAge: 600
 }));
 // Keep the raw body around so the Stripe webhook can verify its signature (Stripe
@@ -378,6 +379,14 @@ async function verifiedPhysicalDevice(req: express.Request): Promise<string | nu
   return deviceId;
 }
 
+function respondAccountDeleted(res: express.Response): void {
+  res
+    .set("Cache-Control", "no-store")
+    .set("X-Taki-Account-Deleted", "1")
+    .status(410)
+    .json({ error: "This Taki installation was reset for privacy.", code: "account_deleted" });
+}
+
 app.use(async (req, res, next) => {
   if (!req.path.startsWith("/api/") || bypassDeviceAuth(req.path)) {
     next();
@@ -410,6 +419,16 @@ app.use(async (req, res, next) => {
     ? true
     : /^\d{8}$/.test(headerId) && identities.every((identity) => identity === headerId) && await verifyDeviceCredential(headerId, credential);
   if (!physicalValid) {
+    if (/^\d{8}$/.test(headerId)) {
+      try {
+        if (await isPrivacyDeletedDevice(headerId)) {
+          respondAccountDeleted(res);
+          return;
+        }
+      } catch (error) {
+        console.error("privacy deletion marker check:", error);
+      }
+    }
     res.status(401).json({ error: "This Taki installation needs to reconnect securely." });
     return;
   }
@@ -1306,6 +1325,10 @@ app.post("/api/device/info", async (req, res) => {
   const b = req.body || {};
   const deviceId = typeof b.deviceId === "string" ? normalizeTopupIdentity(b.deviceId) : "";
   if (!/^\d{8}$/.test(deviceId)) { res.status(400).json({ error: "valid deviceId required" }); return; }
+  if (await isPrivacyDeletedDevice(deviceId)) {
+    respondAccountDeleted(res);
+    return;
+  }
   const credential = typeof req.headers["x-taki-device-credential"] === "string"
     ? req.headers["x-taki-device-credential"].trim()
     : "";
@@ -2630,14 +2653,55 @@ app.post("/api/admin/terminate", async (req, res) => {
   res.json({ ok: true, identity, status: "terminated", banned });
 });
 
-// Remove a user from the dashboard registry (e.g. test accounts).
-app.post("/api/admin/delete-user", async (req, res) => {
-  if (!isAdminAuthorized(req.body?.secret)) { res.status(403).json({ error: "forbidden" }); return; }
-  const identity = readAdminIdentity(req, res);
-  if (!identity) return;
-  await deleteUser(identity);
-  res.json({ ok: true, identity, deleted: true });
-});
+async function privacyDeleteAdminAccount(requestedIdentity: string): Promise<{ identity: string; deleted: { identities: string[]; devices: string[] } }> {
+  let identity = requestedIdentity;
+  if (/^\d{8}$/.test(identity)) {
+    const appleSub = await appleForDevice(identity);
+    if (appleSub) identity = `apple:${appleSub}`;
+  }
+
+  // A privacy erase is not a ban: it removes the stored account, credentials,
+  // conversations, safety history, notifications, and IP-index membership.
+  // Future signup/sign-in is still allowed and receives a new installation
+  // credential. Web subscriptions are canceled first so deletion cannot leave
+  // a paid renewal attached to an erased identity.
+  if (identity.startsWith("apple:")) {
+    await cancelWebSubscriptionsForDeletion(identity);
+    return { identity, deleted: await purgeAppleAccount(identity.slice("apple:".length)) };
+  }
+  if (identity.startsWith("google:")) {
+    await cancelWebSubscriptionsForDeletion(identity);
+    return { identity, deleted: await purgeStandaloneAccount(identity) };
+  }
+  return { identity, deleted: await purgeDeviceAccount(identity) };
+}
+
+async function handleAdminPrivacyDelete(req: express.Request, res: express.Response): Promise<void> {
+  if (!requireAdminSecret(req.body?.secret, res)) return;
+  const requestedIdentity = readAdminIdentity(req, res);
+  if (!requestedIdentity) return;
+  // Requiring the exact selected identity makes accidental or replayed admin
+  // requests fail closed even if a caller bypasses the dashboard confirmation.
+  if (typeof req.body?.confirmation !== "string" || req.body.confirmation.trim() !== requestedIdentity) {
+    res.status(400).json({ error: "Type the exact account identity to confirm this privacy deletion." });
+    return;
+  }
+  try {
+    const result = await privacyDeleteAdminAccount(requestedIdentity);
+    res.set("Cache-Control", "no-store").json({ ok: true, ...result, privacyDeleted: true });
+  } catch (error) {
+    console.error("Admin privacy deletion failed:", error);
+    res.status(502).json({ error: error instanceof Error ? error.message : "The account deletion did not complete. Retry this same deletion; it is safe to repeat." });
+  }
+}
+
+// Privacy erase: unlike terminate/ban, this does not add an enforcement
+// record. It only logs the installation out and returns it to onboarding.
+app.post("/api/admin/delete-account", handleAdminPrivacyDelete);
+
+// Backward-compatible alias for older dashboard builds. New clients should
+// call /api/admin/delete-account so the intent is explicit.
+app.post("/api/admin/delete-user", handleAdminPrivacyDelete);
 
 function resetPreviewForAdmin(preview: FullResetPreview) {
   const { fingerprint: _fingerprint, activeStripeSubscriptionIds: _subscriptionIds, ...safe } = preview;
@@ -2829,7 +2893,7 @@ function combineAdminUsers(identity: string, records: UserRecord[]): UserRecord 
     tier: records.find((record) => record.identity === identity)?.tier || records[0]?.tier || "free",
     tierHistory: records.flatMap((record) => record.tierHistory || []).sort((a, b) => a.at - b.at).slice(-100),
     deviceType: records.map((record) => record.deviceType).find(Boolean),
-    ips: [...new Set(records.flatMap((record) => record.ips || []))].slice(-50),
+    ips: [...new Set(records.flatMap((record) => record.ips || []))],
     apple,
     revenueUsd: records.reduce((sum, record) => sum + Number(record.revenueUsd || 0), 0),
     purchases: records.flatMap((record) => record.purchases || []).sort((a, b) => b.at - a.at).slice(0, 200),
@@ -2860,6 +2924,14 @@ async function buildAdminAccount(requestedIdentity: string) {
   const memberIds = [...new Set([identity, ...deviceIds])];
   const records = await Promise.all(memberIds.map(userForIdentity));
   const user = combineAdminUsers(identity, records);
+  const associationIps = await Promise.all(memberIds.map(async (memberId) => {
+    try { return (await associationsFor(memberId)).ips; }
+    catch (error) { console.error("admin account association lookup:", error); return []; }
+  }));
+  const ips = [...new Set([
+    ...user.ips,
+    ...associationIps.flat()
+  ].filter((ip): ip is string => typeof ip === "string" && ip.trim().length > 0 && ip.length <= 120 && ip !== "unknown"))];
   const [credit, creditAdjustments] = await Promise.all([
     creditSummary(identity),
     adminCreditAdjustments(identity)
@@ -2897,7 +2969,7 @@ async function buildAdminAccount(requestedIdentity: string) {
     : user.firstSeenAt && Date.now() - user.firstSeenAt < 7 * 86400_000 ? "new"
     : "standard";
   const neighbors = new Set<string>();
-  for (const ip of user.ips) {
+  for (const ip of ips) {
     for (const neighbor of await identitiesForIp(ip)) if (!memberIds.includes(neighbor)) neighbors.add(neighbor);
   }
   const devices = records
@@ -2938,6 +3010,7 @@ async function buildAdminAccount(requestedIdentity: string) {
     highValue,
     segment,
     deviceCount: devices.length,
+    ipCount: ips.length,
     topFeatures: Object.entries(user.analytics.featureUsage).sort((a, b) => b[1] - a[1]).slice(0, 5),
     engagementPreferences: user.engagement
   };
@@ -2953,7 +3026,7 @@ async function buildAdminAccount(requestedIdentity: string) {
       purchases: user.purchases,
       tierHistory: user.tierHistory,
       devices,
-      ips: user.ips,
+      ips,
       ipNeighbors: [...neighbors],
       linkedIdentities: memberIds,
       engagement
@@ -3060,6 +3133,7 @@ function buildAdminListRow(identity: string, records: UserRecord[], safetyByIden
     highValue,
     segment,
     deviceCount: devices.length,
+    ipCount: user.ips.length,
     topFeatures: Object.entries(user.analytics.featureUsage).sort((a, b) => b[1] - a[1]).slice(0, 5),
     engagementPreferences: user.engagement
   };
