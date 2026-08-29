@@ -100,11 +100,38 @@ export const classifyGeminiError = classifyAIError;
 
 export type TakiModelKey = "taki_2_0_swift" | "taki_2_1" | "taki_2_1_reasoning";
 
+type ModelEnvironment = Record<string, string | undefined>;
+
+function configuredModel(env: ModelEnvironment, names: string[], fallback: string): string {
+  for (const name of names) {
+    const value = String(env[name] || "").trim();
+    if (value) return value;
+  }
+  return fallback;
+}
+
+/**
+ * Map the customer-facing Taki tier to the OpenAI answer model. Keep this
+ * separate from the JSON action planner: Dromos can be inexpensive for
+ * conversational answers while every tier still gets the dependable planner
+ * needed to execute calendar, maps, messages, and other device actions.
+ *
+ * OPENAI_SMART_MODEL is the explicit override for Sophos. OPENAI_MODEL and
+ * OPENAI_RESEARCH_MODEL remain supported so existing Render deployments keep
+ * their configured targets during the transition.
+ */
+export function openAIModelForTaki(key: TakiModelKey, env: ModelEnvironment = process.env): string {
+  const fast = configuredModel(env, ["OPENAI_FAST_MODEL", "OPENAI_TAKI_FAST_MODEL"], "gpt-5.4-nano");
+  const balanced = configuredModel(env, ["OPENAI_BALANCED_MODEL", "OPENAI_MODEL"], "gpt-5.4-mini");
+  const smart = configuredModel(env, ["OPENAI_SMART_MODEL", "OPENAI_RESEARCH_MODEL"], "gpt-5.4-mini");
+  if (key === "taki_2_0_swift") return fast;
+  if (key === "taki_2_1_reasoning") return smart;
+  return balanced;
+}
+
 function takiAnswerModel(key: TakiModelKey): string {
   if (ACTIVE_AI_PROVIDER === "openai") {
-    if (key === "taki_2_0_swift") return String(process.env.OPENAI_FAST_MODEL || "gpt-5.4-nano").trim();
-    if (key === "taki_2_1_reasoning") return String(process.env.OPENAI_RESEARCH_MODEL || "gpt-5.4-mini").trim();
-    return String(process.env.OPENAI_MODEL || "gpt-5.4-mini").trim();
+    return openAIModelForTaki(key);
   }
   if (key === "taki_2_0_swift") return "gemini-3.5-flash-lite";
   if (key === "taki_2_1_reasoning") return "gemini-3.1-pro-preview";

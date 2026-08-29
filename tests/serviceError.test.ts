@@ -14,7 +14,8 @@ import {
   withTakiModel,
   activeTakiModelInfo,
   modelForRequest,
-  PLANNER_MODEL
+  PLANNER_MODEL,
+  openAIModelForTaki
 } from "../src/ai.js";
 
 test("quota / billing errors classify as a fast ai_quota ServiceError", () => {
@@ -87,4 +88,23 @@ test("Taki model selection is validated, scoped, and has a bounded fallback", as
     assert.equal(modelForRequest({ model: "ignored", config: { responseMimeType: "application/json" } }), PLANNER_MODEL);
   });
   assert.equal(activeTakiModelInfo().name, "Metron");
+});
+
+test("OpenAI answer models follow the selected Taki speed-to-intelligence tier", () => {
+  const defaults = {};
+  assert.equal(openAIModelForTaki("taki_2_0_swift", defaults), "gpt-5.4-nano");
+  assert.equal(openAIModelForTaki("taki_2_1", defaults), "gpt-5.4-mini");
+  assert.equal(openAIModelForTaki("taki_2_1_reasoning", defaults), "gpt-5.4-mini");
+
+  // Existing deployment names remain supported, while the explicit smart
+  // override lets Render choose a different Sophos target without changing
+  // Dromos or Metron.
+  const configured = {
+    OPENAI_FAST_MODEL: "gpt-5.4-nano",
+    OPENAI_MODEL: "gpt-5.4-mini",
+    OPENAI_SMART_MODEL: "gpt-5.4-mini"
+  };
+  assert.equal(openAIModelForTaki("taki_2_0_swift", configured), "gpt-5.4-nano");
+  assert.equal(openAIModelForTaki("taki_2_1", configured), "gpt-5.4-mini");
+  assert.equal(openAIModelForTaki("taki_2_1_reasoning", configured), "gpt-5.4-mini");
 });
