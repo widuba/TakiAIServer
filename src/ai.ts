@@ -116,14 +116,16 @@ function configuredModel(env: ModelEnvironment, names: string[], fallback: strin
  * conversational answers while every tier still gets the dependable planner
  * needed to execute calendar, maps, messages, and other device actions.
  *
- * OPENAI_SMART_MODEL is the explicit override for Sophos. OPENAI_MODEL and
- * OPENAI_RESEARCH_MODEL remain supported so existing Render deployments keep
- * their configured targets during the transition.
+ * The defaults intentionally follow the customer-facing speed-to-intelligence
+ * order requested by the product: Dromos -> GPT-5.4 Mini, Metron -> GPT-5.5,
+ * Sophos -> GPT-5.6 Luna. The OPENAI_TAKI_* variables are tier-specific
+ * overrides; the older role variables remain supported for existing Render
+ * deployments during the transition.
  */
 export function openAIModelForTaki(key: TakiModelKey, env: ModelEnvironment = process.env): string {
-  const fast = configuredModel(env, ["OPENAI_FAST_MODEL", "OPENAI_TAKI_FAST_MODEL"], "gpt-5.4-nano");
-  const balanced = configuredModel(env, ["OPENAI_BALANCED_MODEL", "OPENAI_MODEL"], "gpt-5.4-mini");
-  const smart = configuredModel(env, ["OPENAI_SMART_MODEL", "OPENAI_RESEARCH_MODEL"], "gpt-5.4-mini");
+  const fast = configuredModel(env, ["OPENAI_TAKI_FAST_MODEL", "OPENAI_FAST_MODEL"], "gpt-5.4-mini");
+  const balanced = configuredModel(env, ["OPENAI_TAKI_BALANCED_MODEL", "OPENAI_BALANCED_MODEL", "OPENAI_MODEL"], "gpt-5.5");
+  const smart = configuredModel(env, ["OPENAI_TAKI_SMART_MODEL", "OPENAI_SMART_MODEL", "OPENAI_RESEARCH_MODEL"], "gpt-5.6-luna");
   if (key === "taki_2_0_swift") return fast;
   if (key === "taki_2_1_reasoning") return smart;
   return balanced;
@@ -433,15 +435,15 @@ export const PLANNER_MODEL = ACTIVE_AI_PROVIDER === "openai"
   ? String(process.env.OPENAI_PLANNER_MODEL || "gpt-5.4-mini").trim()
   : currentModel(process.env.GEMINI_PLANNER_MODEL, "gemini-3.6-flash");
 export const MAIN_MODEL = ACTIVE_AI_PROVIDER === "openai"
-  ? String(process.env.OPENAI_MODEL || "gpt-5.4-mini").trim()
+  ? openAIModelForTaki("taki_2_1")
   : currentModel(process.env.GEMINI_MODEL, "gemini-3.6-flash");
 export const RESEARCH_MODEL = ACTIVE_AI_PROVIDER === "openai"
-  ? String(process.env.OPENAI_RESEARCH_MODEL || "gpt-5.4-mini").trim()
+  ? openAIModelForTaki("taki_2_1_reasoning")
   : currentModel(process.env.GEMINI_RESEARCH_MODEL, "gemini-3.1-pro-preview");
 // FAST_MODEL answers easy, static knowledge questions (no routing/extraction —
 // that's where flash-lite failed as a planner; as a plain answerer it's fine).
 export const FAST_MODEL = ACTIVE_AI_PROVIDER === "openai"
-  ? String(process.env.OPENAI_FAST_MODEL || "gpt-5.4-nano").trim()
+  ? openAIModelForTaki("taki_2_0_swift")
   : currentModel(process.env.GEMINI_FAST_MODEL, "gemini-3.5-flash-lite");
 
 // Timeouts (ms), env-overridable. The planner uses minimal thinking for quick

@@ -117,7 +117,7 @@ function reasoningEffort(model: string, config: any): "none" | "low" | "medium" 
   if (Number(thinking?.thinkingBudget ?? thinking?.thinking_budget) === 0 || level === "MINIMAL") return "none";
   if (level === "LOW") return "low";
   if (level === "HIGH") return "high";
-  return /gpt-5\.(?:4|5|6)(?:-pro|-sol)?$/i.test(model) ? "medium" : "none";
+  return /gpt-5\.(?:4|5|6)(?:-pro|-sol|-luna)?$/i.test(model) ? "medium" : "none";
 }
 
 function requestsWebSearch(config: any): boolean {

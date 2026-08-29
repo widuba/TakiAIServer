@@ -66,6 +66,25 @@ test("OpenAI standard pricing accounts for cached tokens, output, and web calls"
   }), 2);
 });
 
+test("OpenAI GPT-5.5 and GPT-5.6 Luna pricing matches the current catalog", () => {
+  assert.equal(
+    openAIListPriceUsd("gpt-5.5", {
+      input_tokens: 1000,
+      input_tokens_details: { cached_tokens: 0 },
+      output_tokens: 1000
+    }),
+    0.035
+  );
+  assert.equal(
+    openAIListPriceUsd("gpt-5.6-luna", {
+      input_tokens: 2000,
+      input_tokens_details: { cached_tokens: 1000 },
+      output_tokens: 1000
+    }),
+    0.00142
+  );
+});
+
 test("the authoritative catalog contains the new plan grants and prices", () => {
   assert.deepEqual(
     (["plus", "plus_voice", "pro"] as const).map((tier) => [TIERS[tier].creditsPerCycle, TIERS[tier].voiceCreditsPerCycle, TIERS[tier].priceUsd]),

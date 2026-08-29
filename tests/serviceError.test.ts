@@ -92,19 +92,30 @@ test("Taki model selection is validated, scoped, and has a bounded fallback", as
 
 test("OpenAI answer models follow the selected Taki speed-to-intelligence tier", () => {
   const defaults = {};
-  assert.equal(openAIModelForTaki("taki_2_0_swift", defaults), "gpt-5.4-nano");
-  assert.equal(openAIModelForTaki("taki_2_1", defaults), "gpt-5.4-mini");
-  assert.equal(openAIModelForTaki("taki_2_1_reasoning", defaults), "gpt-5.4-mini");
+  assert.equal(openAIModelForTaki("taki_2_0_swift", defaults), "gpt-5.4-mini");
+  assert.equal(openAIModelForTaki("taki_2_1", defaults), "gpt-5.5");
+  assert.equal(openAIModelForTaki("taki_2_1_reasoning", defaults), "gpt-5.6-luna");
 
-  // Existing deployment names remain supported, while the explicit smart
-  // override lets Render choose a different Sophos target without changing
-  // Dromos or Metron.
+  // Tier-specific overrides take precedence, while legacy role names remain
+  // supported for existing Render deployments.
   const configured = {
+    OPENAI_TAKI_FAST_MODEL: "gpt-5.4-mini",
+    OPENAI_TAKI_BALANCED_MODEL: "gpt-5.5",
+    OPENAI_TAKI_SMART_MODEL: "gpt-5.6-luna",
     OPENAI_FAST_MODEL: "gpt-5.4-nano",
     OPENAI_MODEL: "gpt-5.4-mini",
     OPENAI_SMART_MODEL: "gpt-5.4-mini"
   };
-  assert.equal(openAIModelForTaki("taki_2_0_swift", configured), "gpt-5.4-nano");
-  assert.equal(openAIModelForTaki("taki_2_1", configured), "gpt-5.4-mini");
-  assert.equal(openAIModelForTaki("taki_2_1_reasoning", configured), "gpt-5.4-mini");
+  assert.equal(openAIModelForTaki("taki_2_0_swift", configured), "gpt-5.4-mini");
+  assert.equal(openAIModelForTaki("taki_2_1", configured), "gpt-5.5");
+  assert.equal(openAIModelForTaki("taki_2_1_reasoning", configured), "gpt-5.6-luna");
+
+  const legacy = {
+    OPENAI_FAST_MODEL: "gpt-5.4-nano",
+    OPENAI_MODEL: "gpt-5.4-mini",
+    OPENAI_SMART_MODEL: "gpt-5.4-mini"
+  };
+  assert.equal(openAIModelForTaki("taki_2_0_swift", legacy), "gpt-5.4-nano");
+  assert.equal(openAIModelForTaki("taki_2_1", legacy), "gpt-5.4-mini");
+  assert.equal(openAIModelForTaki("taki_2_1_reasoning", legacy), "gpt-5.4-mini");
 });
