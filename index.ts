@@ -32,7 +32,7 @@ import { revokeAppleAuthorizationCode, verifyAppleIdentityToken } from "./src/ap
 import { purgeAppleAccount, purgeStandaloneAccount } from "./src/accountDeletion.js";
 import { recordAssoc, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, reinstate, terminateAndBan, unban, warnUser, suspendAccount, acknowledgeNotice, safetyDetailFor, allSafetyAccounts, retireBannedIps, retiredBannedIps, reviewQueue, linkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG } from "./src/safety.js";
 import { queueContextualSafetyReview } from "./src/safetyReview.js";
-import { noteUser, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, noteInteraction, noteChannelCost, noteSession, noteEngagementPreferences, noteBillingEvent, userForIdentity, identitiesForIp, allUsers, deleteUser, type UserRecord } from "./src/users.js";
+import { noteUser, noteUserStrict, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, noteInteraction, noteChannelCost, noteSession, noteEngagementPreferences, noteBillingEvent, userForIdentity, identitiesForIp, allUsers, deleteUser, type UserRecord } from "./src/users.js";
 import { TIERS } from "./src/credits.js";
 import { billableAudioDurationMs, transcribe, synthesize, splitTextForProgressiveSpeech, listVoices, isVoiceConfigured, PIRATE_MARSHAL_VOICE_ID, speechCharacterCount, shouldAskForVoiceRepeat, VOICE_REPEAT_PROMPT, normalizeSpeechKeyterms } from "./src/voice.js";
 import { extractDurableMemories } from "./src/userMemory.js";
@@ -47,6 +47,7 @@ import { googleWebClientId, isGoogleWebAuthConfigured, verifyGoogleIdToken } fro
 import { isProductKnowledgeQuestion, productAnswerFor } from "./src/productKnowledge.js";
 import { readSyncedChats, syncChats } from "./src/chatSync.js";
 import { TurnReplayCache } from "./src/turnReplay.js";
+import { commitSignupSlot, MAX_ACCOUNTS_PER_IP, releaseSignupSlot, reserveSignupSlot } from "./src/registration.js";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
 // Render. (The purchase-simulating grant endpoint was removed when real
@@ -600,10 +601,20 @@ app.post("/api/test-push", async (req, res) => {
   const body = typeof req.body?.body === "string" ? req.body.body : "Push is working. 🎉";
   try {
     const results = await broadcast({ title, body });
-    res.json({ ok: true, sent: results.length, results });
+    const sent = results.filter((result) => result.ok).length;
+    const failed = results.length - sent;
+    if (results.length === 0) {
+      res.status(409).json({ ok: false, attempted: 0, sent: 0, failed: 0, error: "No registered push tokens are available. Open Taki on a device with notifications enabled first." });
+      return;
+    }
+    if (results.length > 0 && sent === 0) {
+      res.status(503).json({ ok: false, attempted: results.length, sent, failed, results, error: "Apple did not accept any registered notification tokens." });
+      return;
+    }
+    res.json({ ok: failed === 0, attempted: results.length, sent, failed, results });
   } catch (error) {
     console.error("test-push error:", error);
-    res.status(502).json({ error: "push failed" });
+    res.status(503).json({ error: "Push delivery is temporarily unavailable." });
   }
 });
 
@@ -1154,46 +1165,26 @@ async function assignDeviceNumber(region: string): Promise<string> {
   throw new Error("device id space is temporarily unavailable");
 }
 
-const registrationWindows = new Map<string, { at: number; count: number }>();
-function localRegistrationAllowed(ip: string): boolean {
-  const now = Date.now();
-  if (registrationWindows.size > 5_000) {
-    for (const [key, value] of registrationWindows) if (now - value.at > 10 * 60_000) registrationWindows.delete(key);
-  }
-  const previous = registrationWindows.get(ip);
-  const state = !previous || now - previous.at > 10 * 60_000 ? { at: now, count: 0 } : previous;
-  if (state.count >= 5) return false;
-  state.count += 1;
-  registrationWindows.set(ip, state);
-  return true;
-}
-
-async function registrationAllowed(ip: string): Promise<boolean> {
-  // The in-memory guard handles development without a database. Production
-  // needs a shared counter, otherwise each Render instance could independently
-  // mint five accounts for the same network and recreate the ghost-account
-  // burst this limit is meant to stop.
-  if (!isDurable()) return localRegistrationAllowed(ip);
-  const bucket = createHash("sha256").update(ip || "unknown").digest("hex").slice(0, 32);
-  try {
-    return await storeUpdate<{ at: number; count: number }, boolean>(`rate:register:${bucket}`, { at: 0, count: 0 }, (stored) => {
-      const now = Date.now();
-      const at = Number(stored?.at || 0);
-      const count = Number(stored?.count || 0);
-      const current = at > 0 && now - at <= 10 * 60_000 ? { at, count } : { at: now, count: 0 };
-      if (current.count >= 5) return { value: current, result: false };
-      current.count += 1;
-      return { value: current, result: true };
-    });
-  } catch (error) {
-    console.error("registration rate-limit storage failed:", error);
-    return false;
-  }
-}
-
 app.post("/api/register-device", async (req, res) => {
-  if (!(await registrationAllowed(clientIp(req)))) {
-    res.status(429).json({ error: "Too many new installations from this network. Try again later." });
+  const ip = clientIp(req);
+  let reservation = "";
+  try {
+    reservation = await reserveSignupSlot(ip) || "";
+  } catch (error) {
+    // A durable registration counter is part of the account-creation safety
+    // boundary. Fail closed instead of allowing a storage outage to mint an
+    // unbounded stream of anonymous accounts.
+    console.error("registration limit check failed:", error);
+    res.status(503).json({ error: "Signup is temporarily unavailable. Please try again shortly." });
+    return;
+  }
+  if (!reservation) {
+    res.set("Cache-Control", "no-store");
+    res.status(429).json({
+      error: `This network has reached the limit of ${MAX_ACCOUNTS_PER_IP} Taki accounts. Existing accounts can still sign in.`,
+      code: "signup_ip_limit",
+      limit: MAX_ACCOUNTS_PER_IP
+    });
     return;
   }
   const region = typeof req.body?.region === "string" ? req.body.region : "";
@@ -1204,12 +1195,16 @@ app.post("/api/register-device", async (req, res) => {
     // Registration creates the account record and starter ledger together. A
     // device ID can therefore never exist only on the phone or be invisible in
     // the admin dashboard.
-    await noteUser(deviceId, clientIp(req), String(req.headers?.["user-agent"] || ""));
+    await noteUserStrict(deviceId, ip, String(req.headers?.["user-agent"] || ""));
     const credits = await creditSummary(deviceId);
     const credential = await issueDeviceCredential(deviceId);
+    if (!(await commitSignupSlot(ip, reservation))) {
+      throw new Error("signup reservation expired before account commit");
+    }
     registrationCompleted = true;
     res.json({ deviceId, credential, credits });
   } catch (e) {
+    if (!registrationCompleted) await releaseSignupSlot(ip, reservation).catch((error) => console.error("release signup reservation:", error));
     if (deviceId && !registrationCompleted) {
       // A failed response must not leave a permanently issued, otherwise-empty
       // installation that later appears as a ghost account or blocks recovery.
@@ -1221,7 +1216,7 @@ app.post("/api/register-device", async (req, res) => {
       ]);
     }
     console.error("register-device error:", e);
-    res.status(502).json({ error: "could not register device" });
+    res.status(503).json({ error: "Signup could not be completed. Nothing was charged. Please try again shortly." });
   }
 });
 
@@ -3229,8 +3224,20 @@ function engagementDeliveryFailure(channel: EngagementChannel, reason: string): 
   }
   if (/BadDeviceToken|Unregistered|ExpiredProviderToken/i.test(normalized)) {
     return {
-      status: 502,
+      status: 409,
       error: "Apple rejected this device's notification token. Have the user reopen Taki and allow notifications again."
+    };
+  }
+  if (/InvalidProviderToken|MissingProviderToken|MissingTopic|TopicDisallowed|DeviceTokenNotForTopic|BadCertificate/i.test(normalized)) {
+    return {
+      status: 503,
+      error: "Push notifications are misconfigured on the server. Check the APNs key, team ID, bundle ID, and sandbox/production setting."
+    };
+  }
+  if (/APNs returned HTTP 5\d\d|HTTP 501|HTTP 502|HTTP 503|provider returned 5\d\d/i.test(normalized)) {
+    return {
+      status: 503,
+      error: "Apple's notification service is temporarily unavailable. Try again shortly."
     };
   }
   if (/timed out|ECONN|ENET|socket|fetch failed|connect/i.test(normalized)) {
@@ -3239,7 +3246,7 @@ function engagementDeliveryFailure(channel: EngagementChannel, reason: string): 
       error: "The notification provider could not be reached. Try again shortly."
     };
   }
-  return { status: 502, error: normalized || `The ${channel} notification could not be delivered.` };
+  return { status: 503, error: normalized || `The ${channel} notification could not be delivered.` };
 }
 
 app.post("/api/admin/engagement-send", async (req, res) => {
@@ -3337,7 +3344,12 @@ app.post("/api/travel-time", async (req, res) => {
 function clientIp(req: any): string {
   const xf = String(req.headers?.["x-forwarded-for"] || "");
   const forwarded = xf.split(",").map((part) => part.trim()).filter(Boolean);
-  return (req.ip || forwarded.at(-1) || req.socket?.remoteAddress || "unknown").slice(0, 120);
+  const raw = String(req.ip || forwarded.at(-1) || req.socket?.remoteAddress || "unknown").trim().toLowerCase();
+  // Keep one stable spelling for IPv4 across Render's proxy and local/native
+  // listeners. This is especially important for the per-IP signup cap and the
+  // account-association index; otherwise ::ffff:203.0.113.4 and 203.0.113.4
+  // would be treated as two different networks.
+  return raw.replace(/^::ffff:/, "").replace(/^\[([^\]]+)\](?::\d+)?$/, "$1").slice(0, 120) || "unknown";
 }
 
 function validTimeZone(value: string | undefined): boolean {

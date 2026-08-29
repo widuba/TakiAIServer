@@ -186,9 +186,11 @@ function parseDeviceType(ua: string): string {
 }
 
 // Called on every request: last-seen, request count, IP + IP index, device type.
-export async function noteUser(identity: string, ip: string, ua: string): Promise<void> {
+// Registration uses the strict variant below so a failed durable write cannot
+// still return a new device id that later appears as an empty "Taki user" row.
+async function writeUser(identity: string, ip: string, ua: string): Promise<void> {
   if (!identity) return;
-  try { await withUser(identity, async (u) => {
+  await withUser(identity, async (u) => {
     const now = Date.now();
     if (!u.firstSeenAt) u.firstSeenAt = now;
     u.lastSeenAt = now;
@@ -207,7 +209,16 @@ export async function noteUser(identity: string, ip: string, ua: string): Promis
     const day = new Date(now).toISOString().slice(0, 10);
     if (!u.activeDays.includes(day)) u.activeDays = [...u.activeDays, day].slice(-120);
     await addToIndex(identity);
-  }); } catch (e) { console.error("noteUser:", e); }
+  });
+}
+
+export async function noteUser(identity: string, ip: string, ua: string): Promise<void> {
+  try { await writeUser(identity, ip, ua); } catch (e) { console.error("noteUser:", e); }
+}
+
+/** Durable registration path: propagate storage failures to the caller. */
+export async function noteUserStrict(identity: string, ip: string, ua: string): Promise<void> {
+  await writeUser(identity, ip, ua);
 }
 
 export async function noteSpend(identity: string, credits: number): Promise<void> {
@@ -389,6 +400,17 @@ export async function allUsers(): Promise<UserRecord[]> {
 
 // Remove a user from the registry (dashboard). Leaves credits/safety untouched.
 export async function deleteUser(identity: string): Promise<void> {
+  const existing = await loadUser(identity);
+  // Keep the per-IP association index honest when a failed registration or an
+  // operator removes only the dashboard row. Leaving the identity behind made
+  // the signup limiter count a deleted/empty account forever and made it look
+  // like more anonymous "Taki user" accounts still existed.
+  await Promise.all(existing.ips
+    .filter((ip): ip is string => typeof ip === "string" && ip.length <= 120)
+    .map((ip) => storeUpdate<{ ids: string[] }, void>(ipKey(ip), { ids: [] }, (stored) => ({
+      value: { ids: (Array.isArray(stored?.ids) ? stored.ids : []).filter((id) => id !== identity) },
+      result: undefined
+    }))));
   await storeUpdate<{ ids: string[] }, void>(USERS_INDEX, { ids: [] }, (idx) => ({
     value: { ids: (Array.isArray(idx.ids) ? idx.ids : []).filter((i) => i !== identity) },
     result: undefined

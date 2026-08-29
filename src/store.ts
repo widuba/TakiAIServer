@@ -121,7 +121,7 @@ function localStoreFiles(): string[] {
 export type StoreEntry = { key: string; value: unknown; updatedAt?: string };
 
 export function storeCategory(key: string): string {
-  if (/^(?:user:|users:index$|userip:|devicecredential:|webauth:|user_|users_index$|userip_|devicecredential_|webauth_)/.test(key)) return "accounts";
+  if (/^(?:user:|users:index$|userip:|devicecredential:|webauth:|signup:ip:|user_|users_index$|userip_|devicecredential_|webauth_)/.test(key)) return "accounts";
   if (/^(?:credits:|devnum:used:|credits_|devnum_used_)/.test(key)) return "credits";
   if (/^(?:stripe:|stripe_|iap(?:map|identity|primary|credit|creditidentity|period):|iap(?:map|identity|primary|credit|creditidentity|period)_)/.test(key)) return "billing";
   if (/^(?:safety:|safety_)/.test(key)) return "safety";

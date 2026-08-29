@@ -25,9 +25,13 @@ import { isDurable, storeDelete, storeEntries, storeGet, storeGetMany, storeSet,
 const KEY_ID = process.env.APNS_KEY_ID || "";
 const TEAM_ID = process.env.APNS_TEAM_ID || "";
 const BUNDLE_ID = process.env.APNS_BUNDLE_ID || "com.davidwiduba.takiai";
-const APNS_ENV = (process.env.APNS_ENV || "sandbox").toLowerCase();
-const APNS_HOST =
-  APNS_ENV === "production" ? "https://api.push.apple.com" : "https://api.sandbox.push.apple.com";
+const APNS_PRODUCTION_HOST = "https://api.push.apple.com";
+const APNS_SANDBOX_HOST = "https://api.sandbox.push.apple.com";
+const APNS_ENV = (process.env.APNS_ENV || (process.env.NODE_ENV === "production" ? "production" : "sandbox")).toLowerCase() === "production"
+  ? "production"
+  : "sandbox";
+const APNS_HOST = APNS_ENV === "production" ? APNS_PRODUCTION_HOST : APNS_SANDBOX_HOST;
+const APNS_ALTERNATE_HOST = APNS_ENV === "production" ? APNS_SANDBOX_HOST : APNS_PRODUCTION_HOST;
 const REQUIRES_DURABLE_STORAGE = process.env.NODE_ENV === "production"
   || process.env.RENDER === "true"
   || process.env.REQUIRE_DURABLE_STORAGE === "1";
@@ -111,8 +115,7 @@ function safeData(data: Record<string, unknown> | undefined): Record<string, unk
   return result;
 }
 
-// Send one alert to one device token. Resolves with the APNs status.
-export function sendPush(deviceToken: string, msg: PushMessage): Promise<PushResult> {
+function sendPushToHost(deviceToken: string, msg: PushMessage, host: string): Promise<PushResult> {
   return new Promise((resolve) => {
     const token = String(deviceToken || "").trim();
     if (!validProviderToken(token)) {
@@ -123,76 +126,106 @@ export function sendPush(deviceToken: string, msg: PushMessage): Promise<PushRes
       resolve({ token, ok: false, status: 0, reason: "apns-not-configured" });
       return;
     }
-    const client = http2.connect(APNS_HOST);
+    let client: ReturnType<typeof http2.connect> | null = null;
     let settled = false;
     let timeout: NodeJS.Timeout | undefined;
     const finish = (result: PushResult) => {
       if (settled) return;
       settled = true;
       if (timeout) clearTimeout(timeout);
-      try { client.close(); } catch { client.destroy(); }
+      if (client) {
+        try { client.close(); } catch { client.destroy(); }
+      }
       resolve(result);
     };
-    client.on("error", (err) => finish({ token: deviceToken, ok: false, status: 0, reason: String(err) }));
+    try {
+      client = http2.connect(host);
+      client.on("error", (err) => finish({ token, ok: false, status: 0, reason: String(err) }));
 
-    const aps: Record<string, unknown> = {
-      alert: {
-        title: String(msg.title || "Taki AI").slice(0, 200),
-        body: String(msg.body || "").slice(0, 2_000)
-      }
-    };
-    if (msg.sound !== "") aps.sound = msg.sound || "default";
-    if (msg.threadId) aps["thread-id"] = String(msg.threadId).slice(0, 100);
-    let payloadObject: Record<string, unknown> = { aps, ...safeData(msg.data) };
-    let payload = JSON.stringify(payloadObject);
-    // APNs rejects oversized alert payloads. Drop optional custom data before
-    // trimming the user-visible text so a malformed admin payload cannot make
-    // an otherwise valid notification fail at the provider.
-    if (Buffer.byteLength(payload, "utf8") > MAX_PUSH_PAYLOAD_BYTES) {
-      payloadObject = { aps: { ...aps, alert: { title: String(msg.title || "Taki AI").slice(0, 120), body: String(msg.body || "").slice(0, 900) } } };
-      payload = JSON.stringify(payloadObject);
-    }
-
-    const req = client.request({
-      ":method": "POST",
-      ":path": `/3/device/${token}`,
-      authorization: `bearer ${providerToken()}`,
-      "apns-topic": BUNDLE_ID,
-      "apns-push-type": "alert",
-      "apns-priority": "10",
-      "content-type": "application/json"
-    });
-
-    let status = 0;
-    let bodyText = "";
-    req.on("response", (headers) => {
-      status = Number(headers[":status"]) || 0;
-    });
-    req.setEncoding("utf8");
-    req.on("data", (chunk) => {
-      if (bodyText.length < 8_000) bodyText += String(chunk).slice(0, 8_000 - bodyText.length);
-    });
-    req.on("end", () => {
-      const ok = status === 200;
-      let reason: string | undefined;
-      if (!ok && bodyText) {
-        try {
-          reason = JSON.parse(bodyText).reason;
-        } catch {
-          reason = bodyText;
+      const aps: Record<string, unknown> = {
+        alert: {
+          title: String(msg.title || "Taki AI").slice(0, 200),
+          body: String(msg.body || "").slice(0, 2_000)
         }
+      };
+      if (msg.sound !== "") aps.sound = msg.sound || "default";
+      if (msg.threadId) aps["thread-id"] = String(msg.threadId).slice(0, 100);
+      let payloadObject: Record<string, unknown> = { aps, ...safeData(msg.data) };
+      let payload = JSON.stringify(payloadObject);
+      // APNs rejects oversized alert payloads. Drop optional custom data before
+      // trimming the user-visible text so a malformed admin payload cannot make
+      // an otherwise valid notification fail at the provider.
+      if (Buffer.byteLength(payload, "utf8") > MAX_PUSH_PAYLOAD_BYTES) {
+        payloadObject = { aps: { ...aps, alert: { title: String(msg.title || "Taki AI").slice(0, 120), body: String(msg.body || "").slice(0, 900) } } };
+        payload = JSON.stringify(payloadObject);
       }
-      finish({ token: deviceToken, ok, status, reason });
-    });
-    req.on("error", (err) => {
-      finish({ token: deviceToken, ok: false, status, reason: String(err) });
-    });
-    timeout = setTimeout(() => {
-      client.destroy();
-      finish({ token: deviceToken, ok: false, status, reason: "APNs request timed out" });
-    }, 15_000);
-    req.end(payload);
+
+      const req = client.request({
+        ":method": "POST",
+        ":path": `/3/device/${token}`,
+        authorization: `bearer ${providerToken()}`,
+        "apns-topic": BUNDLE_ID,
+        "apns-push-type": "alert",
+        "apns-priority": "10",
+        "content-type": "application/json"
+      });
+
+      let status = 0;
+      let bodyText = "";
+      req.on("response", (headers) => {
+        status = Number(headers[":status"]) || 0;
+      });
+      req.setEncoding("utf8");
+      req.on("data", (chunk) => {
+        if (bodyText.length < 8_000) bodyText += String(chunk).slice(0, 8_000 - bodyText.length);
+      });
+      req.on("end", () => {
+        const ok = status === 200;
+        let reason: string | undefined;
+        if (!ok && bodyText) {
+          try {
+            const parsed = JSON.parse(bodyText);
+            reason = typeof parsed?.reason === "string" ? parsed.reason : bodyText;
+          } catch {
+            reason = bodyText;
+          }
+        }
+        finish({ token, ok, status, reason: reason || (!ok ? `APNs returned HTTP ${status || 0}` : undefined) });
+      });
+      req.on("error", (err) => {
+        finish({ token, ok: false, status, reason: String(err) });
+      });
+      timeout = setTimeout(() => {
+        client?.destroy();
+        finish({ token, ok: false, status, reason: "APNs request timed out" });
+      }, 15_000);
+      req.end(payload);
+    } catch (error) {
+      finish({ token, ok: false, status: 0, reason: error instanceof Error ? error.message : "APNs request failed" });
+    }
   });
+}
+
+function shouldTryAlternateEnvironment(result: PushResult): boolean {
+  return !result.ok && (
+    /BadDeviceToken|DeviceTokenNotForTopic/i.test(result.reason || "")
+    || (result.status === 400 && !result.reason)
+  );
+}
+
+// Send one alert to one device token. A production App Store token and a
+// sandbox/Xcode token are indistinguishable by shape, so retry the alternate
+// APNs environment when Apple identifies an environment mismatch. This keeps a
+// stale APNS_ENV setting from surfacing to the dashboard as a generic 502.
+export async function sendPush(deviceToken: string, msg: PushMessage): Promise<PushResult> {
+  const first = await sendPushToHost(deviceToken, msg, APNS_HOST);
+  if (!shouldTryAlternateEnvironment(first) || APNS_ALTERNATE_HOST === APNS_HOST) return first;
+  const alternate = await sendPushToHost(deviceToken, msg, APNS_ALTERNATE_HOST);
+  if (alternate.ok) return alternate;
+  return {
+    ...alternate,
+    reason: [first.reason, alternate.reason].filter(Boolean).join("; ") || "APNs rejected the device token in both environments"
+  };
 }
 
 /* --- device token registry (in-memory + JSON file so restarts keep tokens) --- */
