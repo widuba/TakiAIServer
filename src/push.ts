@@ -563,15 +563,28 @@ export async function clearPushStateForReset(): Promise<void> {
 /** Remove all Live Activities owned by one physical installation. */
 export async function clearLiveActivitiesForDevice(deviceId: string): Promise<void> {
   if (!deviceId) return;
+  let removed: LARegistration[] = [];
   await laReady;
   await mutateLiveActivities(async () => {
     const next = await storeUpdate<LARegistration[], LARegistration[]>(LA_STORE_KEY, [], (stored) => {
-      const current = normalizeLA(stored, isDurable() || process.env.NODE_ENV === "production").filter((registration) => registration.deviceId !== deviceId);
+      const normalized = normalizeLA(stored, isDurable() || process.env.NODE_ENV === "production");
+      removed = normalized.filter((registration) => registration.deviceId === deviceId);
+      const current = normalized.filter((registration) => registration.deviceId !== deviceId);
       return { value: current, result: current };
     });
     laRegs = new Map(next.map((registration) => [laKey(registration.deviceId || "legacy", registration.id), registration]));
     await persistLocalLA();
   });
+  // Remove the registrations first, then ask APNs to end each activity. This
+  // ordering prevents a concurrent tracker update from recreating a deleted
+  // registration while the privacy erase is in progress. APNs failures are
+  // intentionally non-fatal: the durable registry is already gone and the
+  // next app refresh will clear any stale local presentation.
+  if (removed.length) {
+    await Promise.allSettled(removed.map((registration) =>
+      sendLiveActivityUpdate(registration.token, null, "end", registration.environment)
+    ));
+  }
 }
 
 // Push a content-state update (or an end) to one Live Activity push token.
