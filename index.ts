@@ -273,10 +273,29 @@ function normalizeAttachmentInputs(raw: unknown): TakiAttachment[] {
 
 const app = express();
 app.set("trust proxy", 1);
-const configuredOrigins = new Set(
-  (process.env.ALLOWED_ORIGINS || "https://takiai.app,https://www.takiai.app,http://localhost:3000,http://localhost:5173,http://localhost,https://localhost,capacitor://localhost,ionic://localhost")
+// Keep the production web surfaces and the server-hosted admin page available
+// even when Render has an older/narrow ALLOWED_ORIGINS value configured. The
+// admin page is same-origin with this service and sends an Origin header on
+// its POST login request; omitting the Render host makes an otherwise valid
+// admin login fail with "origin not allowed" before the secret is checked.
+const defaultAllowedOrigins = [
+  "https://takiai.app",
+  "https://www.takiai.app",
+  "https://takiaiserver.onrender.com",
+  "http://localhost:3000",
+  "http://localhost:4173",
+  "http://localhost:5173",
+  "http://localhost:5174",
+  "http://localhost",
+  "https://localhost",
+  "capacitor://localhost",
+  "ionic://localhost"
+];
+const configuredOrigins = new Set([
+  ...defaultAllowedOrigins,
+  ...(process.env.ALLOWED_ORIGINS || "")
     .split(",").map((value) => value.trim()).filter(Boolean)
-);
+]);
 app.use(cors({
   origin: (origin, callback) => {
     // Native clients do not send Origin. Browsers must be restricted to the
