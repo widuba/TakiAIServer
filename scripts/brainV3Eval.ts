@@ -137,8 +137,10 @@ type AuxiliaryEvalCase = {
   validate: (value: any, response: any) => string[];
 };
 
+let brainV3GenericRefusalImpl: ((text: string) => boolean) | null = null;
+
 function genericRefusal(text: string): boolean {
-  return /^(?:i\s+can(?:['’]?t|not)|sorry,?\s+i\s+can(?:['’]?t|not)|i(?:['’]?m|\s+am)\s+unable|i\s+don(?:['’]?t|not)\s+have\s+the\s+ability)\b/i.test(text.trim());
+  return brainV3GenericRefusalImpl ? brainV3GenericRefusalImpl(text) : false;
 }
 
 function hasAppendedGenericRefusal(text: string): boolean {
@@ -1075,11 +1077,12 @@ async function main(): Promise<number> {
     process.env.OPENAI_BASE_URL = "https://api.openai.com/v1";
   }
 
-  const [{ ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL, brainV3AuxEnabled, brainV3CoreEnabled, generateContent, generateContentStream }, { buildConversationState }, { normalizeBrainV3RolloutMode, runBrainV3Plan, shouldShadowBrainV3, shouldUseBrainV3 }] = await Promise.all([
+  const [{ ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL, brainV3AuxEnabled, brainV3CoreEnabled, brainV3GenericRefusal, generateContent, generateContentStream }, { buildConversationState }, { normalizeBrainV3RolloutMode, runBrainV3Plan, shouldShadowBrainV3, shouldUseBrainV3 }] = await Promise.all([
     import("../src/ai.js"),
     import("../src/context.js"),
     import("../src/brainV3.js")
   ]);
+  brainV3GenericRefusalImpl = brainV3GenericRefusal;
 
   // Rehearse the operator's one-step rollback against the actual selector
   // functions. This must prove that disabling v3 cannot leave core, auxiliary,

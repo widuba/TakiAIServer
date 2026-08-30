@@ -2361,9 +2361,24 @@ function completeSentences(value: string): string[] {
   return parts.map((part) => cleanAssistantText(part)).filter(Boolean);
 }
 
+const GENERIC_REFUSAL_PREFIXES = [
+  /^(?:(?:sorry,?\s*(?:but\s*)?|unfortunately,?\s*|as an ai(?:\s+language model)?,?\s*)?i\s+can(?:['’]?t|\s+not|not))\b/iu,
+  /^(?:(?:sorry,?\s*(?:but\s*)?|unfortunately,?\s*|as an ai(?:\s+language model)?,?\s*)?i(?:['’]m|\s+am)\s+(?:unable|not able|not in a position to))\b/iu,
+  /^(?:(?:sorry,?\s*(?:but\s*)?|unfortunately,?\s*|as an ai(?:\s+language model)?,?\s*)?i\s+(?:must decline|have to decline))\b/iu,
+  /^(?:(?:sorry,?\s*(?:but\s*)?|unfortunately,?\s*|as an ai(?:\s+language model)?,?\s*)?i\s+(?:don['’]?t|do\s+not)\s+have\s+the\s+ability)\b/iu
+];
+
+// This detector is called only after the independent policy stage allowed the
+// request. Keep it broad enough to repair vendor boilerplate such as "As an
+// AI" and "I'm not able", while policy refusals return earlier and never enter
+// this branch.
+export function brainV3GenericRefusal(value: string): boolean {
+  const text = String(value || "").trim();
+  return GENERIC_REFUSAL_PREFIXES.some((pattern) => pattern.test(text));
+}
+
 function genericRefusal(value: string): boolean {
-  return /^(?:i\s+can(?:['’]?t|not)|sorry,?\s+i\s+can(?:['’]?t|not)|i(?:['’]?m|\s+am)\s+unable|i\s+don(?:['’]?t|not)\s+have\s+the\s+ability)\b/i.test(value.trim())
-    && !/\b(?:hurt|harm|suicide|weapon|illegal|private|secret|password|minor)\b/i.test(value);
+  return brainV3GenericRefusal(value);
 }
 
 function filterGenericRefusalOutput(value: string): string {
@@ -2441,6 +2456,7 @@ async function writeAnswer(
     text = filterGenericRefusalOutput(text);
   }
 
+  let answerSafetyBlocked = false;
   if (policy.decision === "allow") {
     const unsafeCategory = unsafeAnswerCategory(text);
     if (unsafeCategory) {
@@ -2448,6 +2464,7 @@ async function writeAnswer(
       // so an unsafe multi-sentence answer cannot be spoken before the final
       // safety boundary sees the later sentence that makes it operational.
       rolloutStats.answerSafetyBlocks += 1;
+      answerSafetyBlocked = true;
       text = refusalText(unsafeCategory);
     }
   }
@@ -2455,7 +2472,7 @@ async function writeAnswer(
   // One bounded answer-only repair addresses a provider's generic refusal of a
   // clearly benign turn. The independent policy result remains authoritative;
   // refusal requests never take this path.
-  if (genericRefusal(text) && policy.decision === "allow") {
+  if (genericRefusal(text) && policy.decision === "allow" && !answerSafetyBlocked) {
     rolloutStats.benignRefusalOverrides += 1;
     try {
       const repaired = await withTimeout(deps.generateContent({
@@ -2475,7 +2492,7 @@ async function writeAnswer(
     } catch {
       // Keep the model's original text if an optional repair cannot complete.
     }
-    if (genericRefusal(text) && policy.decision === "allow") {
+    if (genericRefusal(text) && policy.decision === "allow" && !answerSafetyBlocked) {
       // Do not leave an ungrounded generic refusal as the final answer when the
       // independent policy stage explicitly allowed the request.
       text = state.voiceMode
@@ -2539,7 +2556,7 @@ Return only the answer string inside the required JSON object.`;
 }
 
 function multimodalGenericRefusal(value: string): boolean {
-  return /^(?:sorry,?\s+)?i\s+(?:can(?:['’]?t|not)|am unable to)\s+(?:help|answer|assist|do that|with that)\b/i.test(value.trim());
+  return brainV3GenericRefusal(value);
 }
 
 /**
@@ -2626,11 +2643,19 @@ export async function runBrainV3MultimodalAnswer(
     throw new Error("Brain v3 multimodal answer returned no answer");
   }
 
+  let answerSafetyBlocked = false;
+  const initialUnsafeCategory = policy.decision === "allow" ? unsafeAnswerCategory(answer) : null;
+  if (initialUnsafeCategory) {
+    rolloutStats.answerSafetyBlocks += 1;
+    answerSafetyBlocked = true;
+    answer = refusalText(initialUnsafeCategory);
+  }
+
   // A benign image/file request can still trigger a vendor's generic refusal.
   // Give it one tightly bounded repair while keeping the independent policy
-  // result authoritative; inability-to-read statements are not treated as
-  // generic refusals by the narrower matcher.
-  if (multimodalGenericRefusal(answer) && policy.decision === "allow") {
+  // result authoritative; the detector targets provider refusal boilerplate,
+  // not ordinary statements that the material was unreadable.
+  if (multimodalGenericRefusal(answer) && policy.decision === "allow" && !answerSafetyBlocked) {
     rolloutStats.benignRefusalOverrides += 1;
     try {
       const repaired = await runBrainV3Structured<{ answer: string }>(
@@ -2666,7 +2691,7 @@ export async function runBrainV3MultimodalAnswer(
   // the text answer stage. Apply the common boundary before deciding whether a
   // whole-answer repair is needed; a complete generic refusal remains intact
   // and still enters the repair path above.
-  if (policy.decision === "allow") {
+  if (policy.decision === "allow" && !answerSafetyBlocked) {
     answer = filterGenericRefusalOutput(answer);
   }
 
@@ -2678,6 +2703,7 @@ export async function runBrainV3MultimodalAnswer(
     const unsafeCategory = unsafeAnswerCategory(answer);
     if (unsafeCategory) {
       rolloutStats.answerSafetyBlocks += 1;
+      answerSafetyBlocked = true;
       answer = refusalText(unsafeCategory);
     }
   }

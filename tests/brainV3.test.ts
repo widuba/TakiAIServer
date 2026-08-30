@@ -594,6 +594,37 @@ test("Brain v3 removes an appended generic refusal from an attachment answer", a
   }
 });
 
+test("Brain v3 repairs alternate multimodal refusal boilerplate", async () => {
+  resetBrainV3SpecialistCircuit();
+  let answerCall = 0;
+  try {
+    const answer = await runBrainV3MultimodalAnswer(
+      [{ text: "A red mug is on a table." }],
+      "What is in this file?",
+      {},
+      {
+        generateContent: async (args: any) => {
+          if (args.config.responseJsonSchemaName === "taki_brain_v3_policy") {
+            return { text: JSON.stringify({ decision: "allow", riskCategory: "none", confidence: 0.99, reason: "safe", safeAlternative: "" }) };
+          }
+          answerCall += 1;
+          return {
+            text: JSON.stringify({
+              answer: answerCall === 1
+                ? "As an AI, I’m not able to assist with that."
+                : "The file describes a red mug."
+            })
+          };
+        }
+      }
+    );
+    assert.equal(answer, "The file describes a red mug.");
+    assert.equal(answerCall, 2);
+  } finally {
+    resetBrainV3SpecialistCircuit();
+  }
+});
+
 test("Brain v3 multimodal refuses deterministic harmful requests before touching the provider", async () => {
   let calls = 0;
   const answer = await runBrainV3MultimodalAnswer(
@@ -885,6 +916,16 @@ test("Brain v3 repairs an over-cautious benign answer without weakening policy",
   assert.equal(stages.calls.length, 4);
   assert.match(result.spokenText, /chlorophyll/i);
   assert.equal(result.action, null);
+});
+
+test("Brain v3 repairs alternate provider refusal boilerplate", async () => {
+  const stages = fakeStages(directUnderstanding, undefined, [
+    "As an AI language model, I’m not able to help with that.",
+    "Leaves change color as chlorophyll breaks down and other pigments become visible."
+  ]);
+  const result = await runBrainV3Plan(state("Why do leaves change color?"), undefined, stages.deps);
+  assert.equal(stages.calls.length, 4);
+  assert.match(result.spokenText, /chlorophyll/i);
 });
 
 test("Brain v3 rechecks a benign-answer repair before returning it", async () => {
