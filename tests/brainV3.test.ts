@@ -117,7 +117,7 @@ const PROMOTION_ENV = {
     releaseId: PROMOTION_RELEASE_ID,
     provider: ACTIVE_AI_PROVIDER,
     model: BRAIN_V3_MODEL,
-    core: { passed: true, total: 38, failed: 0 },
+    core: { passed: true, total: 39, failed: 0 },
     auxiliary: { passed: true, total: 18, failed: 0 },
     realWeb: { passed: true },
     deterministic: { passed: true, typecheckPassed: true, testCount: 350, failed: 0, cancelled: 0, skipped: 0 },
@@ -178,6 +178,33 @@ test("Brain v3 recognizes punctuated sarcasm and separates freshness from urgenc
   assert.equal(normalizeBrainV3Input("Yeah, right — who is the CEO right now?").sarcasm, "likely");
   assert.equal(normalizeBrainV3Input("Who is the CEO right now?").tone, "neutral");
   assert.equal(normalizeBrainV3Input("I need help right now.").tone, "urgent");
+});
+
+test("Brain v3 uses recent failures as a low-confidence contextual sarcasm cue", () => {
+  const failedExchange = buildConversationState(
+    "Great. Can you explain compound interest?",
+    JSON.stringify({ chatMessages: [
+      { role: "user", text: "Can you explain compound interest?" },
+      { role: "assistant", text: "I misunderstood that and gave an unrelated answer." },
+      { role: "user", text: "Great. Can you explain compound interest?" }
+    ] }),
+    undefined,
+    "America/New_York"
+  );
+  assert.equal(normalizeBrainV3Input(failedExchange.message, failedExchange).sarcasm, "possible");
+
+  const recoveredExchange = buildConversationState(
+    "Great. That solved it, thanks!",
+    JSON.stringify({ chatMessages: [
+      { role: "user", text: "Can you explain compound interest?" },
+      { role: "assistant", text: "I fixed the earlier misunderstanding and explained it." },
+      { role: "user", text: "Great. That solved it, thanks!" }
+    ] }),
+    undefined,
+    "America/New_York"
+  );
+  assert.equal(normalizeBrainV3Input(recoveredExchange.message, recoveredExchange).sarcasm, "unlikely");
+  assert.equal(normalizeBrainV3Input("Great. Can you explain compound interest?").sarcasm, "unlikely");
 });
 
 test("Brain v3 preserves sarcasm as frustration and recognizes disfluent non-English speech", () => {

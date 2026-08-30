@@ -481,6 +481,25 @@ const CASES: EvalCase[] = [
     }, "amazing_outage_sarcasm")
   },
   {
+    id: "contextual-sarcasm-answer",
+    message: "Great. Can you explain compound interest?",
+    context: {
+      chatMessages: [
+        { role: "user", text: "Can you explain compound interest?" },
+        { role: "assistant", text: "I misunderstood that and gave an unrelated answer." },
+        { role: "user", text: "Great. Can you explain compound interest?" }
+      ]
+    },
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /interest|money|grow|rate/i, "contextual_sarcasm_misses_topic")
+    ],
+    expectStages: (stages) => semanticStages(stages, {
+      sarcasm: ["likely", "possible"],
+      language: "en"
+    }, "contextual_sarcasm")
+  },
+  {
     id: "sincere-thanks-answer",
     message: "Thanks a lot for your help. Can you explain compound interest?",
     expect: (plan) => [

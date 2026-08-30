@@ -212,6 +212,9 @@ export type BrainV3Dependencies = {
   getLocationAnswer?: (...args: any[]) => Promise<any>;
 };
 
+type BrainV3NormalizationContext = Pick<ConversationState, "speechMetadata">
+  & Partial<Pick<ConversationState, "conversationFocusText" | "fullTranscriptText">>;
+
 const DEFAULT_DEPENDENCIES: BrainV3Dependencies = {
   generateContent,
   generateContentStream,
@@ -739,6 +742,31 @@ function detectSarcasm(value: string): BrainV3Sarcasm {
   return positive && negative ? "possible" : "unlikely";
 }
 
+function detectContextualSarcasm(value: string, context: string): BrainV3Sarcasm {
+  const text = value.toLocaleLowerCase().trim();
+  const prior = context.toLocaleLowerCase().trim();
+  if (!text || !prior || text.split(/\s+/u).length > 18) return "unlikely";
+
+  // A short positive opener is often sincere on its own. After the assistant
+  // has failed, misunderstood, or refused the preceding request, the same
+  // opener is a useful low-confidence sarcasm cue. Keep this at `possible` so
+  // the model can use the exchange context without turning ordinary gratitude
+  // into a forced interpretation.
+  if (!/^(?:great|perfect|awesome|wonderful|fantastic|nice|brilliant|thanks(?: a lot)?|sure)(?:[.!?,;:\s]+|$)/iu.test(text)) {
+    return "unlikely";
+  }
+
+  const latestAssistant = prior.match(/most recent assistant response:\s*([\s\S]*)$/iu)?.[1] || "";
+  const assistantRecovered = latestAssistant
+    && /\b(?:fixed|solved|resolved|working now|works now|successfully|all set|done)\b/iu.test(latestAssistant)
+    && !/\b(?:not|still|failed|failure|error|problem|can't|cannot|couldn't|unable)\b/iu.test(latestAssistant);
+  if (assistantRecovered) return "unlikely";
+
+  const precedingFailure = /\b(?:failed|failure|error|problem|broken|wrong|misunderstood|misread|didn['’]?t work|doesn['’]?t work|still not|not working|refus(?:ed|al)|couldn['’]?t help|can['’]?t help|unable to help|outage|crash(?:ed|es|ing)?|stuck)\b/iu.test(prior)
+    || /\b(?:another|again)\b.{0,32}\b(?:error|problem|bug|failure|outage|crash|issue)\b/iu.test(prior);
+  return precedingFailure ? "possible" : "unlikely";
+}
+
 function mergeSarcasmSignal(detected: BrainV3Sarcasm, model: BrainV3Sarcasm): BrainV3Sarcasm {
   // Explicit textual markers are stronger evidence than a model's guess. Keep
   // them visible to the answer stage so a provider cannot silently literalize
@@ -848,7 +876,7 @@ function detectSpeechAct(raw: string, normalized: string): BrainV3Signals["speec
 }
 
 /** Preserve the original utterance while removing only high-confidence speech noise. */
-export function normalizeBrainV3Input(input: unknown, state?: Pick<ConversationState, "speechMetadata">): BrainV3Signals {
+export function normalizeBrainV3Input(input: unknown, state?: BrainV3NormalizationContext): BrainV3Signals {
   const rawText = boundedText(input, 12_000);
   const repeatedFragments: string[] = [];
   const fillerWords: string[] = [];
@@ -869,6 +897,11 @@ export function normalizeBrainV3Input(input: unknown, state?: Pick<ConversationS
   normalizedText = normalizedText.replace(/\s+/g, " ").trim();
   const metadata = state?.speechMetadata;
   const confidence = metadata?.transcriptionConfidence;
+  const detectedSarcasm = detectSarcasm(rawText);
+  const contextualSarcasm = detectContextualSarcasm(
+    rawText,
+    boundedContext(state?.conversationFocusText || state?.fullTranscriptText || "", 4_000)
+  );
   return {
     rawText,
     normalizedText,
@@ -876,7 +909,11 @@ export function normalizeBrainV3Input(input: unknown, state?: Pick<ConversationS
     disfluencyDetected: repeatedFragments.length > 0 || fillerWords.length > 0,
     repeatedFragments: [...new Set(repeatedFragments)].slice(0, 12),
     fillerWords: [...new Set(fillerWords)].slice(0, 12),
-    sarcasm: detectSarcasm(rawText),
+    sarcasm: detectedSarcasm === "likely"
+      ? "likely"
+      : contextualSarcasm === "possible"
+        ? "possible"
+        : detectedSarcasm,
     tone: detectTone(rawText),
     language: detectLanguage(normalizedText),
     speechAct: detectSpeechAct(rawText, normalizedText),
