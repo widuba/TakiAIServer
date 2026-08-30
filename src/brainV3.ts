@@ -710,6 +710,14 @@ function extractPreservedTerms(value: string): string[] {
   }))].slice(0, 32);
 }
 
+const SINCERE_RESOLUTION_CUE = /\b(?:fix(?:ed|ing)?|resolv(?:ed|ing)?|solv(?:ed|ing)?|clear(?:ed)?|over|pass(?:ed|ing)?|work(?:s|ing)?|successful|successfully|complet(?:ed|ing)|done)\b/iu;
+const ACTIVE_FAILURE_CUE = /\b(?:broke|broken|crash(?:ed|es|ing)?|failed|not working|doesn['’]?t work|won['’]?t work|still down|keeps failing)\b/iu;
+const SINCERE_CLARIFICATION_CUE = /\b(?:thanks|thank you)\b.{0,24}\b(?:explain(?:ed|ing)?|clarif(?:ied|ying)|walk(?:ed|ing)?\s+me\s+through)\b/iu;
+
+function hasSincereResolutionCue(text: string): boolean {
+  return SINCERE_RESOLUTION_CUE.test(text) || SINCERE_CLARIFICATION_CUE.test(text);
+}
+
 function detectSarcasm(value: string): BrainV3Sarcasm {
   const text = value.toLocaleLowerCase();
   const likely = [
@@ -747,7 +755,13 @@ function detectSarcasm(value: string): BrainV3Sarcasm {
     /\bwhat\s+a\s+(?:delightful|wonderful|nice|great)\s+surprise\b.{0,50}\b(?:broke|broken|failed|failure|error|problem|crash|again)\b/,
     /(?:🙃|🙄).{0,80}(?:error|problem|broken|problema|erro|问题|错误)?/iu
   ];
-  if (likely.some((pattern) => pattern.test(text))) return "likely";
+  const likelyMatch = likely.some((pattern) => pattern.test(text));
+  const directSarcasmCue = /\byeah[,;]?\s+right\b|\bas if\b|\bwhat could possibly go wrong\b|\blove that for me\b|\bmy favorite\b|\bthanks\s+for\s+nothing\b|\b(?:yeah|sure|right)[,; ]+because\b.{0,80}\b(?:makes total sense|exactly what i (?:needed|wanted))\b|\bnice\s+job\b.{0,30}\bgenius\b|\bwell[,; ]+well[,; ]+well\b.{0,50}\blook\s+who\b/iu;
+  // A positive word next to a technical problem is not automatically sarcasm:
+  // "Great, the bug is fixed" and "Thanks for explaining the error" are
+  // ordinary success/clarification statements. Keep a likely label when the
+  // text still describes an active failure or contains an unmistakable cue.
+  if (likelyMatch && (!hasSincereResolutionCue(text) || directSarcasmCue.test(text) || ACTIVE_FAILURE_CUE.test(text))) return "likely";
   const ambiguous = [
     /\bsure[, ]+(?:that'?s|that is)\s+(?:helpful|great|perfect|fine)\b/,
     /\bjust what i needed\b/,
@@ -760,7 +774,7 @@ function detectSarcasm(value: string): BrainV3Sarcasm {
   if (ambiguous.some((pattern) => pattern.test(text))) return "possible";
   const positive = /(?:^|[^\p{L}\p{N}])(?:great|perfect|awesome|wonderful|fantastic|lovely|brilliant|nice|love|amazing|genial|perfecto|ótimo|ótima|perfeito|perfeita|super|toll|perfetto|ottimo|sure|of course|thanks|thank you)(?![\p{L}\p{N}])|(?:太好了|真有用|谢谢啊)/iu.test(text);
   const negative = /(?:^|[^\p{L}\p{N}])(?:error|broken|breaking|broke|failed|failure|failures|problem|bug|wrong|late|stuck|crash|crashed|crashes|crashing|issue|issues|outage|outages|hate|disaster|again|unacceptable|problema|problemas|erro|falha|fallo|falla|otra vez|de novo|erreur|problème|panne|fehler|noch|errore|guaio|wieder|absturz|ausfall)(?![\p{L}\p{N}])|(?:問題|错误|出错|坏了)/iu.test(text);
-  return positive && negative ? "possible" : "unlikely";
+  return positive && negative && !hasSincereResolutionCue(text) ? "possible" : "unlikely";
 }
 
 function detectContextualSarcasm(value: string, context: string): BrainV3Sarcasm {
@@ -843,7 +857,10 @@ function detectTone(value: string): BrainV3Tone {
     || /\b(?:help|need|call|come|get|send|fix|stop|answer|respond)\b.{0,40}\bright now\b/.test(text)
   ) return "urgent";
   if (angryCue.test(text) || /!{2,}/u.test(text)) return "angry";
-  if (frustratedCue.test(text) || /(?:^|[^\p{L}\p{N}])(?:another|yet another)\s+(?:error|problem|failure|crash)(?![\p{L}\p{N}])/iu.test(text)) return "frustrated";
+  const recurringFailureCue = /(?:^|[^\p{L}\p{N}])(?:another|yet another)\s+(?:error|errors|problem|problems|failure|failures|crash|crashes)(?![\p{L}\p{N}])/iu;
+  const activeFrustration = (frustratedCue.test(text) || recurringFailureCue.test(text))
+    && (!hasSincereResolutionCue(text) || ACTIVE_FAILURE_CUE.test(text));
+  if (activeFrustration) return "frustrated";
   if (sadCue.test(text)) return "sad";
   if (anxiousCue.test(text)) return "anxious";
   if (/\b(?:haha|lol|kidding|joke|funny|playful)\b|😄|😂|😉/.test(text)) return "playful";

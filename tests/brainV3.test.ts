@@ -335,6 +335,22 @@ test("Brain v3 preserves sarcasm as frustration and recognizes disfluent non-Eng
   assert.equal(perfectSarcasm.tone, "frustrated");
   assert.equal(normalizeBrainV3Input("Thanks, that solved it.").sarcasm, "unlikely");
   assert.equal(normalizeBrainV3Input("Perfect, this is exactly right.").sarcasm, "unlikely");
+  for (const text of [
+    "Great, the bug is fixed now.",
+    "Great, the error message is clear.",
+    "Perfect, the issue is resolved.",
+    "Amazing, the outage is over.",
+    "Wonderful, the failure test passed.",
+    "Thanks for explaining the error.",
+    "Thanks for fixing the bug.",
+    "Great, another error was fixed.",
+    "Oh good, more errors were resolved.",
+    "What a delightful surprise, the feature works again."
+  ]) {
+    const signals = normalizeBrainV3Input(text);
+    assert.equal(signals.sarcasm, "unlikely", text);
+    assert.notEqual(signals.tone, "frustrated", text);
+  }
   const spanishSarcasmWithoutSí = normalizeBrainV3Input("Claro, otro error, qué útil.");
   assert.equal(spanishSarcasmWithoutSí.sarcasm, "likely");
   assert.equal(spanishSarcasmWithoutSí.tone, "frustrated");
