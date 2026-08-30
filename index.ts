@@ -5,6 +5,7 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto
 import { fileURLToPath } from "node:url";
 
 import { PORT, ACTIVE_AI_PROVIDER, MAIN_MODEL, PLANNER_MODEL, RESEARCH_MODEL, ServiceError, VOICE_UNAVAILABLE_SPOKEN, normalizeTakiModel, withTakiModel } from "./src/ai.js";
+import { brainV2Percent, brainV2RolloutStats, normalizeBrainRolloutMode } from "./src/brainV2.js";
 import type { DeviceLocation, DeviceWeather } from "./src/types.js";
 import { buildConversationState } from "./src/context.js";
 import { planAssistantResponse } from "./src/planner.js";
@@ -508,6 +509,14 @@ app.get("/health", async (_req, res) => {
     durableStorage,
     aiProvider: ACTIVE_AI_PROVIDER,
     models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL },
+    brain: {
+      version: normalizeBrainRolloutMode(),
+      canaryPercent: brainV2Percent(),
+      // The legacy planner remains the safe default. Operators can verify this
+      // field before changing the Render environment for a staged rollout.
+      liveUserImpact: normalizeBrainRolloutMode() === "legacy" ? "none" : "scoped",
+      stats: brainV2RolloutStats()
+    },
     // Live Activity background updates require APNs config (APNS_KEY_P8 or
     // APNS_KEY_PATH + KEY_ID + TEAM_ID). Surfaced here so a missing key on the
     // host is a one-curl diagnosis instead of "trackers silently never update".

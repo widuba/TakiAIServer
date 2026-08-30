@@ -111,6 +111,8 @@ import {
   styleVectorToPromptHints
 } from "./messageStyle.js";
 import type { MessageAnalysis, MessageStyleVector } from "./messageStyle.js";
+import { runBrainV2Planner, runBrainV2Shadow, shouldShadowBrainV2, shouldUseBrainV2 } from "./brainV2.js";
+import { runUnmetered } from "./metering.js";
 import {
   addDaysToYmd,
   extractCalendarTitle,
@@ -132,7 +134,8 @@ import {
  * planAssistantResponse is the single brain. It:
  *   1. handles a couple of unambiguous deterministic answer tools,
  *   2. completes a pending clarification deterministically when possible,
- *   3. otherwise asks the Gemini planner for a structured plan,
+ *   3. otherwise asks the selected understanding planner (Brain v2 when its
+ *      rollout gate is on, the legacy planner otherwise) for a structured plan,
  *   4. routes the plan to tools / actions / clarifications,
  *   5. attaches structured memory (event / contact / place / pending).
  *
@@ -216,6 +219,71 @@ function actionsPlan(
     needsExecution: true,
     messageAnalysis
   };
+}
+
+/**
+ * Give Brain v2 ownership of free-form turns even when a legacy fast-path would
+ * otherwise call getGeneralAnswer directly. Deterministic device actions remain
+ * ahead of this helper; it only returns conversational/research plans and never
+ * executes a model-proposed side effect by itself.
+ */
+async function brainV2FreeformPlan(
+  state: ConversationState,
+  onStableVoiceText?: (text: string) => void | Promise<void>
+): Promise<AssistantPlan | null> {
+  if (!shouldUseBrainV2(state)) return null;
+  try {
+    const plan = await runBrainV2Planner(state, onStableVoiceText);
+    if (plan.needsClarification || plan.intent === "clarify") {
+      const question = plan.clarifyingQuestion || plan.spokenText || "Can you clarify what you want me to do?";
+      return clarifyPlan(question, {
+        intent: String(plan.action?.type || "clarify"),
+        missing: plan.missing.length ? plan.missing : ["details"],
+        draftAction: plan.action || null,
+        question,
+        createdAt: state.nowIso
+      });
+    }
+    const inline = String(plan.spokenText || "").trim();
+    if (plan.intent === "answer_only" && inline && (plan.answerReady || plan.answerMode === "refuse")) {
+      return answerPlan(inline, { lastIntent: "answer_only" });
+    }
+    if (plan.intent === "event_lookup") {
+      const verified = await findVerifiedFutureEvent(plan.webQuery || state.message, state.timeZone);
+      if (!verified.found) return answerPlan(verified.spokenText || "I couldn't verify that event right now.", { lastIntent: "event_lookup" }, verified.sources);
+      const event: EventMemory = {
+        title: cleanCalendarEventTitle(verified.title || "Event"),
+        startDate: verified.startDate!,
+        endDate: verified.endDate || verified.startDate!,
+        location: verified.location || undefined,
+        notes: verified.notes || undefined,
+        source: "web",
+        confidence: 0.9
+      };
+      if (plan.wantsCalendar) return actionPlan("", eventToCalendarAction(event), { lastMentionedEvent: event, lastIntent: "calendar_create" }, null, verified.sources);
+      const when = formatEventDateTime(event.startDate, state.timeZone);
+      return answerPlan(when ? `${event.title} is on ${when}${event.location ? ` at ${event.location}` : ""}.` : verified.spokenText || `The next one is ${event.title}.`, { lastMentionedEvent: event, lastIntent: "event_lookup" }, verified.sources);
+    }
+    if (plan.intent === "web_search" || plan.answerMode === "research") {
+      const res = await getStrictWebAnswer(plan.webQuery || state.message, {
+        allowPrediction: looksLikePredictionQuestion(state.message),
+        allowRecommendation: looksLikeCurrentRecommendationQuestion(state.message),
+        persona: state.userProfile,
+        timeZone: state.timeZone,
+        voiceMode: state.voiceMode
+      });
+      return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
+    }
+    // An action proposal is intentionally left to the normal planner below.
+    // This helper is used in answer-only fast paths where executing it here
+    // could bypass the existing device-side validation contract.
+    return null;
+  } catch (error) {
+    // A canary-quality issue must not break a legacy fast path. The central
+    // planner still has the typed provider fallback and final action audit.
+    if (!(error instanceof ServiceError)) console.warn("Brain v2 free-form fallback:", error);
+    return null;
+  }
 }
 
 // The most events we'll add from a single "add the upcoming games" request
@@ -1290,6 +1358,8 @@ export async function planAssistantResponse(
     || looksLikeInlineTransformationRequest(state.message)
     || looksLikeEmotionalSupportRequest(state.message)
   ) {
+    const brainPlan = await brainV2FreeformPlan(state, onStableVoiceText);
+    if (brainPlan) return brainPlan;
     const supportGuidance = emotionalSupportGuidanceFor(state.message);
     if (supportGuidance) return answerPlan(supportGuidance, { lastIntent: "answer_only" });
     const answer = await getGeneralAnswer(state, onStableVoiceText);
@@ -2186,6 +2256,8 @@ export async function planAssistantResponse(
   // researched result can feed the requested device action.
   const explicitWebSearchNeedsAction = /\b(?:text|message|email|call|add|put|schedule|save|create|remind|directions|navigate)\b/i.test(state.message);
   if (looksLikeExplicitWebSearchRequest(state.message) && !explicitWebSearchNeedsAction) {
+    const brainPlan = await brainV2FreeformPlan(state, onStableVoiceText);
+    if (brainPlan) return brainPlan;
     const answer = await getGeneralAnswer(state, onStableVoiceText);
     return answerPlan(answer.text, { lastIntent: "web_search" }, answer.sources);
   }
@@ -2199,21 +2271,52 @@ export async function planAssistantResponse(
   // of paying for a planner request first. This measured about twice as fast in
   // the live voice path while capability-shaped questions still keep planning.
   if (looksLikePlainVoiceKnowledgeQuestion(state)) {
+    const brainPlan = await brainV2FreeformPlan(state, onStableVoiceText);
+    if (brainPlan) return brainPlan;
     const ga = await getGeneralAnswer(state, onStableVoiceText);
     return answerPlan(ga.text, { lastIntent: "answer_only" }, ga.sources);
   }
 
   let plan: PlannerModelOutput;
   try {
-    plan = await runPlannerModel(state);
+    if (shouldUseBrainV2(state)) {
+      // Brain v2 is a fully separate understanding + answer pipeline. The
+      // rollout gate is environment-controlled, so existing installs remain on
+      // the proven planner until an operator explicitly enables canary/v2.
+      plan = await runBrainV2Planner(state, onStableVoiceText);
+    } else {
+      // Shadow mode is opt-in and intentionally discards the result. It gives
+      // us provider/quality evidence without changing the response, actions,
+      // metering, or latency of a live user.
+      if (shouldShadowBrainV2(state)) {
+        void runUnmetered(() => runBrainV2Shadow(state)).then((shadow) => {
+          if (shadow.ok === false) console.warn("Brain v2 shadow evaluation failed:", shadow.error);
+        }).catch((error) => console.warn("Brain v2 shadow evaluation error:", error));
+      }
+      plan = await runPlannerModel(state);
+    }
   } catch (error) {
     // Preserve typed vendor failures all the way to the HTTP route. Converting
     // one into answerPlan makes outage copy look like Taki's answer to the
     // user's question instead of transport state.
     if (error instanceof ServiceError) throw error;
-    console.error("Planner failed, using general answer:", error);
-    const ga = await getGeneralAnswer(state, onStableVoiceText);
-    return answerPlan(ga.text, {}, ga.sources);
+    if (shouldUseBrainV2(state)) {
+      // A malformed/partial v2 response is a brain failure, not a user error.
+      // Keep the existing action-capable planner as a bounded compatibility
+      // fallback so a canary can never turn a working command into a plain
+      // conversational answer.
+      try {
+        plan = await runPlannerModel(state);
+      } catch (legacyError) {
+        console.error("Brain v2 and legacy planner failed:", legacyError);
+        const ga = await getGeneralAnswer(state, onStableVoiceText);
+        return answerPlan(ga.text, {}, ga.sources);
+      }
+    } else {
+      console.error("Planner failed, using general answer:", error);
+      const ga = await getGeneralAnswer(state, onStableVoiceText);
+      return answerPlan(ga.text, {}, ga.sources);
+    }
   }
 
   // Explicit clarification from the planner: park a pending clarification so the
@@ -2252,6 +2355,20 @@ export async function planAssistantResponse(
     // detectors above catch the common cases; this catches everything else).
     case "health_query": {
       const a = plan.action || {};
+      if (a.type === "health_log") {
+        const action = blankAction("health_log");
+        action.healthLogMetric = a.healthLogMetric ? String(a.healthLogMetric).toLowerCase().trim() : null;
+        action.healthLogValue = typeof a.healthLogValue === "number" ? a.healthLogValue : null;
+        action.healthWorkoutType = a.healthWorkoutType ? String(a.healthWorkoutType).trim() : null;
+        action.healthDurationMin = typeof a.healthDurationMin === "number" ? a.healthDurationMin : null;
+        return actionPlan(plan.spokenText || "Logging that.", action, { lastIntent: "health_log" });
+      }
+      if (a.type === "health_trend") {
+        const action = blankAction("health_trend");
+        action.metric = a.metric ? String(a.metric).toLowerCase().trim() : null;
+        action.trendDays = typeof a.trendDays === "number" ? a.trendDays : null;
+        return actionPlan(plan.spokenText || "Let me check the trend.", action, { lastIntent: "health_trend" });
+      }
       const metric = String(a.metric || "").toLowerCase().trim();
       if (!metric) return answerPlan(plan.spokenText || "Which health stat do you want?", { lastIntent: "health_query" });
       const action = blankAction("health_query");
@@ -2287,6 +2404,11 @@ export async function planAssistantResponse(
 
     case "photos_show": {
       const a = plan.action || {};
+      if (a.type === "photos_search") {
+        const action = blankAction("photos_search");
+        action.photoQuery = a.photoQuery ? String(a.photoQuery).trim() : null;
+        return actionPlan(plan.spokenText || "I'll search your photos.", action, { lastIntent: "photos_search" });
+      }
       const action = blankAction("photos_show");
       action.photoDays = typeof a.photoDays === "number" ? a.photoDays : 0;
       return actionPlan(plan.spokenText || "Here are your photos.", action, { lastIntent: "photos_show" });
@@ -2867,6 +2989,15 @@ export async function planAssistantResponse(
     case "answer_only":
     default: {
       const inline = plan.spokenText && plan.spokenText.trim() ? plan.spokenText.trim() : "";
+      // Brain v2's second-stage answer pass has already produced a complete,
+      // tone-aware answer. Do not send it through the legacy answer prompt a
+      // second time (which would lose sarcasm/stutter context and add latency).
+      // A v2 refusal is also final: sending it through the legacy answer layer
+      // would risk turning a protected-request refusal into an inconsistent
+      // generic response on text turns.
+      if (plan.brainVersion === "v2" && inline && (plan.answerReady || plan.answerMode === "refuse")) {
+        return answerPlan(inline, { lastIntent: "answer_only" });
+      }
       // For a real question/request, generate a strong, grounded answer
       // (gemini-2.5-pro + search) instead of the planner's quick flash line.
       // Keep the quick line only for trivial chit-chat / acks.

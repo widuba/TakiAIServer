@@ -18,6 +18,18 @@ export interface MeteredUsage {
 
 const usageStorage = new AsyncLocalStorage<MeteredUsage>();
 
+/**
+ * Run an optional evaluation without adding its provider calls to the
+ * authoritative turn meter. Shadow/canary diagnostics must never make a live
+ * user's credit charge larger than the response they actually received.
+ */
+export async function runUnmetered<T>(fn: () => Promise<T>): Promise<T> {
+  return usageStorage.run(
+    { geminiUsd: 0, searchUsd: 0, calls: 0, promptTokens: 0, outputTokens: 0 },
+    fn
+  );
+}
+
 export async function measureUsage<T>(fn: () => Promise<T>): Promise<{ value: T; usage: MeteredUsage }> {
   const usage: MeteredUsage = { geminiUsd: 0, searchUsd: 0, calls: 0, promptTokens: 0, outputTokens: 0 };
   const value = await usageStorage.run(usage, fn);

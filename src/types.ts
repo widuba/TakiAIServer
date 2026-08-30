@@ -469,6 +469,15 @@ export type PlannerModelOutput = {
   action: Partial<AssistantAction> | null;
   contact: ContactMemory | null;
   place: PlaceMemory | null;
+  // Internal fields used by the versioned Brain v2 rollout. They are never
+  // written to the device response; keeping them optional preserves the v1
+  // planner contract while allowing the new brain to carry answer/readiness
+  // metadata through the existing validator pipeline.
+  answerMode?: "direct" | "research" | "clarify" | "refuse";
+  answerReady?: boolean;
+  normalizedMessage?: string;
+  brainVersion?: "v2";
+  brainSignals?: Record<string, unknown>;
 };
 
 // What planAssistantResponse returns. finalizeResponse turns this into the
