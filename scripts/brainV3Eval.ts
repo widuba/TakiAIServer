@@ -806,6 +806,54 @@ const CASES: EvalCase[] = [
       ...stageCheck(stages, "understanding", (snapshot) => snapshot.needsClarification, "ambiguous_message_understanding_not_clarified"),
       ...stageCheck(stages, "understanding", (snapshot) => snapshot.intent === "compose_message", "ambiguous_message_intent_not_compose")
     ]
+  },
+  {
+    id: "generic-calendar-definition",
+    message: "What is an event?",
+    expect: (plan) => answerable(plan),
+    expectStages: (stages) => [
+      ...stageCheck(stages, "understanding", (snapshot) => snapshot.actionType === null, "generic_calendar_definition_action")
+    ]
+  },
+  {
+    id: "generic-reminder-definition",
+    message: "What is a reminder?",
+    expect: (plan) => answerable(plan),
+    expectStages: (stages) => [
+      ...stageCheck(stages, "understanding", (snapshot) => snapshot.actionType === null, "generic_reminder_definition_action")
+    ]
+  },
+  {
+    id: "generic-contact-definition",
+    message: "What is a contact?",
+    expect: (plan) => answerable(plan),
+    expectStages: (stages) => [
+      ...stageCheck(stages, "understanding", (snapshot) => snapshot.actionType === null, "generic_contact_definition_action")
+    ]
+  },
+  {
+    id: "generic-device-definition",
+    message: "What is a phone?",
+    expect: (plan) => answerable(plan),
+    expectStages: (stages) => [
+      ...stageCheck(stages, "understanding", (snapshot) => snapshot.actionType === null, "generic_device_definition_action")
+    ]
+  },
+  {
+    id: "generic-health-definition",
+    message: "What is health?",
+    expect: (plan) => answerable(plan),
+    expectStages: (stages) => [
+      ...stageCheck(stages, "understanding", (snapshot) => snapshot.actionType === null, "generic_health_definition_action")
+    ]
+  },
+  {
+    id: "history-context-not-request",
+    message: "What did I do to deserve this?",
+    expect: (plan) => answerable(plan),
+    expectStages: (stages) => [
+      ...stageCheck(stages, "understanding", (snapshot) => snapshot.actionType === null, "history_context_action")
+    ]
   }
 ];
 

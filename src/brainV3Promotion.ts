@@ -13,7 +13,7 @@ export const BRAIN_V3_PROMOTION_EVIDENCE_VERSION = 2 as const;
 export const BRAIN_V3_PROMOTION_EVIDENCE_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
 // The provider corpus is required for all three customer-facing response
 // tiers. The dedicated understanding model is exercised by each run as well.
-export const BRAIN_V3_PROMOTION_MIN_CORE_CASES = 46 * 3;
+export const BRAIN_V3_PROMOTION_MIN_CORE_CASES = 52 * 3;
 export const BRAIN_V3_PROMOTION_MIN_AUXILIARY_CASES = 18;
 export const BRAIN_V3_PROMOTION_MIN_DETERMINISTIC_TESTS = 300;
 
