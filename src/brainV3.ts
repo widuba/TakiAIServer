@@ -697,17 +697,13 @@ function detectSarcasm(value: string): BrainV3Sarcasm {
   const text = value.toLocaleLowerCase();
   const likely = [
     /\byeah[,;]?\s+right\b/,
-    /\bsure[, ]+(?:that'?s|that is)\s+(?:helpful|great|perfect|fine)\b/,
     /\bas if\b/,
     /\bwhat could possibly go wrong\b/,
     /\blove that for me\b/,
-    /\bjust what i needed\b/,
-    /\bthanks a lot\b/,
     /\b(?:perfect|great|nice)[,! ]+(?:another|more)\s+(?:error|problem|bug|bugs|failure|failures|crash|crashes|issue|issues|mistake|mistakes|outage|outages)\b/,
     /\bmy favorite\b.{0,30}\b(?:problem|disaster|error|failure)\b/,
     /\b(?:sure|of course|thanks|thank you)\b.{0,48}\b(?:another|again|error|problem|broken|breaking|bug|crash|crashed|failed|failure)\b/,
     /\b(?:great|fantastic|wonderful|lovely|nice|brilliant|perfect|amazing)\b.{0,48}\b(?:error|problem|broken|breaking|bug|bugs|crash|crashed|crashes|again|failed|failure|failures|issue|issues|outage|outages)\b/,
-    /\b(?:fantastic|brilliant|great|perfect|wonderful)[,; ]+.{0,50}\b(?:exactly|just)\s+what\s+i\s+(?:wanted|needed)\b/,
     /\b(?:yeah|sure|right)[,; ]+because\b.{0,80}\b(?:exactly|just)\s+what\s+i\s+(?:needed|wanted)\b/,
     /\b(?:yeah|sure)[,; ]+because\b.{0,60}\b(?:helpful|great|perfect|useful)\b/,
     /\bright[,; ]+because\b.{0,60}\b(?:makes total sense|obvious|sensible)\b/,
@@ -731,6 +727,13 @@ function detectSarcasm(value: string): BrainV3Sarcasm {
     /(?:🙃|🙄).{0,80}(?:error|problem|broken|problema|erro|问题|错误)?/iu
   ];
   if (likely.some((pattern) => pattern.test(text))) return "likely";
+  const ambiguous = [
+    /\bsure[, ]+(?:that'?s|that is)\s+(?:helpful|great|perfect|fine)\b/,
+    /\bjust what i needed\b/,
+    /\bthanks a lot\b/,
+    /\b(?:fantastic|brilliant|great|perfect|wonderful)[,; ]+.{0,50}\b(?:exactly|just)\s+what\s+i\s+(?:wanted|needed)\b/
+  ];
+  if (ambiguous.some((pattern) => pattern.test(text))) return "possible";
   const positive = /(?:^|[^\p{L}\p{N}])(?:great|perfect|awesome|wonderful|fantastic|lovely|brilliant|nice|love|amazing|genial|perfecto|ótimo|ótima|perfeito|perfeita|super|toll|perfetto|ottimo|sure|of course|thanks|thank you)(?![\p{L}\p{N}])|(?:太好了|真有用|谢谢啊)/iu.test(text);
   const negative = /(?:^|[^\p{L}\p{N}])(?:error|broken|breaking|broke|failed|failure|failures|problem|bug|wrong|late|stuck|crash|crashed|crashes|crashing|issue|issues|outage|outages|hate|disaster|again|unacceptable|problema|problemas|erro|falha|fallo|falla|otra vez|de novo|erreur|problème|panne|fehler|noch|errore|guaio|wieder|absturz|ausfall)(?![\p{L}\p{N}])|(?:問題|错误|出错|坏了)/iu.test(text);
   return positive && negative ? "possible" : "unlikely";

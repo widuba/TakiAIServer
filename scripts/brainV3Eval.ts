@@ -188,7 +188,7 @@ function stageContract(
 function semanticStages(
   stages: Partial<BrainV3StageSnapshots>,
   expected: {
-    sarcasm?: BrainV3StageSnapshots["signals"]["sarcasm"];
+    sarcasm?: BrainV3StageSnapshots["signals"]["sarcasm"] | BrainV3StageSnapshots["signals"]["sarcasm"][];
     tone?: BrainV3StageSnapshots["signals"]["tone"];
     language?: string;
     disfluencyDetected?: boolean;
@@ -199,9 +199,10 @@ function semanticStages(
   const reasons: string[] = [];
   for (const [field, value] of Object.entries(expected)) {
     if (value === undefined) continue;
+    const matches = (actual: unknown) => Array.isArray(value) ? value.includes(actual as any) : actual === value;
     reasons.push(
-      ...stageCheck(stages, "signals", (snapshot) => snapshot[field as keyof typeof snapshot] === value, `${prefix}_signals_${field}`),
-      ...stageCheck(stages, "understanding", (snapshot) => snapshot[field as keyof typeof snapshot] === value, `${prefix}_understanding_${field}`)
+      ...stageCheck(stages, "signals", (snapshot) => matches(snapshot[field as keyof typeof snapshot]), `${prefix}_signals_${field}`),
+      ...stageCheck(stages, "understanding", (snapshot) => matches(snapshot[field as keyof typeof snapshot]), `${prefix}_understanding_${field}`)
     );
   }
   return reasons;
@@ -215,6 +216,16 @@ function understandingIntent(
   return [
     ...stageCheck(stages, "understanding", (snapshot) => snapshot.intent === intent, `${prefix}_intent_not_preserved`),
     ...stageCheck(stages, "policy", (snapshot) => snapshot.decision === "allow", `${prefix}_policy_not_allowed`)
+  ];
+}
+
+function notDefinitelySarcastic(
+  stages: Partial<BrainV3StageSnapshots>,
+  prefix: string
+): string[] {
+  return [
+    ...stageCheck(stages, "signals", (snapshot) => snapshot.sarcasm !== "likely", `${prefix}_signals_overread`),
+    ...stageCheck(stages, "understanding", (snapshot) => snapshot.sarcasm !== "likely", `${prefix}_understanding_overread`)
   ];
 }
 
@@ -349,7 +360,7 @@ const CASES: EvalCase[] = [
       ...answerable(plan),
       ...includes(plan.spokenText, /leaves|chlorophyll|pigment|color/i, "exactly_wanted_sarcasm_misses_topic")
     ],
-    expectStages: (stages) => semanticStages(stages, { sarcasm: "likely", language: "en" }, "exactly_wanted_sarcasm")
+    expectStages: (stages) => semanticStages(stages, { sarcasm: ["likely", "possible"], language: "en" }, "exactly_wanted_sarcasm")
   },
   {
     id: "because-sarcasm-answer",
@@ -459,6 +470,30 @@ const CASES: EvalCase[] = [
       tone: "frustrated",
       language: "en"
     }, "amazing_outage_sarcasm")
+  },
+  {
+    id: "sincere-thanks-answer",
+    message: "Thanks a lot for your help. Can you explain compound interest?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /interest|money|grow|rate/i, "sincere_thanks_misses_topic")
+    ],
+    expectStages: (stages) => [
+      ...notDefinitelySarcastic(stages, "sincere_thanks"),
+      ...semanticStages(stages, { language: "en" }, "sincere_thanks")
+    ]
+  },
+  {
+    id: "sincere-helpful-answer",
+    message: "Sure, that is helpful. Can you explain why leaves change color?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /leaves|chlorophyll|pigment|color/i, "sincere_helpful_misses_topic")
+    ],
+    expectStages: (stages) => [
+      ...notDefinitelySarcastic(stages, "sincere_helpful"),
+      ...semanticStages(stages, { language: "en" }, "sincere_helpful")
+    ]
   },
   {
     id: "benign-model-refusal",

@@ -117,7 +117,7 @@ const PROMOTION_ENV = {
     releaseId: PROMOTION_RELEASE_ID,
     provider: ACTIVE_AI_PROVIDER,
     model: BRAIN_V3_MODEL,
-    core: { passed: true, total: 36, failed: 0 },
+    core: { passed: true, total: 38, failed: 0 },
     auxiliary: { passed: true, total: 18, failed: 0 },
     realWeb: { passed: true },
     deterministic: { passed: true, typecheckPassed: true, testCount: 350, failed: 0, cancelled: 0, skipped: 0 },
@@ -243,6 +243,9 @@ test("Brain v3 preserves sarcasm as frustration and recognizes disfluent non-Eng
   assert.equal(normalizeBrainV3Input("Well, well, well, look who finally fixed it.").sarcasm, "likely");
   assert.equal(normalizeBrainV3Input("Well, well, well, another failure.").sarcasm, "likely");
   assert.equal(normalizeBrainV3Input("Great, another success.").sarcasm, "unlikely");
+  assert.equal(normalizeBrainV3Input("Thanks a lot for your help.").sarcasm, "possible");
+  assert.equal(normalizeBrainV3Input("Sure, that is helpful.").sarcasm, "possible");
+  assert.equal(normalizeBrainV3Input("Just what I needed for this recipe.").sarcasm, "possible");
   assert.equal(normalizeBrainV3Input("Wow, what a surprise, it broke again.").sarcasm, "likely");
   assert.equal(normalizeBrainV3Input("I just love when it crashes.").sarcasm, "likely");
   assert.equal(normalizeBrainV3Input("I just love when it crashes.").tone, "frustrated");
@@ -254,7 +257,7 @@ test("Brain v3 preserves sarcasm as frustration and recognizes disfluent non-Eng
   assert.equal(germanPronoun.normalizedText, "Er ist müde.");
   assert.equal(germanPronoun.language, "de");
   assert.equal(germanPronoun.disfluencyDetected, false);
-  assert.equal(normalizeBrainV3Input("Fantastic, exactly what I wanted.").sarcasm, "likely");
+  assert.equal(normalizeBrainV3Input("Fantastic, exactly what I wanted.").sarcasm, "possible");
   assert.equal(normalizeBrainV3Input("That is just perfect, it failed again.").sarcasm, "likely");
   assert.equal(normalizeBrainV3Input("Großartig, wieder ein Problem.").sarcasm, "likely");
   assert.equal(normalizeBrainV3Input("Qué genial, otro fallo.").sarcasm, "likely");
