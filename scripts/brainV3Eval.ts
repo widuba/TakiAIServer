@@ -138,7 +138,7 @@ type AuxiliaryEvalCase = {
 };
 
 function genericRefusal(text: string): boolean {
-  return /^(?:i\s+can'?t|i\s+cannot|sorry,?\s+i\s+can'?t|i'?m\s+unable|i\s+don'?t\s+have\s+the\s+ability)\b/i.test(text.trim());
+  return /^(?:i\s+can(?:['’]?t|not)|sorry,?\s+i\s+can(?:['’]?t|not)|i(?:['’]?m|\s+am)\s+unable|i\s+don(?:['’]?t|not)\s+have\s+the\s+ability)\b/i.test(text.trim());
 }
 
 function hasAppendedGenericRefusal(text: string): boolean {

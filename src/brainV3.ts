@@ -2325,7 +2325,7 @@ function completeSentences(value: string): string[] {
 }
 
 function genericRefusal(value: string): boolean {
-  return /^(?:i\s+can'?t|i\s+cannot|sorry,?\s+i\s+can'?t|i'?m\s+unable|i\s+don'?t\s+have\s+the\s+ability)\b/i.test(value.trim())
+  return /^(?:i\s+can(?:['’]?t|not)|sorry,?\s+i\s+can(?:['’]?t|not)|i(?:['’]?m|\s+am)\s+unable|i\s+don(?:['’]?t|not)\s+have\s+the\s+ability)\b/i.test(value.trim())
     && !/\b(?:hurt|harm|suicide|weapon|illegal|private|secret|password|minor)\b/i.test(value);
 }
 
@@ -2502,7 +2502,7 @@ Return only the answer string inside the required JSON object.`;
 }
 
 function multimodalGenericRefusal(value: string): boolean {
-  return /^(?:sorry,?\s+)?i\s+(?:can'?t|cannot|am unable to)\s+(?:help|answer|assist|do that|with that)\b/i.test(value.trim());
+  return /^(?:sorry,?\s+)?i\s+(?:can(?:['’]?t|not)|am unable to)\s+(?:help|answer|assist|do that|with that)\b/i.test(value.trim());
 }
 
 /**

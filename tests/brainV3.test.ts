@@ -538,7 +538,7 @@ test("Brain v3 removes an appended generic refusal from a text answer", async ()
   const stages = fakeStages(
     directUnderstanding,
     undefined,
-    ["Photosynthesis converts light into chemical energy. I can't help with that."]
+    ["Photosynthesis converts light into chemical energy. I can’t help with that."]
   );
   const result = await runBrainV3Plan(state("Explain photosynthesis."), undefined, stages.deps);
   assert.equal(result.spokenText, "Photosynthesis converts light into chemical energy.");
