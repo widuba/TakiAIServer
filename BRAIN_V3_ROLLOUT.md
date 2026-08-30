@@ -11,7 +11,7 @@ Brain v3 is a separate understanding, safety-policy, grounded-research, response
 - `canary`: only stable device assignments below `TAKI_BRAIN_V3_PERCENT` use v3. Requests without a device identity stay on the legacy path unless the percentage is 100. A valid, unexpired promotion token and `TAKI_BRAIN_V3_READY=1` are also required.
 - `active`: all eligible model-driven turns use v3. A valid, unexpired promotion token and `TAKI_BRAIN_V3_READY=1` are also required. Deterministic device capability routes and the legacy fallback remain available.
 
-The health endpoint exposes the effective `brainV3.version`, `brainV3.promotionReady`, a non-secret `brainV3.promotion` reason/release/expiry status, `brainV3.canaryPercent`, `brainV3.auxEnabled`, and bounded process-local counters. It never exposes user text, prompts, or the promotion token. Rollback is one environment change: set `TAKI_BRAIN_V3_MODE=disabled` (or remove it), then restart the service.
+The health endpoint exposes the effective `brainV3.version`, `brainV3.promotionReady`, a non-secret `brainV3.promotion` reason/release/expiry status, `brainV3.canaryPercent`, `brainV3.shadowPercent`, `brainV3.auxEnabled`, and bounded process-local counters. It never exposes user text, prompts, or the promotion token. Rollback is one environment change: set `TAKI_BRAIN_V3_MODE=disabled` (or remove it), then restart the service.
 
 `TAKI_BRAIN_V3_SHADOW_MAX_CONCURRENCY` bounds detached shadow provider work to 1 by default (maximum 4). This protects the live provider from an accidental shadow stampede; use a separate staging provider project for evaluation.
 

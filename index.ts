@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { PORT, ACTIVE_AI_PROVIDER, MAIN_MODEL, PLANNER_MODEL, RESEARCH_MODEL, BRAIN_V3_MODEL, ServiceError, VOICE_UNAVAILABLE_SPOKEN, brainV3AuxEnabled, normalizeTakiModel, withTakiModel } from "./src/ai.js";
 import { brainV2Percent, brainV2RolloutStats, normalizeBrainRolloutMode } from "./src/brainV2.js";
-import { brainV3CanaryPercent, brainV3PromotionReady, brainV3PromotionStatus, brainV3RolloutStats, normalizeBrainV3RolloutMode } from "./src/brainV3.js";
+import { brainV3CanaryPercent, brainV3PromotionReady, brainV3PromotionStatus, brainV3RolloutStats, brainV3ShadowPercent, normalizeBrainV3RolloutMode } from "./src/brainV3.js";
 import type { DeviceLocation, DeviceWeather, SpeechMetadata } from "./src/types.js";
 import { buildConversationState } from "./src/context.js";
 import { planAssistantResponse } from "./src/planner.js";
@@ -528,6 +528,7 @@ app.get("/health", async (_req, res) => {
       promotionReady: brainV3PromotionReady(),
       promotion: brainV3PromotionStatus(),
       canaryPercent: brainV3CanaryPercent(),
+      shadowPercent: brainV3ShadowPercent(),
       model: BRAIN_V3_MODEL,
       auxEnabled: brainV3AuxEnabled(),
       // Shadow calls are detached and discard their plans, so they do not
