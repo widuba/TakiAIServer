@@ -606,6 +606,15 @@ function detectLanguage(value: string): string {
     `(?<![\\p{L}\\p{N}])${word.replace(/[.*+?^${}()|[\]\\]/g, "\\\\$&")}(?![\\p{L}\\p{N}])`,
     "iu"
   );
+  // Latin-script turns often contain one quoted, borrowed, or code-switched
+  // word. Count common English function words as a primary-language baseline so
+  // "I am super excited" stays English instead of becoming French because of
+  // the shared word "super". A short standalone foreign greeting still wins
+  // because it has no English baseline to compete with.
+  const englishWords = [
+    "i", "am", "are", "is", "the", "a", "an", "and", "or", "but", "if", "this", "that", "what", "why", "how", "who", "when", "where", "which", "can", "could", "would", "do", "does", "did", "please", "help", "want", "need", "know", "mean", "said", "use", "word", "with", "for", "from", "to", "of", "in", "on", "my", "your", "you", "we", "they", "another", "problem", "error", "today", "tomorrow", "right", "now", "excited", "answer", "explain"
+  ];
+  const englishScore = englishWords.reduce((sum, word) => sum + (marker(word).test(value) ? 1 : 0), 0);
   const markers: Array<[string, string[]]> = [
     ["es", ["hola", "gracias", "sí", "quiero", "puedes", "puede", "explicar", "esto", "español", "genial", "perfecto", "útil", "otro", "otra vez", "problema", "dónde", "cuándo", "qué", "cómo", "hoy", "mañana", "por favor"]],
     ["fr", ["bonjour", "merci", "je", "veux", "pouvez", "pouvez-vous", "expliquer", "français", "super", "génial", "encore", "erreur", "problème", "où", "quand", "comment", "aujourd'hui", "demain", "s'il vous plaît"]],
@@ -619,7 +628,11 @@ function detectLanguage(value: string): string {
     const score = words.reduce((sum, word) => sum + (marker(word).test(value) ? 1 : 0), 0);
     if (score > best.score) best = { language, score };
   }
-  return best.language;
+  // One shared function word (for example, Dutch "is") is not enough to
+  // outweigh a language-specific marker. Require a real English baseline when
+  // competing with a Latin-language score; this still protects full English
+  // sentences containing one quoted or borrowed foreign word.
+  return englishScore >= 2 && englishScore >= best.score ? "en" : best.language;
 }
 
 function detectSpeechAct(raw: string, normalized: string): BrainV3Signals["speechAct"] {
