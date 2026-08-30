@@ -154,6 +154,15 @@ test("Brain v3 does not strip meaningful edge words or hyphenated terms", () => 
   assert.equal(repeatedSo.normalizedText, "so many people use this");
   assert.equal(repeatedSo.disfluencyDetected, true);
   assert.equal(normalizeBrainV3Input("I really really need help").normalizedText, "I really really need help");
+  const emphaticGo = normalizeBrainV3Input("Go go go!");
+  assert.equal(emphaticGo.normalizedText, "Go go go!");
+  assert.equal(emphaticGo.disfluencyDetected, false);
+  const emphaticWait = normalizeBrainV3Input("Wait, wait, listen!");
+  assert.equal(emphaticWait.normalizedText, "Wait, wait, listen!");
+  assert.equal(emphaticWait.disfluencyDetected, false);
+  const targetStutter = normalizeBrainV3Input("Go go to the car.");
+  assert.equal(targetStutter.normalizedText, "Go to the car.");
+  assert.equal(targetStutter.disfluencyDetected, true);
   const punctuatedStutter = normalizeBrainV3Input("I... I need help");
   assert.equal(punctuatedStutter.normalizedText, "I need help");
   assert.equal(punctuatedStutter.disfluencyDetected, true);

@@ -479,15 +479,22 @@ function normalizeToken(value: unknown): string {
 }
 
 const PRESERVE_REPETITIONS = new Set(["very", "really", "so", "too", "more", "less", "never", "always", "yes", "no", "well"]);
+const EMPHATIC_REPETITIONS = new Set(["go", "wait", "look", "run", "stop", "listen", "hey", "okay", "ok"]);
 const FILLER_WORDS = new Set(["um", "uh", "erm", "er", "hmm", "hm", "mm", "mmm", "well", "so", "basically", "actually"]);
 const COMMON_WORDS = new Set([
   "about", "after", "again", "also", "and", "are", "before", "can", "could", "create", "did", "do", "does", "find", "for", "from", "get", "give", "help", "how", "i", "if", "in", "into", "is", "it", "just", "like", "make", "me", "my", "need", "of", "on", "or", "open", "please", "put", "save", "search", "send", "show", "tell", "that", "the", "this", "to", "turn", "want", "was", "what", "when", "where", "which", "who", "will", "with", "would", "you"
 ]);
 
 function collapseRepeatedWords(value: string, repeated: string[]): string {
-  return value.replace(/\b([\p{L}\p{N}][\p{L}\p{N}'’-]*)\b(?:\s+\1\b){1,5}/giu, (whole, first: string) => {
+  return value.replace(/\b([\p{L}\p{N}][\p{L}\p{N}'’-]*)\b(?:\s+\1\b){1,5}/giu, (whole, first: string, offset: number, source: string) => {
     const key = normalizeToken(first);
-    if (PRESERVE_REPETITIONS.has(key)) return whole;
+    const after = source.slice(offset + whole.length).trimStart();
+    // Short imperative repetitions are often intentional emphasis ("go go
+    // go!", "wait, wait, listen"), not an ASR stutter. Preserve them when the
+    // repeated run ends at punctuation or the end of the utterance, while a
+    // run before a real target ("go go to the car") remains collapsible.
+    if (PRESERVE_REPETITIONS.has(key)
+      || (EMPHATIC_REPETITIONS.has(key) && (!after || /^[,;:!?—–]/u.test(after)))) return whole;
     repeated.push(first);
     return first;
   });
@@ -572,8 +579,12 @@ function collapsePunctuatedRepeatedWords(value: string, repeated: string[]): str
     let changed = false;
     text = text.replace(
       /(?<![\p{L}\p{N}])([\p{L}\p{M}\p{N}][\p{L}\p{M}\p{N}'’-]*)(?:\s*[,;:/—–]\s*|\.{2,}\s+)([\p{L}\p{M}\p{N}][\p{L}\p{M}\p{N}'’-]*)(?![\p{L}\p{N}])/gu,
-      (whole, first: string, second: string) => {
-        if (normalizeToken(first) !== normalizeToken(second) || PRESERVE_REPETITIONS.has(normalizeToken(first))) return whole;
+      (whole, first: string, second: string, offset: number, source: string) => {
+        const key = normalizeToken(first);
+        const after = source.slice(offset + whole.length).trimStart();
+        if (normalizeToken(first) !== normalizeToken(second)
+          || PRESERVE_REPETITIONS.has(key)
+          || (EMPHATIC_REPETITIONS.has(key) && (!after || /^[,;:!?—–]/u.test(after)))) return whole;
         repeated.push(second);
         changed = true;
         return first;
