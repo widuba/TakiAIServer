@@ -180,9 +180,16 @@ test("Brain v3 does not strip meaningful edge words or hyphenated terms", () => 
 test("Brain v3 collapses spaced letter stutters without losing the target word", () => {
   const signals = normalizeBrainV3Input("c c can you text Dyckert?");
   assert.equal(signals.normalizedText, "can you text Dyckert?");
+  assert.equal(signals.speechAct, "request");
   assert.equal(signals.disfluencyDetected, true);
   assert.ok(signals.repeatedFragments.includes("can"));
   assert.ok(signals.preservedTerms.includes("Dyckert"));
+});
+
+test("Brain v3 treats indirect requests as requests even when they end in a question mark", () => {
+  assert.equal(normalizeBrainV3Input("Would you mind texting Chris that I am late?").speechAct, "request");
+  assert.equal(normalizeBrainV3Input("Can you explain why leaves change color?").speechAct, "request");
+  assert.equal(normalizeBrainV3Input("Why do leaves change color?").speechAct, "question");
 });
 
 test("Brain v3 recognizes punctuated sarcasm and separates freshness from urgency", () => {

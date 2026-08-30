@@ -912,8 +912,8 @@ function detectLanguage(value: string): string {
 
 function detectSpeechAct(raw: string, normalized: string): BrainV3Signals["speechAct"] {
   if (/(?:\bi\s+meant\b|\bnot\s+that\b|\bthat's\s+not\b|\bwhat\s+i\s+meant\b|\bcorrection\b|^\s*no\s*,)/i.test(raw)) return "correction";
-  if (/[?؟]$/.test(raw.trim()) || /^(?:what|why|how|who|when|where|which|can|could|would|is|are|do|does|did)\b/i.test(normalized)) return "question";
   if (/^(?:please\s+)?(?:can you|could you|would you|will you|help me|i need\b|i want\b|i(?:['’]d| would) like\b|i need you to|text|message|email|call|add|put|schedule|remind|open|show|find|search|play|turn|make|write|tell|navigate|send|remove|delete|create|save|start|stop|change|update)\b/i.test(normalized)) return "request";
+  if (/[?؟]$/.test(raw.trim()) || /^(?:what|why|how|who|when|where|which|can|could|would|is|are|do|does|did)\b/i.test(normalized)) return "question";
   if (/^(?:hi|hello|hey|thanks|thank you|good morning|good night|how are you)\b/i.test(normalized)) return "social";
   return "statement";
 }
