@@ -468,7 +468,7 @@ function collapsePunctuatedRepeatedWords(value: string, repeated: string[]): str
   for (let pass = 0; pass < 5; pass += 1) {
     let changed = false;
     text = text.replace(
-      /(?<![\p{L}\p{N}])([\p{L}\p{M}\p{N}][\p{L}\p{M}\p{N}'’-]*)(?:[,;:/—–]+\s*|\.{2,}\s+)([\p{L}\p{M}\p{N}][\p{L}\p{M}\p{N}'’-]*)(?![\p{L}\p{N}])/gu,
+      /(?<![\p{L}\p{N}])([\p{L}\p{M}\p{N}][\p{L}\p{M}\p{N}'’-]*)(?:\s*[,;:/—–]\s*|\.{2,}\s+)([\p{L}\p{M}\p{N}][\p{L}\p{M}\p{N}'’-]*)(?![\p{L}\p{N}])/gu,
       (whole, first: string, second: string) => {
         if (normalizeToken(first) !== normalizeToken(second) || PRESERVE_REPETITIONS.has(normalizeToken(first))) return whole;
         repeated.push(second);
@@ -544,6 +544,7 @@ function removeEdgeFillers(value: string, fillers: string[], languageHint = "en"
         const candidate = leading[0].trim().toLocaleLowerCase();
         const meaningful =
           (candidate === "um" && portugueseUmIsMeaningful(text, languageHint))
+          || (candidate === "er" && languageHint === "de")
           || (candidate === "so" && /^(?:so\s+)(?:far|much|many|few|little|long|that|as|called|often)\b/i.test(text))
           || (candidate === "well" && /^(?:well\s+)(?:known|defined|done|before|after|above|below|worth|under|over|being|within)\b/i.test(text))
           || (candidate === "actually" && /^(?:actually\s+)(?:means?|is|was|are|were|has|have|did|does|can|cannot|can't)\b/i.test(text));
@@ -608,7 +609,7 @@ function detectSarcasm(value: string): BrainV3Sarcasm {
     /\b(?:perfect|great|nice)[,! ]+(?:another|more)\s+(?:error|problem|bug|bugs|failure|failures|crash|crashes|issue|issues|mistake|mistakes|outage|outages)\b/,
     /\bmy favorite\b.{0,30}\b(?:problem|disaster|error|failure)\b/,
     /\b(?:sure|of course|thanks|thank you)\b.{0,48}\b(?:another|again|error|problem|broken|breaking|bug|crash|crashed|failed|failure)\b/,
-    /\b(?:great|fantastic|wonderful|lovely|nice|brilliant|perfect)\b.{0,48}\b(?:error|problem|broken|breaking|bug|bugs|crash|crashed|crashes|again|failed|failure|failures|issue|issues|outage|outages)\b/,
+    /\b(?:great|fantastic|wonderful|lovely|nice|brilliant|perfect|amazing)\b.{0,48}\b(?:error|problem|broken|breaking|bug|bugs|crash|crashed|crashes|again|failed|failure|failures|issue|issues|outage|outages)\b/,
     /\b(?:fantastic|brilliant|great|perfect|wonderful)[,; ]+.{0,50}\b(?:exactly|just)\s+what\s+i\s+(?:wanted|needed)\b/,
     /\b(?:yeah|sure|right)[,; ]+because\b.{0,80}\b(?:exactly|just)\s+what\s+i\s+(?:needed|wanted)\b/,
     /\b(?:yeah|sure)[,; ]+because\b.{0,60}\b(?:helpful|great|perfect|useful)\b/,
@@ -620,20 +621,21 @@ function detectSarcasm(value: string): BrainV3Sarcasm {
     /\b(?:i\s+)?(?:just\s+)?love\b.{0,50}\b(?:error|problem|bug|broken|broke|crash|crashed|crashes|crashing|failure|failed|again)\b/,
     /(?:^|[^\p{L}\p{N}])(?:sí|si),?\s*claro\b.{0,48}(?:otra vez|error|problema|fall[oó]|roto|se rompió)/iu,
     /(?:^|[^\p{L}\p{N}])claro\b.{0,48}(?:otra vez|error|problema|fall[oó]|roto|se rompió)/iu,
-    /(?:^|[^\p{L}\p{N}])(?:qué|que)\s+(?:útil|genial|perfecto)\b.{0,32}(?:otra vez|error|problema|se rompió)/iu,
+    /(?:^|[^\p{L}\p{N}])(?:qué|que)\s+(?:útil|genial|perfecto)\b.{0,32}(?:otra vez|error|problema|fall[oó]|se rompió)/iu,
     /(?:^|[^\p{L}\p{N}])(?:ótimo|ótima|perfeito|perfeita)\b.{0,40}(?:outro|outra|erro|problema|falha|de novo)/iu,
     /(?:^|[^\p{L}\p{N}])(?:erro|problema|falha)\b.{0,40}\bque\s+(?:ótimo|ótima|perfeito|perfeita)\b/iu,
     /(?:^|[^\p{L}\p{N}])(?:super|génial|genial)\b.{0,40}(?:encore|erreur|problème|panne)/iu,
     /(?:^|[^\p{L}\p{N}])(?:toll|super)\b.{0,40}(?:noch|fehler|problem)/iu,
-    /(?:^|[^\p{L}\p{N}])(?:perfetto|ottimo)\b.{0,40}(?:altro|errore|problema)/iu,
+    /(?:^|[^\p{L}\p{N}])(?:perfetto|ottimo|fantastico|fantastica)\b.{0,40}(?:altro|altra|errore|problema|guaio)/iu,
+    /(?:^|[^\p{L}\p{N}])(?:toll|super|großartig|grossartig)\b.{0,40}(?:noch|wieder|fehler|problem|absturz|ausfall)/iu,
     /(?:太好了|真有用|谢谢啊).{0,16}(?:又|错误|问题|坏了|出错)/u,
     /(?:最高|すごい|よかった).{0,20}(?:また|エラー|失敗|問題)/u,
     /(?:최고|대단해|좋네).{0,20}(?:또|오류|문제|실패)/u,
     /(?:🙃|🙄).{0,80}(?:error|problem|broken|problema|erro|问题|错误)?/iu
   ];
   if (likely.some((pattern) => pattern.test(text))) return "likely";
-  const positive = /(?:^|[^\p{L}\p{N}])(?:great|perfect|awesome|wonderful|fantastic|love|amazing|genial|perfecto|ótimo|ótima|perfeito|perfeita|super|toll|perfetto|ottimo|sure|of course|thanks|thank you)(?![\p{L}\p{N}])|(?:太好了|真有用|谢谢啊)/iu.test(text);
-  const negative = /(?:^|[^\p{L}\p{N}])(?:error|broken|breaking|failed|failure|problem|bug|wrong|late|stuck|crash|crashed|crashes|crashing|hate|disaster|again|unacceptable|problema|problemas|erro|falha|otra vez|de novo|erreur|problème|panne|fehler|noch|errore)(?![\p{L}\p{N}])|(?:問題|错误|出错|坏了)/iu.test(text);
+  const positive = /(?:^|[^\p{L}\p{N}])(?:great|perfect|awesome|wonderful|fantastic|lovely|brilliant|nice|love|amazing|genial|perfecto|ótimo|ótima|perfeito|perfeita|super|toll|perfetto|ottimo|sure|of course|thanks|thank you)(?![\p{L}\p{N}])|(?:太好了|真有用|谢谢啊)/iu.test(text);
+  const negative = /(?:^|[^\p{L}\p{N}])(?:error|broken|breaking|broke|failed|failure|failures|problem|bug|wrong|late|stuck|crash|crashed|crashes|crashing|issue|issues|outage|outages|hate|disaster|again|unacceptable|problema|problemas|erro|falha|fallo|falla|otra vez|de novo|erreur|problème|panne|fehler|noch|errore|guaio|wieder|absturz|ausfall)(?![\p{L}\p{N}])|(?:問題|错误|出错|坏了)/iu.test(text);
   return positive && negative ? "possible" : "unlikely";
 }
 
@@ -670,15 +672,15 @@ function mergeSpeechActSignal(
 function detectTone(value: string): BrainV3Tone {
   const text = value.toLocaleLowerCase();
   const sarcastic = detectSarcasm(value) === "likely";
-  const positiveCue = /(?:^|[^\p{L}\p{N}])(?:great|good|perfect|awesome|helpful|thanks|thank you|sure|of course|genial|perfecto|útil|ótimo|ótima|perfeito|perfeita|super|toll|perfetto|ottimo|brilliant)(?![\p{L}\p{N}])|(?:太好了|真有用|谢谢啊|最高|すごい|よかった|최고|대단해|좋네)/iu;
-  const negativeCue = /(?:^|[^\p{L}\p{N}])(?:error|broken|breaking|failed|failure|problem|bug|wrong|late|stuck|crash|crashed|crashes|crashing|disaster|again|unacceptable|problema|problemas|erro|falha|otra vez|de novo|erreur|problème|panne|fehler|noch|errore)(?![\p{L}\p{N}])|(?:問題|错误|出错|坏了|また|エラー|失敗|오류|문제|실패|또)/iu;
+  const positiveCue = /(?:^|[^\p{L}\p{N}])(?:great|good|perfect|awesome|helpful|thanks|thank you|sure|of course|genial|perfecto|útil|ótimo|ótima|perfeito|perfeita|super|toll|perfetto|ottimo|brilliant|fantastic|wonderful|lovely|nice|amazing)(?![\p{L}\p{N}])|(?:太好了|真有用|谢谢啊|最高|すごい|よかった|최고|대단해|좋네)/iu;
+  const negativeCue = /(?:^|[^\p{L}\p{N}])(?:error|broken|breaking|broke|failed|failure|problem|bug|wrong|late|stuck|crash|crashed|crashes|crashing|outage|outages|issue|issues|disaster|again|unacceptable|problema|problemas|erro|falha|fallo|falla|otra vez|de novo|erreur|problème|panne|fehler|noch|wieder|absturz|ausfall|errore|guaio)(?![\p{L}\p{N}])|(?:問題|错误|出错|坏了|また|エラー|失敗|오류|문제|실패|또)/iu;
   const sarcasticPositiveCue = /(?:yeah[,;]?\s+right|sure[,;]?\s+(?:that's|that is)|as if|what could possibly go wrong|love that for me|(?:i\s+)?(?:just\s+)?love\b|(?:just|exactly) what i needed|thanks a lot|nice job\b.{0,30}\bgenius\b)/iu;
   if (sarcastic && (positiveCue.test(text) || sarcasticPositiveCue.test(text)) && negativeCue.test(text)) {
     return "frustrated";
   }
   const urgentCue = /(?:^|[^\p{L}\p{N}])(?:urgent|emergency|immediately|right away|asap|hurry|urgente|emergencia|inmediatamente|ahora mismo|tout de suite|immédiatement|dringend|sofort|agora mesmo|imediatamente|subito)(?![\p{L}\p{N}])|(?:助けて|今すぐ|緊急|도와줘|지금 당장|مساعدة|الآن|मदद|तुरंत)/iu;
   const angryCue = /(?:^|[^\p{L}\p{N}])(?:furious|angry|pissed|ridiculous|unacceptable|en colère|furieux|furieuse|wütend|sauer|furioso|furiosa|enojado|enojada|molesto|molesta|rabia|inaceptable|inacceptable|inaccettabile|arrabbiato|arrabbiata|raiva)(?![\p{L}\p{N}])|(?:怒って|腹が立つ|화나|不可接受)/iu;
-  const frustratedCue = /(?:^|[^\p{L}\p{N}])(?:frustrated|frustrating|frustrant|frustrante|annoyed|broken|breaking|bug|doesn't work|no funciona|não funciona|nao funciona|non funziona|cannot|can't|stuck|again|crash|crashed|crashes|crashing|frustrado|frustrada|frustré|frustrée|énervé|énervée|agacé|agacée|genervt|frustriert|frustrierend|irritado|irritada|frustrato|frustrata|falla|otra vez|de nuevo|encore|noch)(?![\p{L}\p{N}])|(?:もう一度|イライラ|また失敗|답답|짜증|또 오류|又出错|出错了|फिर से)/iu;
+  const frustratedCue = /(?:^|[^\p{L}\p{N}])(?:frustrated|frustrating|frustrant|frustrante|annoyed|broken|breaking|broke|bug|failure|failed|doesn't work|no funciona|não funciona|nao funciona|non funziona|cannot|can't|stuck|again|crash|crashed|crashes|crashing|outage|outages|issue|issues|frustrado|frustrada|frustré|frustrée|énervé|énervée|agacé|agacée|genervt|frustriert|frustrierend|irritado|irritada|frustrato|frustrata|falla|fallo|otra vez|de nuevo|encore|noch|wieder|absturz|ausfall)(?![\p{L}\p{N}])|(?:もう一度|イライラ|また失敗|답답|짜증|또 오류|又出错|出错了|फिर से)/iu;
   const sadCue = /(?:^|[^\p{L}\p{N}])(?:sad|lonely|heartbroken|depressed|crying|miss|triste|tristeza|solitário|solitária|malheureux|malheureuse|traurig|tristezza)(?![\p{L}\p{N}])|(?:悲しい|寂しい|슬퍼|외로워|难过|孤独|उदास)/iu;
   const anxiousCue = /(?:^|[^\p{L}\p{N}])(?:worried|anxious|nervous|nervös|scared|afraid|panic|preocupado|preocupada|nervioso|nerviosa|ansioso|ansiosa|inquieto|inquieta|inquiet|inquiète|ängstlich|besorgt|preoccupato|preoccupata)(?![\p{L}\p{N}])|(?:不安|心配|焦虑|불안|걱정|चिंतित|घबराया)/iu;
   // "right now" is usually a freshness qualifier ("what is the score right
@@ -720,7 +722,7 @@ function detectLanguage(value: string): string {
   const markers: Array<[string, string[]]> = [
     ["es", ["hola", "gracias", "sí", "quiero", "necesito", "ayuda", "ayúdame", "ayudame", "estoy", "puedes", "puede", "explicar", "esto", "español", "genial", "perfecto", "útil", "otro", "otra vez", "problema", "dónde", "cuándo", "qué", "cómo", "hoy", "mañana", "por favor"]],
     ["fr", ["bonjour", "merci", "je", "veux", "pouvez", "pouvez-vous", "expliquer", "français", "super", "génial", "encore", "erreur", "problème", "où", "quand", "comment", "aujourd'hui", "demain", "s'il vous plaît"]],
-    ["de", ["hallo", "danke", "ich", "möchte", "kannst", "können", "erklären", "deutsch", "fehler", "kaputt", "noch", "nervös", "wo", "wann", "bedeutet", "heute", "morgen", "bitte"]],
+    ["de", ["hallo", "danke", "ich", "er", "ist", "möchte", "kannst", "können", "erklären", "deutsch", "fehler", "kaputt", "noch", "wieder", "wütend", "müde", "großartig", "grossartig", "absturz", "ausfall", "nervös", "wo", "wann", "bedeutet", "heute", "morgen", "bitte"]],
     ["pt", ["olá", "obrigado", "obrigada", "você", "voce", "eu", "um", "pode", "podes", "quero", "explicar", "isso", "português", "ótimo", "ótima", "perfeito", "perfeita", "outro", "outra", "problema", "erro", "falha", "de novo", "onde", "quando", "hoje", "amanhã", "por favor", "estou", "preciso", "ajuda", "agora", "triste", "sozinha", "não", "nao", "funciona"]],
     ["it", ["ciao", "grazie", "io", "sono", "ho", "bisogno", "aiuto", "voglio", "puoi", "potete", "spiegare", "questo", "italiano", "perfetto", "ottimo", "altro", "problema", "errore", "triste", "dove", "quando", "oggi", "domani", "per favore"]],
     ["nl", ["dank je", "waarom", "alsjeblieft", "kun je", "graag", "vandaag", "weer"]]

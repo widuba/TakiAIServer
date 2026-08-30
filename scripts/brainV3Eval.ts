@@ -312,6 +312,38 @@ const CASES: EvalCase[] = [
     ]
   },
   {
+    id: "german-sarcasm-answer",
+    message: "Großartig, wieder ein Problem. Kannst du Zinseszins erklären?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /zins|geld|rate|interest|money/i, "german_sarcasm_misses_topic")
+    ]
+  },
+  {
+    id: "spanish-fallo-sarcasm-answer",
+    message: "Qué genial, otro fallo. ¿Puedes explicar la fotosíntesis en español?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /fotosíntesis|plantas|luz|clorofila/i, "spanish_fallo_sarcasm_misses_topic")
+    ]
+  },
+  {
+    id: "italian-fantastico-sarcasm-answer",
+    message: "Fantastico, un altro errore. Puoi spiegare l'interesse composto?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /interesse|denaro|tasso|interest|money|rate/i, "italian_fantastico_sarcasm_misses_topic")
+    ]
+  },
+  {
+    id: "amazing-outage-sarcasm-answer",
+    message: "Amazing, another outage. Can you explain why leaves change color?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /leaves|chlorophyll|pigment|color/i, "amazing_outage_sarcasm_misses_topic")
+    ]
+  },
+  {
     id: "benign-model-refusal",
     message: "Explain what a firewall does in plain English.",
     expect: (plan) => [
