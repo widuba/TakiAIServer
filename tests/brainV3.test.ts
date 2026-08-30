@@ -146,6 +146,17 @@ test("Brain v3 preserves sarcasm as frustration and recognizes disfluent non-Eng
   assert.equal(sarcastic.sarcasm, "likely");
   assert.equal(sarcastic.tone, "frustrated");
 
+  const spanishSarcasm = normalizeBrainV3Input("Sí, claro, otro error, qué útil.");
+  assert.equal(spanishSarcasm.sarcasm, "likely");
+  assert.equal(spanishSarcasm.tone, "frustrated");
+
+  const chineseSarcasm = normalizeBrainV3Input("太好了，又出错了。");
+  assert.equal(chineseSarcasm.sarcasm, "likely");
+  assert.equal(chineseSarcasm.tone, "frustrated");
+
+  assert.equal(normalizeBrainV3Input("Ótimo, outro problema de novo.").language, "pt");
+  assert.equal(normalizeBrainV3Input("Toll, noch ein Fehler.").language, "de");
+
   const chinese = normalizeBrainV3Input("嗯，嗯，我想知道今天的天气");
   assert.equal(chinese.language, "zh");
   assert.equal(chinese.disfluencyDetected, true);
@@ -153,7 +164,13 @@ test("Brain v3 preserves sarcasm as frustration and recognizes disfluent non-Eng
   assert.equal(chinese.normalizedText, "嗯,我想知道今天的天气");
 
   assert.equal(normalizeBrainV3Input("S s sí, puedes explicar esto en español?").language, "es");
+  const accentedStutter = normalizeBrainV3Input("S s sí, puedes explicar esto en español?");
+  assert.ok(accentedStutter.repeatedFragments.includes("sí"));
+  assert.equal(normalizeBrainV3Input("é é éclair").repeatedFragments[0], "éclair");
   assert.equal(normalizeBrainV3Input("Você pode explicar isso?").language, "pt");
+  assert.equal(normalizeBrainV3Input("あ あ あしたの天気").language, "ja");
+  assert.equal(normalizeBrainV3Input("안녕하세요, 오늘 날씨가 어때요?").language, "ko");
+  assert.equal(normalizeBrainV3Input("नमस्ते, आज मौसम कैसा है?").language, "hi");
 });
 
 test("Brain v3 keeps explicit sarcasm and urgent tone when a model disagrees", async () => {

@@ -398,7 +398,7 @@ function collapseSpelledStutter(value: string, repeated: string[]): string {
 // ordinary short words and meaningful repeated words remain untouched.
 function collapseLetterStutter(value: string, repeated: string[]): string {
   return value.replace(
-    /\b([\p{L}])(?:[\s,;:/-]+\1){1,4}[\s,;:/-]+(\1[\p{L}\p{M}\p{N}'’-]*)\b/giu,
+    /(?<![\p{L}\p{N}])([\p{L}])(?:[\s,;:/-]+\1){1,4}[\s,;:/-]+(\1[\p{L}\p{M}\p{N}'’-]*)(?![\p{L}\p{N}])/giu,
     (whole, _letter: string, word: string) => {
       repeated.push(word);
       return word;
@@ -408,12 +408,12 @@ function collapseLetterStutter(value: string, repeated: string[]): string {
 
 // Some languages do not use ASCII word boundaries, and speech recognizers may
 // preserve a one-syllable hesitation as punctuation-separated text (for
-// example, "嗯，嗯，我想..."). Treat only repeated single-letter/grapheme
-// fragments as disfluency here; ordinary repeated words and rhetorical
+// example, "嗯，嗯，我想..."). Treat only repeated non-ASCII single-letter /
+// grapheme fragments as disfluency here; ordinary repeated words and rhetorical
 // emphasis remain governed by the existing, more conservative rule.
 function collapseUnicodeSingleCharStutter(value: string, repeated: string[]): string {
   return value.replace(
-    /(?<![\p{L}\p{N}])([\p{L}])(?:[\s,;:/—–\-，。！？、]+\1){1,5}(?=[\s,;:/—–\-，。！？、]+[\p{L}\p{N}]|$)/giu,
+    /(?<![\p{L}\p{N}])((?![A-Za-z])[\p{L}])(?:[\s,;:/—–\-，。！？、]+\1){1,5}(?=[\s,;:/—–\-，。！？、]+[\p{L}\p{N}]|$)/giu,
     (whole, character: string) => {
       repeated.push(character);
       return character;
@@ -487,11 +487,19 @@ function detectSarcasm(value: string): BrainV3Sarcasm {
     /\bjust what i needed\b/,
     /\bthanks a lot\b/,
     /\b(?:perfect|great|nice)[,! ]+(?:another|more)\b/,
-    /\bmy favorite\b.{0,30}\b(?:problem|disaster|error|failure)\b/
+    /\bmy favorite\b.{0,30}\b(?:problem|disaster|error|failure)\b/,
+    /(?:^|[^\p{L}\p{N}])(?:sí|si),?\s*claro\b.{0,48}(?:otra vez|error|problema|fall[oó]|roto|se rompió)/iu,
+    /(?:^|[^\p{L}\p{N}])(?:qué|que)\s+(?:útil|genial|perfecto)\b.{0,32}(?:otra vez|error|problema|se rompió)/iu,
+    /(?:^|[^\p{L}\p{N}])(?:ótimo|ótima|perfeito|perfeita)\b.{0,40}(?:outro|outra|erro|problema|falha|de novo)/iu,
+    /(?:^|[^\p{L}\p{N}])(?:super|génial|genial)\b.{0,40}(?:encore|erreur|problème|panne)/iu,
+    /(?:^|[^\p{L}\p{N}])(?:toll|super)\b.{0,40}(?:noch|fehler|problem)/iu,
+    /(?:^|[^\p{L}\p{N}])(?:perfetto|ottimo)\b.{0,40}(?:altro|errore|problema)/iu,
+    /(?:太好了|真有用|谢谢啊).{0,16}(?:又|错误|问题|坏了|出错)/u,
+    /(?:🙃|🙄).{0,80}(?:error|problem|broken|problema|erro|问题|错误)?/iu
   ];
   if (likely.some((pattern) => pattern.test(text))) return "likely";
-  const positive = /\b(?:great|perfect|awesome|wonderful|fantastic|love|amazing)\b/.test(text);
-  const negative = /\b(?:error|broken|failed|failure|problem|wrong|late|stuck|crash|hate|disaster|again)\b/.test(text);
+  const positive = /(?:^|[^\p{L}\p{N}])(?:great|perfect|awesome|wonderful|fantastic|love|amazing|genial|perfecto|ótimo|ótima|perfeito|perfeita|super|toll|perfetto|ottimo)(?![\p{L}\p{N}])|(?:太好了|真有用|谢谢啊)/iu.test(text);
+  const negative = /(?:^|[^\p{L}\p{N}])(?:error|broken|failed|failure|problem|wrong|late|stuck|crash|hate|disaster|again|unacceptable|problema|problemas|erro|falha|otra vez|de novo|erreur|problème|panne|fehler|noch|errore)(?![\p{L}\p{N}])|(?:問題|错误|出错|坏了)/iu.test(text);
   return positive && negative ? "possible" : "unlikely";
 }
 
@@ -528,8 +536,9 @@ function mergeSpeechActSignal(
 function detectTone(value: string): BrainV3Tone {
   const text = value.toLocaleLowerCase();
   const sarcastic = detectSarcasm(value) === "likely";
-  if (sarcastic && /\b(?:great|good|perfect|awesome|helpful|thanks|thank you)\b/.test(text)
-    && /\b(?:error|broken|failed|failure|problem|wrong|late|stuck|crash|disaster|again|unacceptable)\b/.test(text)) {
+  const positiveCue = /(?:^|[^\p{L}\p{N}])(?:great|good|perfect|awesome|helpful|thanks|thank you|genial|perfecto|útil|ótimo|ótima|perfeito|perfeita|super|toll|perfetto|ottimo)(?![\p{L}\p{N}])|(?:太好了|真有用|谢谢啊)/iu;
+  const negativeCue = /(?:^|[^\p{L}\p{N}])(?:error|broken|failed|failure|problem|wrong|late|stuck|crash|disaster|again|unacceptable|problema|problemas|erro|falha|otra vez|de nuevo|erreur|problème|panne|fehler|noch|errore)(?![\p{L}\p{N}])|(?:問題|错误|出错|坏了)/iu;
+  if (sarcastic && positiveCue.test(text) && negativeCue.test(text)) {
     return "frustrated";
   }
   // "right now" is usually a freshness qualifier ("what is the score right
@@ -550,18 +559,22 @@ function detectTone(value: string): BrainV3Tone {
 
 function detectLanguage(value: string): string {
   if (/[\u0400-\u04ff]/u.test(value)) return "ru";
-  if (/[\u4e00-\u9fff]/u.test(value)) return "zh";
   if (/[\u3040-\u30ff]/u.test(value)) return "ja";
+  if (/[\uac00-\ud7af]/u.test(value)) return "ko";
+  if (/[\u0600-\u06ff]/u.test(value)) return "ar";
+  if (/[\u0900-\u097f]/u.test(value)) return "hi";
+  if (/[\u4e00-\u9fff]/u.test(value)) return "zh";
   const marker = (word: string): RegExp => new RegExp(
     `(?<![\\p{L}\\p{N}])${word.replace(/[.*+?^${}()|[\]\\]/g, "\\\\$&")}(?![\\p{L}\\p{N}])`,
     "iu"
   );
   const markers: Array<[string, string[]]> = [
-    ["es", ["hola", "gracias", "sí", "quiero", "puedes", "puede", "explicar", "esto", "español", "dónde", "cuándo", "qué", "cómo", "hoy", "mañana", "por favor"]],
-    ["fr", ["bonjour", "merci", "je", "veux", "pouvez", "pouvez-vous", "expliquer", "français", "où", "quand", "comment", "aujourd'hui", "demain", "s'il vous plaît"]],
-    ["de", ["hallo", "danke", "ich", "möchte", "kannst", "können", "erklären", "deutsch", "wo", "wann", "was", "bedeutet", "heute", "morgen", "bitte"]],
-    ["pt", ["olá", "obrigado", "obrigada", "você", "voce", "pode", "podes", "quero", "explicar", "isso", "português", "onde", "quando", "hoje", "amanhã", "por favor"]],
-    ["it", ["ciao", "grazie", "voglio", "puoi", "potete", "spiegare", "questo", "italiano", "dove", "quando", "oggi", "domani", "per favore"]]
+    ["es", ["hola", "gracias", "sí", "quiero", "puedes", "puede", "explicar", "esto", "español", "genial", "perfecto", "útil", "otro", "otra vez", "problema", "dónde", "cuándo", "qué", "cómo", "hoy", "mañana", "por favor"]],
+    ["fr", ["bonjour", "merci", "je", "veux", "pouvez", "pouvez-vous", "expliquer", "français", "super", "génial", "encore", "erreur", "problème", "où", "quand", "comment", "aujourd'hui", "demain", "s'il vous plaît"]],
+    ["de", ["hallo", "danke", "ich", "möchte", "kannst", "können", "erklären", "deutsch", "toll", "fehler", "kaputt", "noch", "problem", "wo", "wann", "was", "bedeutet", "heute", "morgen", "bitte"]],
+    ["pt", ["olá", "obrigado", "obrigada", "você", "voce", "pode", "podes", "quero", "explicar", "isso", "português", "ótimo", "ótima", "perfeito", "perfeita", "outro", "outra", "problema", "erro", "falha", "de novo", "onde", "quando", "hoje", "amanhã", "por favor"]],
+    ["it", ["ciao", "grazie", "voglio", "puoi", "potete", "spiegare", "questo", "italiano", "perfetto", "ottimo", "altro", "problema", "errore", "dove", "quando", "oggi", "domani", "per favore"]],
+    ["nl", ["dank je", "waarom", "alsjeblieft", "kun je", "graag", "vandaag", "weer"]]
   ];
   let best: { language: string; score: number } = { language: "en", score: 0 };
   for (const [language, words] of markers) {
