@@ -369,7 +369,7 @@ function normalizeToken(value: unknown): string {
   return String(value || "").toLocaleLowerCase().replace(/[^\p{L}\p{N}'’-]/gu, "");
 }
 
-const PRESERVE_REPETITIONS = new Set(["very", "really", "so", "too", "more", "less", "never", "always", "yes", "no"]);
+const PRESERVE_REPETITIONS = new Set(["very", "really", "so", "too", "more", "less", "never", "always", "yes", "no", "well"]);
 const FILLER_WORDS = new Set(["um", "uh", "erm", "er", "hmm", "hm", "mm", "mmm", "well", "so", "basically", "actually"]);
 const COMMON_WORDS = new Set([
   "about", "after", "again", "also", "and", "are", "before", "can", "could", "create", "did", "do", "does", "find", "for", "from", "get", "give", "help", "how", "i", "if", "in", "into", "is", "it", "just", "like", "make", "me", "my", "need", "of", "on", "or", "open", "please", "put", "save", "search", "send", "show", "tell", "that", "the", "this", "to", "turn", "want", "was", "what", "when", "where", "which", "who", "will", "with", "would", "you"
@@ -382,6 +382,29 @@ function collapseRepeatedWords(value: string, repeated: string[]): string {
     repeated.push(first);
     return first;
   });
+}
+
+// Unicode case-folding for backreferences is inconsistent across runtimes for
+// accented words (for example, "Você você"). Compare the two actual tokens
+// after matching them instead. Restrict this fallback to non-ASCII tokens so
+// ordinary English repetition keeps the older conservative behavior.
+function collapseUnicodeRepeatedWords(value: string, repeated: string[]): string {
+  let text = value;
+  for (let pass = 0; pass < 5; pass += 1) {
+    let changed = false;
+    text = text.replace(
+      /(?<![\p{L}\p{N}])([\p{L}\p{M}][\p{L}\p{M}\p{N}'’-]*)([,;:/—–\s-]+)([\p{L}\p{M}][\p{L}\p{M}\p{N}'’-]*)(?![\p{L}\p{N}])/gu,
+      (whole, first: string, _separator: string, second: string) => {
+        if (/^[\x00-\x7F]+$/.test(first) && /^[\x00-\x7F]+$/.test(second)) return whole;
+        if (normalizeToken(first) !== normalizeToken(second) || PRESERVE_REPETITIONS.has(normalizeToken(first))) return whole;
+        repeated.push(second);
+        changed = true;
+        return first;
+      }
+    );
+    if (!changed) break;
+  }
+  return text;
 }
 
 function collapseSpelledStutter(value: string, repeated: string[]): string {
@@ -538,7 +561,8 @@ function detectTone(value: string): BrainV3Tone {
   const sarcastic = detectSarcasm(value) === "likely";
   const positiveCue = /(?:^|[^\p{L}\p{N}])(?:great|good|perfect|awesome|helpful|thanks|thank you|genial|perfecto|útil|ótimo|ótima|perfeito|perfeita|super|toll|perfetto|ottimo)(?![\p{L}\p{N}])|(?:太好了|真有用|谢谢啊)/iu;
   const negativeCue = /(?:^|[^\p{L}\p{N}])(?:error|broken|failed|failure|problem|wrong|late|stuck|crash|disaster|again|unacceptable|problema|problemas|erro|falha|otra vez|de nuevo|erreur|problème|panne|fehler|noch|errore)(?![\p{L}\p{N}])|(?:問題|错误|出错|坏了)/iu;
-  if (sarcastic && positiveCue.test(text) && negativeCue.test(text)) {
+  const sarcasticPositiveCue = /(?:yeah[,;]?\s+right|sure[,;]?\s+(?:that's|that is)|as if|what could possibly go wrong|love that for me|just what i needed|thanks a lot)/iu;
+  if (sarcastic && (positiveCue.test(text) || sarcasticPositiveCue.test(text)) && negativeCue.test(text)) {
     return "frustrated";
   }
   // "right now" is usually a freshness qualifier ("what is the score right
@@ -571,7 +595,7 @@ function detectLanguage(value: string): string {
   const markers: Array<[string, string[]]> = [
     ["es", ["hola", "gracias", "sí", "quiero", "puedes", "puede", "explicar", "esto", "español", "genial", "perfecto", "útil", "otro", "otra vez", "problema", "dónde", "cuándo", "qué", "cómo", "hoy", "mañana", "por favor"]],
     ["fr", ["bonjour", "merci", "je", "veux", "pouvez", "pouvez-vous", "expliquer", "français", "super", "génial", "encore", "erreur", "problème", "où", "quand", "comment", "aujourd'hui", "demain", "s'il vous plaît"]],
-    ["de", ["hallo", "danke", "ich", "möchte", "kannst", "können", "erklären", "deutsch", "toll", "fehler", "kaputt", "noch", "problem", "wo", "wann", "was", "bedeutet", "heute", "morgen", "bitte"]],
+    ["de", ["hallo", "danke", "ich", "möchte", "kannst", "können", "erklären", "deutsch", "toll", "fehler", "kaputt", "noch", "problem", "wo", "wann", "bedeutet", "heute", "morgen", "bitte"]],
     ["pt", ["olá", "obrigado", "obrigada", "você", "voce", "pode", "podes", "quero", "explicar", "isso", "português", "ótimo", "ótima", "perfeito", "perfeita", "outro", "outra", "problema", "erro", "falha", "de novo", "onde", "quando", "hoje", "amanhã", "por favor"]],
     ["it", ["ciao", "grazie", "voglio", "puoi", "potete", "spiegare", "questo", "italiano", "perfetto", "ottimo", "altro", "problema", "errore", "dove", "quando", "oggi", "domani", "per favore"]],
     ["nl", ["dank je", "waarom", "alsjeblieft", "kun je", "graag", "vandaag", "weer"]]
@@ -602,6 +626,7 @@ export function normalizeBrainV3Input(input: unknown, state?: Pick<ConversationS
   normalizedText = collapseUnicodeSingleCharStutter(normalizedText, repeatedFragments);
   normalizedText = collapseSpelledStutter(normalizedText, repeatedFragments);
   normalizedText = collapseRepeatedWords(normalizedText, repeatedFragments);
+  normalizedText = collapseUnicodeRepeatedWords(normalizedText, repeatedFragments);
   normalizedText = removeEdgeFillers(normalizedText, fillerWords);
   normalizedText = normalizedText.replace(/\s+/g, " ").trim();
   const metadata = state?.speechMetadata;

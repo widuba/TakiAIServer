@@ -157,6 +157,21 @@ test("Brain v3 preserves sarcasm as frustration and recognizes disfluent non-Eng
   assert.equal(normalizeBrainV3Input("Ótimo, outro problema de novo.").language, "pt");
   assert.equal(normalizeBrainV3Input("Toll, noch ein Fehler.").language, "de");
 
+  const yeahRightSarcasm = normalizeBrainV3Input("Yeah right, another error, exactly what I needed.");
+  assert.equal(yeahRightSarcasm.sarcasm, "likely");
+  assert.equal(yeahRightSarcasm.tone, "frustrated");
+  assert.equal(normalizeBrainV3Input("Yeah right, what is the current score?").tone, "neutral");
+
+  const repeatedWell = normalizeBrainV3Input("well well well that was useful");
+  assert.equal(repeatedWell.normalizedText, "well well well that was useful");
+  assert.equal(repeatedWell.language, "en");
+
+  const repeatedPortuguese = normalizeBrainV3Input("Você você pode ajudar?");
+  assert.equal(repeatedPortuguese.normalizedText, "Você pode ajudar?");
+  assert.equal(repeatedPortuguese.language, "pt");
+  assert.equal(repeatedPortuguese.disfluencyDetected, true);
+  assert.ok(repeatedPortuguese.repeatedFragments.some((item) => item.toLocaleLowerCase() === "você"));
+
   const chinese = normalizeBrainV3Input("嗯，嗯，我想知道今天的天气");
   assert.equal(chinese.language, "zh");
   assert.equal(chinese.disfluencyDetected, true);
