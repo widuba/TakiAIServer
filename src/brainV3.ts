@@ -532,6 +532,8 @@ function detectSarcasm(value: string): BrainV3Sarcasm {
     /(?:^|[^\p{L}\p{N}])(?:toll|super)\b.{0,40}(?:noch|fehler|problem)/iu,
     /(?:^|[^\p{L}\p{N}])(?:perfetto|ottimo)\b.{0,40}(?:altro|errore|problema)/iu,
     /(?:太好了|真有用|谢谢啊).{0,16}(?:又|错误|问题|坏了|出错)/u,
+    /(?:最高|すごい|よかった).{0,20}(?:また|エラー|失敗|問題)/u,
+    /(?:최고|대단해|좋네).{0,20}(?:또|오류|문제|실패)/u,
     /(?:🙃|🙄).{0,80}(?:error|problem|broken|problema|erro|问题|错误)?/iu
   ];
   if (likely.some((pattern) => pattern.test(text))) return "likely";
@@ -573,23 +575,28 @@ function mergeSpeechActSignal(
 function detectTone(value: string): BrainV3Tone {
   const text = value.toLocaleLowerCase();
   const sarcastic = detectSarcasm(value) === "likely";
-  const positiveCue = /(?:^|[^\p{L}\p{N}])(?:great|good|perfect|awesome|helpful|thanks|thank you|genial|perfecto|útil|ótimo|ótima|perfeito|perfeita|super|toll|perfetto|ottimo)(?![\p{L}\p{N}])|(?:太好了|真有用|谢谢啊)/iu;
-  const negativeCue = /(?:^|[^\p{L}\p{N}])(?:error|broken|failed|failure|problem|wrong|late|stuck|crash|disaster|again|unacceptable|problema|problemas|erro|falha|otra vez|de nuevo|erreur|problème|panne|fehler|noch|errore)(?![\p{L}\p{N}])|(?:問題|错误|出错|坏了)/iu;
+  const positiveCue = /(?:^|[^\p{L}\p{N}])(?:great|good|perfect|awesome|helpful|thanks|thank you|genial|perfecto|útil|ótimo|ótima|perfeito|perfeita|super|toll|perfetto|ottimo)(?![\p{L}\p{N}])|(?:太好了|真有用|谢谢啊|最高|すごい|よかった|최고|대단해|좋네)/iu;
+  const negativeCue = /(?:^|[^\p{L}\p{N}])(?:error|broken|failed|failure|problem|wrong|late|stuck|crash|disaster|again|unacceptable|problema|problemas|erro|falha|otra vez|de nuevo|erreur|problème|panne|fehler|noch|errore)(?![\p{L}\p{N}])|(?:問題|错误|出错|坏了|また|エラー|失敗|오류|문제|실패|또)/iu;
   const sarcasticPositiveCue = /(?:yeah[,;]?\s+right|sure[,;]?\s+(?:that's|that is)|as if|what could possibly go wrong|love that for me|just what i needed|thanks a lot)/iu;
   if (sarcastic && (positiveCue.test(text) || sarcasticPositiveCue.test(text)) && negativeCue.test(text)) {
     return "frustrated";
   }
+  const urgentCue = /(?:^|[^\p{L}\p{N}])(?:urgent|emergency|immediately|right away|asap|hurry|urgente|emergencia|inmediatamente|ahora mismo|tout de suite|immédiatement|dringend|sofort|agora mesmo|imediatamente|subito)(?![\p{L}\p{N}])|(?:助けて|今すぐ|緊急|도와줘|지금 당장|مساعدة|الآن|मदद|तुरंत)/iu;
+  const angryCue = /(?:^|[^\p{L}\p{N}])(?:furious|angry|pissed|ridiculous|unacceptable|en colère|wütend|furioso|furiosa|inaceptable|inacceptable|inaccettabile)(?![\p{L}\p{N}])|(?:怒って|腹が立つ|화나|不可接受)/iu;
+  const frustratedCue = /(?:^|[^\p{L}\p{N}])(?:frustrated|frustrating|annoyed|broken|doesn't work|cannot|can't|stuck|again|frustrado|frustrada|frustré|frustrée|énervé|énervée|agacé|agacée|genervt|frustriert|irritado|irritada|frustrato|frustrata|otra vez|de nuevo|encore|noch)(?![\p{L}\p{N}])|(?:もう一度|イライラ|また失敗|답답|짜증|또 오류|又出错|出错了|फिर से)/iu;
+  const sadCue = /(?:^|[^\p{L}\p{N}])(?:sad|lonely|heartbroken|depressed|crying|miss|triste|tristeza|solitário|solitária|malheureux|malheureuse|traurig|tristezza)(?![\p{L}\p{N}])|(?:悲しい|寂しい|슬퍼|외로워|难过|孤独|उदास)/iu;
+  const anxiousCue = /(?:^|[^\p{L}\p{N}])(?:worried|anxious|nervous|scared|afraid|panic|preocupado|preocupada|ansioso|ansiosa|inquieto|inquieta|inquiet|inquiète|ängstlich|besorgt|preoccupato|preoccupata)(?![\p{L}\p{N}])|(?:不安|心配|焦虑|불안|걱정|चिंतित|घबराया)/iu;
   // "right now" is usually a freshness qualifier ("what is the score right
   // now?"), not an emotional urgency signal. Treat it as urgent only when it
   // is attached to a request for immediate help or action.
   if (
-    /\b(?:urgent|emergency|immediately|right away|asap|hurry)\b/.test(text)
+    urgentCue.test(text)
     || /\b(?:help|need|call|come|get|send|fix|stop|answer|respond)\b.{0,40}\bright now\b/.test(text)
   ) return "urgent";
-  if (/\b(?:furious|angry|pissed|ridiculous|unacceptable)\b|!{2,}/.test(text)) return "angry";
-  if (/\b(?:frustrated|annoyed|broken|doesn't work|cannot|can't|stuck|again)\b/.test(text)) return "frustrated";
-  if (/\b(?:sad|lonely|heartbroken|depressed|crying|miss)\b/.test(text)) return "sad";
-  if (/\b(?:worried|anxious|nervous|scared|afraid|panic)\b/.test(text)) return "anxious";
+  if (angryCue.test(text) || /!{2,}/u.test(text)) return "angry";
+  if (frustratedCue.test(text) || /(?:^|[^\p{L}\p{N}])(?:another|yet another)\s+(?:error|problem|failure|crash)(?![\p{L}\p{N}])/iu.test(text)) return "frustrated";
+  if (sadCue.test(text)) return "sad";
+  if (anxiousCue.test(text)) return "anxious";
   if (/\b(?:haha|lol|kidding|joke|funny|playful)\b|😄|😂|😉/.test(text)) return "playful";
   if (/\b(?:love|happy|great|awesome|thanks|thank you|excited)\b/.test(text)) return "positive";
   return "neutral";
@@ -619,7 +626,7 @@ function detectLanguage(value: string): string {
     ["es", ["hola", "gracias", "sí", "quiero", "puedes", "puede", "explicar", "esto", "español", "genial", "perfecto", "útil", "otro", "otra vez", "problema", "dónde", "cuándo", "qué", "cómo", "hoy", "mañana", "por favor"]],
     ["fr", ["bonjour", "merci", "je", "veux", "pouvez", "pouvez-vous", "expliquer", "français", "super", "génial", "encore", "erreur", "problème", "où", "quand", "comment", "aujourd'hui", "demain", "s'il vous plaît"]],
     ["de", ["hallo", "danke", "ich", "möchte", "kannst", "können", "erklären", "deutsch", "fehler", "kaputt", "noch", "wo", "wann", "bedeutet", "heute", "morgen", "bitte"]],
-    ["pt", ["olá", "obrigado", "obrigada", "você", "voce", "pode", "podes", "quero", "explicar", "isso", "português", "ótimo", "ótima", "perfeito", "perfeita", "outro", "outra", "problema", "erro", "falha", "de novo", "onde", "quando", "hoje", "amanhã", "por favor"]],
+    ["pt", ["olá", "obrigado", "obrigada", "você", "voce", "pode", "podes", "quero", "explicar", "isso", "português", "ótimo", "ótima", "perfeito", "perfeita", "outro", "outra", "problema", "erro", "falha", "de novo", "onde", "quando", "hoje", "amanhã", "por favor", "estou", "preciso", "ajuda", "agora", "triste", "sozinha", "não", "nao", "funciona"]],
     ["it", ["ciao", "grazie", "voglio", "puoi", "potete", "spiegare", "questo", "italiano", "perfetto", "ottimo", "altro", "problema", "errore", "dove", "quando", "oggi", "domani", "per favore"]],
     ["nl", ["dank je", "waarom", "alsjeblieft", "kun je", "graag", "vandaag", "weer"]]
   ];

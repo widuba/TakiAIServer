@@ -183,6 +183,15 @@ test("Brain v3 preserves sarcasm as frustration and recognizes disfluent non-Eng
   assert.equal(normalizeBrainV3Input("What does grazie mean?").language, "en");
   assert.equal(normalizeBrainV3Input("I said hola to my friend").language, "en");
   assert.equal(normalizeBrainV3Input("Waarom is dit zo?").language, "nl");
+  assert.equal(normalizeBrainV3Input("Estoy frustrada, esto no funciona.").tone, "frustrated");
+  assert.equal(normalizeBrainV3Input("Je suis en colère.").tone, "angry");
+  assert.equal(normalizeBrainV3Input("Ich bin besorgt.").tone, "anxious");
+  assert.equal(normalizeBrainV3Input("Estou triste e sozinha.").tone, "sad");
+  assert.equal(normalizeBrainV3Input("Preciso de ajuda agora mesmo.").tone, "urgent");
+  assert.equal(normalizeBrainV3Input("最高、またエラー。").sarcasm, "likely");
+  assert.equal(normalizeBrainV3Input("最高、またエラー。").tone, "frustrated");
+  assert.equal(normalizeBrainV3Input("최고다, 또 오류네.").sarcasm, "likely");
+  assert.equal(normalizeBrainV3Input("최고다, 또 오류네.").tone, "frustrated");
 
   const chinese = normalizeBrainV3Input("嗯，嗯，我想知道今天的天气");
   assert.equal(chinese.language, "zh");
