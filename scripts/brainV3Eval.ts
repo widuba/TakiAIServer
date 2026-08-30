@@ -198,6 +198,39 @@ const CASES: EvalCase[] = [
     ]
   },
   {
+    id: "punctuated-stutter-answer",
+    message: "I... I need a quick explanation of compound interest.",
+    voice: true,
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /interest|money|grow|rate/i, "punctuated_stutter_misses_topic")
+    ]
+  },
+  {
+    id: "interior-filler-answer",
+    message: "Could you, uh, explain why leaves change color?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /leaves|chlorophyll|pigment|color/i, "interior_filler_misses_topic")
+    ]
+  },
+  {
+    id: "syllable-stutter-answer",
+    message: "ca ca can you explain compound interest in plain English?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /interest|money|grow|rate/i, "syllable_stutter_misses_topic")
+    ]
+  },
+  {
+    id: "multilingual-sarcasm-answer",
+    message: "Sí, claro, otro error, qué útil. ¿Puedes explicar el interés compuesto en español?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /inter[eé]s|dinero|tasa|interés compuesto|compound interest/i, "multilingual_sarcasm_misses_topic")
+    ]
+  },
+  {
     id: "benign-model-refusal",
     message: "Explain what a firewall does in plain English.",
     expect: (plan) => [

@@ -117,7 +117,7 @@ const PROMOTION_ENV = {
     releaseId: PROMOTION_RELEASE_ID,
     provider: ACTIVE_AI_PROVIDER,
     model: BRAIN_V3_MODEL,
-    core: { passed: true, total: 18, failed: 0 },
+    core: { passed: true, total: 22, failed: 0 },
     auxiliary: { passed: true, total: 18, failed: 0 },
     realWeb: { passed: true },
     deterministic: { passed: true, typecheckPassed: true, testCount: 350, failed: 0, cancelled: 0, skipped: 0 },
@@ -152,6 +152,18 @@ test("Brain v3 does not strip meaningful edge words or hyphenated terms", () => 
   assert.equal(repeatedSo.normalizedText, "so many people use this");
   assert.equal(repeatedSo.disfluencyDetected, true);
   assert.equal(normalizeBrainV3Input("I really really need help").normalizedText, "I really really need help");
+  const punctuatedStutter = normalizeBrainV3Input("I... I need help");
+  assert.equal(punctuatedStutter.normalizedText, "I need help");
+  assert.equal(punctuatedStutter.disfluencyDetected, true);
+  assert.ok(punctuatedStutter.repeatedFragments.includes("I"));
+  const interiorFiller = normalizeBrainV3Input("I, uh, need help");
+  assert.equal(interiorFiller.normalizedText, "I, need help");
+  assert.equal(interiorFiller.disfluencyDetected, true);
+  assert.ok(interiorFiller.fillerWords.includes("uh"));
+  const syllableStutter = normalizeBrainV3Input("ca ca can you explain this?");
+  assert.equal(syllableStutter.normalizedText, "can you explain this?");
+  assert.equal(syllableStutter.disfluencyDetected, true);
+  assert.ok(syllableStutter.repeatedFragments.includes("can"));
 });
 
 test("Brain v3 collapses spaced letter stutters without losing the target word", () => {
@@ -211,6 +223,21 @@ test("Brain v3 preserves sarcasm as frustration and recognizes disfluent non-Eng
   assert.equal(normalizeBrainV3Input("I said hola to my friend").language, "en");
   assert.equal(normalizeBrainV3Input("Waarom is dit zo?").language, "nl");
   assert.equal(normalizeBrainV3Input("Estoy frustrada, esto no funciona.").tone, "frustrated");
+  assert.equal(normalizeBrainV3Input("E e necesito ayuda.").language, "es");
+  assert.equal(normalizeBrainV3Input("Estoy enojada, otra vez falla.").tone, "angry");
+  assert.equal(normalizeBrainV3Input("Ich bin nervös.").tone, "anxious");
+  assert.equal(normalizeBrainV3Input("Sono triste.").language, "it");
+  assert.equal(normalizeBrainV3Input("Sono triste.").tone, "sad");
+  assert.equal(normalizeBrainV3Input("Estou com raiva, isto não funciona.").tone, "angry");
+  const thanksSarcasm = normalizeBrainV3Input("Thanks for breaking it again.");
+  assert.equal(thanksSarcasm.sarcasm, "likely");
+  assert.equal(thanksSarcasm.tone, "frustrated");
+  const sureSarcasm = normalizeBrainV3Input("Sure, another bug, great.");
+  assert.equal(sureSarcasm.sarcasm, "likely");
+  assert.equal(sureSarcasm.tone, "frustrated");
+  const spanishSarcasmWithoutSí = normalizeBrainV3Input("Claro, otro error, qué útil.");
+  assert.equal(spanishSarcasmWithoutSí.sarcasm, "likely");
+  assert.equal(spanishSarcasmWithoutSí.tone, "frustrated");
   assert.equal(normalizeBrainV3Input("Je suis en colère.").tone, "angry");
   assert.equal(normalizeBrainV3Input("Ich bin besorgt.").tone, "anxious");
   assert.equal(normalizeBrainV3Input("Estou triste e sozinha.").tone, "sad");
@@ -234,6 +261,7 @@ test("Brain v3 preserves sarcasm as frustration and recognizes disfluent non-Eng
   const japanese = normalizeBrainV3Input("あ あ あしたの天気");
   assert.equal(japanese.language, "ja");
   assert.equal(japanese.normalizedText, "あしたの天気");
+  assert.equal(normalizeBrainV3Input("안 안 안녕하세요").normalizedText, "안녕하세요");
   assert.equal(normalizeBrainV3Input("안녕하세요, 오늘 날씨가 어때요?").language, "ko");
   assert.equal(normalizeBrainV3Input("नमस्ते, आज मौसम कैसा है?").language, "hi");
 });
