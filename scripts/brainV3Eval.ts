@@ -400,6 +400,42 @@ const CASES: EvalCase[] = [
     expectStages: (stages) => semanticStages(stages, { sarcasm: "likely", language: "en" }, "because_sarcasm")
   },
   {
+    id: "thanks-for-nothing-sarcasm-answer",
+    message: "Thanks for nothing. Can you explain compound interest?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /interest|money|grow|rate/i, "thanks_for_nothing_misses_topic")
+    ],
+    expectStages: (stages) => semanticStages(stages, { sarcasm: "likely", tone: "frustrated", language: "en" }, "thanks_for_nothing")
+  },
+  {
+    id: "sure-total-sense-sarcasm-answer",
+    message: "Sure, because that makes total sense. Can you explain compound interest?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /interest|money|grow|rate/i, "sure_total_sense_misses_topic")
+    ],
+    expectStages: (stages) => semanticStages(stages, { sarcasm: "likely", tone: "frustrated", language: "en" }, "sure_total_sense")
+  },
+  {
+    id: "good-more-errors-sarcasm-answer",
+    message: "Oh good, more errors. Can you explain why leaves change color?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /leaves|chlorophyll|pigment|color/i, "good_more_errors_misses_topic")
+    ],
+    expectStages: (stages) => semanticStages(stages, { sarcasm: "likely", tone: "frustrated", language: "en" }, "good_more_errors")
+  },
+  {
+    id: "surprise-broke-sarcasm-answer",
+    message: "What a delightful surprise — it broke again. Can you explain compound interest?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /interest|money|grow|rate/i, "surprise_broke_misses_topic")
+    ],
+    expectStages: (stages) => semanticStages(stages, { sarcasm: "likely", tone: "frustrated", language: "en" }, "surprise_broke")
+  },
+  {
     id: "portuguese-article-answer",
     message: "Certo, mais um erro, que ótimo. Pode explicar juros compostos?",
     expect: (plan) => [

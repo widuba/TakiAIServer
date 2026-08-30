@@ -720,8 +720,11 @@ function detectSarcasm(value: string): BrainV3Sarcasm {
     /\b(?:perfect|great|nice)[,! ]+(?:another|more)\s+(?:error|problem|bug|bugs|failure|failures|crash|crashes|issue|issues|mistake|mistakes|outage|outages)\b/,
     /\bmy favorite\b.{0,30}\b(?:problem|disaster|error|failure)\b/,
     /\b(?:sure|of course|thanks|thank you)\b.{0,48}\b(?:another|again|error|problem|broken|breaking|bug|crash|crashed|failed|failure)\b/,
-    /\b(?:great|fantastic|wonderful|lovely|nice|brilliant|perfect|amazing)\b.{0,48}\b(?:error|problem|broken|breaking|bug|bugs|crash|crashed|crashes|again|failed|failure|failures|issue|issues|outage|outages)\b/,
+    /\bthanks\s+for\s+nothing\b/,
+    /\b(?:oh\s+)?(?:good|great|fantastic|wonderful|lovely|nice|brilliant|perfect|amazing)\b[,;:! ]+(?:more|another|yet another)\b.{0,50}\b(?:error|errors|problem|problems|broken|breaking|broke|bug|bugs|crash|crashed|crashes|again|failed|failure|failures|issue|issues|outage|outages)\b/,
+    /\b(?:great|fantastic|wonderful|lovely|nice|brilliant|perfect|amazing)\b.{0,48}\b(?:error|problem|broken|breaking|broke|bug|bugs|crash|crashed|crashes|again|failed|failure|failures|issue|issues|outage|outages)\b/,
     /\b(?:yeah|sure|right)[,; ]+because\b.{0,80}\b(?:exactly|just)\s+what\s+i\s+(?:needed|wanted)\b/,
+    /\b(?:yeah|sure|right)[,; ]+because\b.{0,80}\b(?:that\s+)?makes\s+total\s+sense\b/,
     /\b(?:yeah|sure)[,; ]+because\b.{0,60}\b(?:helpful|great|perfect|useful)\b/,
     /\bright[,; ]+because\b.{0,60}\b(?:makes total sense|obvious|sensible)\b/,
     /\bnice\s+job\b.{0,30}\bgenius\b/,
@@ -741,6 +744,7 @@ function detectSarcasm(value: string): BrainV3Sarcasm {
     /(?:太好了|真有用|谢谢啊).{0,16}(?:又|错误|问题|坏了|出错)/u,
     /(?:最高|すごい|よかった).{0,20}(?:また|エラー|失敗|問題)/u,
     /(?:최고|대단해|좋네).{0,20}(?:또|오류|문제|실패)/u,
+    /\bwhat\s+a\s+(?:delightful|wonderful|nice|great)\s+surprise\b.{0,50}\b(?:broke|broken|failed|failure|error|problem|crash|again)\b/,
     /(?:🙃|🙄).{0,80}(?:error|problem|broken|problema|erro|问题|错误)?/iu
   ];
   if (likely.some((pattern) => pattern.test(text))) return "likely";
@@ -748,6 +752,9 @@ function detectSarcasm(value: string): BrainV3Sarcasm {
     /\bsure[, ]+(?:that'?s|that is)\s+(?:helpful|great|perfect|fine)\b/,
     /\bjust what i needed\b/,
     /\bthanks a lot\b/,
+    /\b(?:yeah|yes),?\s+no\b.{0,60}\b(?:super|so|really)?\s*(?:helpful|useful|great|perfect|exactly what i (?:needed|wanted))\b/,
+    /\b(?:i\s+)?(?:just\s+)?love\b.{0,40}\b(?:waiting forever|doing this again|being ignored)\b/,
+    /\bwell[,;: ]+(?:this|that)\s+is\s+(?:just\s+)?perfect\b/,
     /\b(?:fantastic|brilliant|great|perfect|wonderful)[,; ]+.{0,50}\b(?:exactly|just)\s+what\s+i\s+(?:wanted|needed)\b/
   ];
   if (ambiguous.some((pattern) => pattern.test(text))) return "possible";
@@ -817,6 +824,8 @@ function detectTone(value: string): BrainV3Tone {
   const positiveCue = /(?:^|[^\p{L}\p{N}])(?:great|good|perfect|awesome|helpful|thanks|thank you|sure|of course|genial|perfecto|útil|ótimo|ótima|perfeito|perfeita|super|toll|perfetto|ottimo|brilliant|fantastic|wonderful|lovely|nice|amazing)(?![\p{L}\p{N}])|(?:太好了|真有用|谢谢啊|最高|すごい|よかった|최고|대단해|좋네)/iu;
   const negativeCue = /(?:^|[^\p{L}\p{N}])(?:error|broken|breaking|broke|failed|failure|problem|bug|wrong|late|stuck|crash|crashed|crashes|crashing|outage|outages|issue|issues|disaster|again|unacceptable|problema|problemas|erro|falha|fallo|falla|otra vez|de novo|erreur|problème|panne|fehler|noch|wieder|absturz|ausfall|errore|guaio)(?![\p{L}\p{N}])|(?:問題|错误|出错|坏了|また|エラー|失敗|오류|문제|실패|또)/iu;
   const sarcasticPositiveCue = /(?:yeah[,;]?\s+right|sure[,;]?\s+(?:that's|that is)|as if|what could possibly go wrong|love that for me|(?:i\s+)?(?:just\s+)?love\b|(?:just|exactly) what i needed|thanks a lot|nice job\b.{0,30}\bgenius\b|(?:fantastic|fantastico|fantastica|perfetto|perfetta|ottimo|ottima))\b/iu;
+  const sarcasticFrustrationCue = /\bthanks\s+for\s+nothing\b|\b(?:yeah|sure|right)[,; ]+because\b.{0,80}\b(?:makes total sense|exactly what i (?:needed|wanted))\b|\b(?:oh\s+)?(?:good|great|perfect|amazing)\b[,;:! ]+(?:more|another|yet another)\b.{0,50}\b(?:error|errors|problem|problems|broken|broke|bug|bugs|crash|crashed|crashes|failed|failure|failures|issue|issues|outage|outages)\b|\bwhat\s+a\s+(?:delightful|wonderful|nice|great)\s+surprise\b.{0,50}\b(?:broke|broken|failed|failure|error|errors|problem|problems|crash|crashes|again)\b|\bwell[,;: ]+(?:this|that)\s+is\s+(?:just\s+)?perfect\b|\b(?:yeah|yes),?\s+no\b.{0,60}\b(?:super|so|really)?\s*(?:helpful|useful|great|perfect)\b|\b(?:i\s+)?(?:just\s+)?love\b.{0,40}\b(?:waiting forever|doing this again|being ignored)\b/iu;
+  if (sarcastic && sarcasticFrustrationCue.test(text)) return "frustrated";
   if (sarcastic && (positiveCue.test(text) || sarcasticPositiveCue.test(text)) && negativeCue.test(text)) {
     return "frustrated";
   }
