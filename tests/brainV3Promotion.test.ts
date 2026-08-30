@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   BRAIN_V3_PROMOTION_EVIDENCE_TTL_MS,
   brainV3PromotionGateStatus,
+  brainV3WorktreeClean,
   encodeBrainV3PromotionEvidence,
   type BrainV3PromotionEvidence
 } from "../src/brainV3Promotion.js";
@@ -46,6 +47,12 @@ function environment(overrides: Record<string, string | undefined> = {}) {
     ...overrides
   };
 }
+
+test("Brain v3 promotion worktree checks include tracked and untracked changes", () => {
+  assert.equal(brainV3WorktreeClean(""), true);
+  assert.equal(brainV3WorktreeClean(" M src/brainV3.ts\n"), false);
+  assert.equal(brainV3WorktreeClean("?? local-staging-notes.txt\n"), false);
+});
 
 test("Brain v3 cannot promote from a readiness flag alone", () => {
   const status = brainV3PromotionGateStatus({

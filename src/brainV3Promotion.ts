@@ -78,6 +78,11 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+/** A promotion release must contain no tracked or untracked worktree changes. */
+export function brainV3WorktreeClean(statusOutput: unknown): boolean {
+  return !String(statusOutput || "").trim();
+}
+
 function passedSuite(value: unknown, minimumCases: number): boolean {
   const suite = asRecord(value);
   return suite?.passed === true

@@ -27,6 +27,7 @@ import {
   BRAIN_V3_PROMOTION_EVIDENCE_VERSION,
   BRAIN_V3_PROMOTION_MIN_AUXILIARY_CASES,
   BRAIN_V3_PROMOTION_MIN_CORE_CASES,
+  brainV3WorktreeClean,
   encodeBrainV3PromotionEvidence
 } from "../src/brainV3Promotion.js";
 
@@ -107,9 +108,9 @@ async function runDeterministicPromotionGate(): Promise<DeterministicGateSummary
 async function currentGitRevision(): Promise<{ revision: string; clean: boolean } | null> {
   try {
     const revisionResult = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), maxBuffer: 10_000 });
-    const statusResult = await execFileAsync("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: process.cwd(), maxBuffer: 10_000 });
+    const statusResult = await execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: process.cwd(), maxBuffer: 10_000 });
     const revision = String(revisionResult.stdout || "").trim();
-    return revision ? { revision, clean: !String(statusResult.stdout || "").trim() } : null;
+    return revision ? { revision, clean: brainV3WorktreeClean(statusResult.stdout) } : null;
   } catch {
     return null;
   }
@@ -734,11 +735,44 @@ async function main(): Promise<number> {
     process.env.OPENAI_BASE_URL = "https://api.openai.com/v1";
   }
 
-  const [{ ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL, generateContent, generateContentStream }, { buildConversationState }, { runBrainV3Plan }] = await Promise.all([
+  const [{ ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL, brainV3AuxEnabled, brainV3CoreEnabled, generateContent, generateContentStream }, { buildConversationState }, { normalizeBrainV3RolloutMode, runBrainV3Plan, shouldShadowBrainV3, shouldUseBrainV3 }] = await Promise.all([
     import("../src/ai.js"),
     import("../src/context.js"),
     import("../src/brainV3.js")
   ]);
+
+  // Rehearse the operator's one-step rollback against the actual selector
+  // functions. This must prove that disabling v3 cannot leave core, auxiliary,
+  // canary, or shadow traffic selected in the current process.
+  const rollbackKeys = [
+    "TAKI_BRAIN_V3_MODE", "TAKI_BRAIN_V3_AUX_MODE", "TAKI_BRAIN_V3_READY",
+    "TAKI_BRAIN_V3_PROMOTION_EVIDENCE", "TAKI_BRAIN_V3_RELEASE_ID"
+  ] as const;
+  const rollbackSnapshot = Object.fromEntries(rollbackKeys.map((key) => [key, process.env[key]]));
+  let rollbackPassed = false;
+  try {
+    process.env.TAKI_BRAIN_V3_MODE = "disabled";
+    process.env.TAKI_BRAIN_V3_AUX_MODE = "active";
+    process.env.TAKI_BRAIN_V3_READY = "1";
+    process.env.TAKI_BRAIN_V3_PROMOTION_EVIDENCE = "intentionally-cleared";
+    process.env.TAKI_BRAIN_V3_RELEASE_ID = "intentionally-cleared";
+    const rollbackState = { deviceId: "brain-v3-rollback-rehearsal" };
+    rollbackPassed = normalizeBrainV3RolloutMode() === "disabled"
+      && !brainV3CoreEnabled()
+      && !brainV3AuxEnabled()
+      && !shouldUseBrainV3(rollbackState)
+      && !shouldShadowBrainV3(rollbackState);
+  } finally {
+    for (const key of rollbackKeys) {
+      const value = rollbackSnapshot[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  if (!rollbackPassed) {
+    console.error("Brain v3 rollback rehearsal failed.");
+    return 1;
+  }
 
   const stagingSources = [{ title: "Staging verification fixture", url: "https://example.com/brain-v3-staging" }];
   let getStagingWebAnswer: (...args: any[]) => Promise<any> = async () => ({
@@ -815,6 +849,7 @@ async function main(): Promise<number> {
     auxiliary,
     p95LatencyMs: p95,
     maxLatencyMs: sorted.at(-1) || 0,
+    rollbackPassed,
     failures: allFailures
   }));
   if (allFailures.length) return 1;
@@ -838,7 +873,7 @@ async function main(): Promise<number> {
         cancelled: 0 as const,
         skipped: 0 as const
       },
-      rollback: { passed: true as const },
+      rollback: { passed: rollbackPassed as true },
       noWrite: true as const,
       issuedAt,
       expiresAt
