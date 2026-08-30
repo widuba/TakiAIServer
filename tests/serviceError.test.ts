@@ -9,6 +9,7 @@ import {
   AI_UNAVAILABLE_SPOKEN,
   ProviderCircuitBreaker,
   fallbackModelCandidates,
+  providerCandidates,
   normalizeTakiModel,
   takiModelInfo,
   withTakiModel,
@@ -77,6 +78,9 @@ test("Taki model selection is validated, scoped, and has a bounded fallback", as
   assert.equal(takiModelInfo("taki_2_0_swift").name, "Dromos");
   assert.deepEqual(fallbackModelCandidates("gemini-3.6-flash"), ["gemini-3.6-flash", "gemini-3.5-flash"]);
   assert.deepEqual(fallbackModelCandidates("gemini-3.1-pro-preview"), ["gemini-3.1-pro-preview", "gemini-3.6-flash"]);
+  assert.deepEqual(providerCandidates("gemini-3.1-pro-preview", { config: { modelRole: "brain_v3" } }), [
+    { provider: "gemini", model: "gemini-3.1-pro-preview" }
+  ]);
   await withTakiModel("taki_2_1_reasoning", async () => {
     assert.equal(activeTakiModelInfo().name, "Sophos");
   });

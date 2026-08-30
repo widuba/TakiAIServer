@@ -332,7 +332,13 @@ function geminiFallbackFor(openAIModel: string): string {
   return "gemini-3.6-flash";
 }
 
-function providerCandidates(primary: string): ProviderCandidate[] {
+export function providerCandidates(primary: string, args: any = {}): ProviderCandidate[] {
+  // Brain v3 promotion evidence is provider- and model-bound. Do not silently
+  // move an evaluated v3 request to the legacy alternate provider: the planner
+  // owns the compatibility fallback after this single promoted attempt fails.
+  if (args?.config?.modelRole === "brain_v3") {
+    return [{ provider: ACTIVE_AI_PROVIDER, model: primary }];
+  }
   if (/^gpt-/i.test(primary)) {
     const candidates: ProviderCandidate[] = [{ provider: "openai", model: primary }];
     if (geminiApiKey) candidates.push({ provider: "gemini", model: geminiFallbackFor(primary) });
@@ -354,7 +360,7 @@ function canTryNextProvider(error: unknown, serviceError: ServiceError | null): 
 }
 
 export async function generateContent(args: any): Promise<any> {
-  const candidates = providerCircuit.order(providerCandidates(modelForRequest(args)));
+  const candidates = providerCircuit.order(providerCandidates(modelForRequest(args), args));
   let lastError: unknown;
   for (let index = 0; index < candidates.length; index += 1) {
     const candidate = candidates[index];
@@ -386,7 +392,7 @@ export async function generateContent(args: any): Promise<any> {
 // so a user can never hear the beginning of one model's answer and the ending
 // of another model's answer.
 export async function* generateContentStream(args: any): AsyncGenerator<any> {
-  const candidates = providerCircuit.order(providerCandidates(modelForRequest(args)));
+  const candidates = providerCircuit.order(providerCandidates(modelForRequest(args), args));
   let lastError: unknown;
   for (let index = 0; index < candidates.length; index += 1) {
     const candidate = candidates[index];
