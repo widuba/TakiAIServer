@@ -172,6 +172,14 @@ test("Brain v3 preserves sarcasm as frustration and recognizes disfluent non-Eng
   assert.equal(repeatedPortuguese.disfluencyDetected, true);
   assert.ok(repeatedPortuguese.repeatedFragments.some((item) => item.toLocaleLowerCase() === "você"));
 
+  const koreanPrefixStutter = normalizeBrainV3Input("안 안녕하세요, 오늘 날씨가 어때요?");
+  assert.equal(koreanPrefixStutter.normalizedText, "안녕하세요, 오늘 날씨가 어때요?");
+  assert.equal(koreanPrefixStutter.language, "ko");
+  assert.equal(koreanPrefixStutter.disfluencyDetected, true);
+  assert.ok(koreanPrefixStutter.repeatedFragments.includes("안녕하세요"));
+
+  assert.equal(normalizeBrainV3Input("As if, another problem.").language, "en");
+
   const chinese = normalizeBrainV3Input("嗯，嗯，我想知道今天的天气");
   assert.equal(chinese.language, "zh");
   assert.equal(chinese.disfluencyDetected, true);

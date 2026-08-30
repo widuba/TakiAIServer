@@ -444,6 +444,20 @@ function collapseUnicodeSingleCharStutter(value: string, repeated: string[]): st
   );
 }
 
+// A short prefix can be the only repeated fragment in a non-Latin transcript
+// (for example, Korean "안 안녕하세요" or Japanese "あ あした"). Keep the
+// complete target word and record it as disfluency without applying this
+// looser rule to ordinary ASCII text.
+function collapseUnicodePrefixStutter(value: string, repeated: string[]): string {
+  return value.replace(
+    /(?<![\p{L}\p{N}])((?![A-Za-z])[\p{L}])([\s,;:/—–\-，。！？、]+)(\1[\p{L}\p{M}\p{N}'’-]{2,})(?![\p{L}\p{N}])/gu,
+    (whole, _character: string, _separator: string, word: string) => {
+      repeated.push(word);
+      return word;
+    }
+  );
+}
+
 function stripAudioMarkers(value: string): string {
   return value
     .replace(/\((?:inaudible|unintelligible|background noise|silence|noise|music)\)/gi, " ")
@@ -595,7 +609,7 @@ function detectLanguage(value: string): string {
   const markers: Array<[string, string[]]> = [
     ["es", ["hola", "gracias", "sí", "quiero", "puedes", "puede", "explicar", "esto", "español", "genial", "perfecto", "útil", "otro", "otra vez", "problema", "dónde", "cuándo", "qué", "cómo", "hoy", "mañana", "por favor"]],
     ["fr", ["bonjour", "merci", "je", "veux", "pouvez", "pouvez-vous", "expliquer", "français", "super", "génial", "encore", "erreur", "problème", "où", "quand", "comment", "aujourd'hui", "demain", "s'il vous plaît"]],
-    ["de", ["hallo", "danke", "ich", "möchte", "kannst", "können", "erklären", "deutsch", "toll", "fehler", "kaputt", "noch", "problem", "wo", "wann", "bedeutet", "heute", "morgen", "bitte"]],
+    ["de", ["hallo", "danke", "ich", "möchte", "kannst", "können", "erklären", "deutsch", "fehler", "kaputt", "noch", "wo", "wann", "bedeutet", "heute", "morgen", "bitte"]],
     ["pt", ["olá", "obrigado", "obrigada", "você", "voce", "pode", "podes", "quero", "explicar", "isso", "português", "ótimo", "ótima", "perfeito", "perfeita", "outro", "outra", "problema", "erro", "falha", "de novo", "onde", "quando", "hoje", "amanhã", "por favor"]],
     ["it", ["ciao", "grazie", "voglio", "puoi", "potete", "spiegare", "questo", "italiano", "perfetto", "ottimo", "altro", "problema", "errore", "dove", "quando", "oggi", "domani", "per favore"]],
     ["nl", ["dank je", "waarom", "alsjeblieft", "kun je", "graag", "vandaag", "weer"]]
@@ -623,6 +637,7 @@ export function normalizeBrainV3Input(input: unknown, state?: Pick<ConversationS
   const fillerWords: string[] = [];
   let normalizedText = stripAudioMarkers(rawText);
   normalizedText = collapseLetterStutter(normalizedText, repeatedFragments);
+  normalizedText = collapseUnicodePrefixStutter(normalizedText, repeatedFragments);
   normalizedText = collapseUnicodeSingleCharStutter(normalizedText, repeatedFragments);
   normalizedText = collapseSpelledStutter(normalizedText, repeatedFragments);
   normalizedText = collapseRepeatedWords(normalizedText, repeatedFragments);
