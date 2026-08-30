@@ -366,7 +366,9 @@ export function brainV3CanaryPercent(env: Record<string, string | undefined> = p
 }
 
 export function brainV3ShadowPercent(env: Record<string, string | undefined> = process.env): number {
-  return boundedPercent(env.TAKI_BRAIN_V3_SHADOW_PERCENT, 5);
+  // Shadow mode is provider traffic too. Require an explicit sample rate so
+  // an accidentally copied shadow flag cannot affect the live provider.
+  return boundedPercent(env.TAKI_BRAIN_V3_SHADOW_PERCENT, 0);
 }
 
 function brainV3ShadowMaxConcurrency(env: Record<string, string | undefined> = process.env): number {

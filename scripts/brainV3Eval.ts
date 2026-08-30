@@ -1077,7 +1077,7 @@ async function main(): Promise<number> {
     process.env.OPENAI_BASE_URL = "https://api.openai.com/v1";
   }
 
-  const [{ ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL, brainV3AuxEnabled, brainV3CoreEnabled, brainV3GenericRefusal, generateContent, generateContentStream }, { buildConversationState }, { normalizeBrainV3RolloutMode, runBrainV3Plan, shouldShadowBrainV3, shouldUseBrainV3 }] = await Promise.all([
+  const [{ ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL, brainV3AuxEnabled, brainV3CoreEnabled, generateContent, generateContentStream }, { buildConversationState }, { brainV3GenericRefusal, normalizeBrainV3RolloutMode, runBrainV3Plan, shouldShadowBrainV3, shouldUseBrainV3 }] = await Promise.all([
     import("../src/ai.js"),
     import("../src/context.js"),
     import("../src/brainV3.js")

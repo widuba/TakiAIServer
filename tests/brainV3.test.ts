@@ -10,6 +10,7 @@ import {
   brainV3CircuitOpen,
   brainV3PromotionReady,
   brainV3RolloutStats,
+  brainV3ShadowPercent,
   noteBrainV3Failure,
   noteBrainV3Success,
   normalizeBrainV3Input,
@@ -366,6 +367,8 @@ test("Brain v3 rollout is independently disabled and device-stable", () => {
     shouldUseBrainV3({ deviceId: "12345678" }, { TAKI_BRAIN_V3_MODE: "canary", TAKI_BRAIN_V3_PERCENT: "50" }),
     shouldUseBrainV3({ deviceId: "12345678" }, { TAKI_BRAIN_V3_MODE: "canary", TAKI_BRAIN_V3_PERCENT: "50" })
   );
+  assert.equal(brainV3ShadowPercent({}), 0);
+  assert.equal(shouldShadowBrainV3({ deviceId: "12345678" }, { TAKI_BRAIN_V3_MODE: "shadow" }), false);
   assert.equal(shouldShadowBrainV3({ deviceId: "12345678" }, { TAKI_BRAIN_V3_MODE: "shadow", TAKI_BRAIN_V3_SHADOW_PERCENT: "100" }), true);
   assert.equal(shouldShadowBrainV3({ deviceId: "" }, { TAKI_BRAIN_V3_MODE: "shadow", TAKI_BRAIN_V3_SHADOW_PERCENT: "5" }), false);
 });
