@@ -1,4 +1,5 @@
 import {
+  ACTIVE_AI_PROVIDER,
   BRAIN_V3_MODEL,
   MAIN_MODEL,
   ServiceError,
@@ -7,6 +8,7 @@ import {
   generateContentStream,
   safetyConfig
 } from "./ai.js";
+import { brainV3PromotionGateStatus } from "./brainV3Promotion.js";
 import { capabilityPromptBlock } from "./capabilities.js";
 import { productKnowledgePromptBlock } from "./productKnowledge.js";
 import { personaPromptBlock, GUARDRAILS } from "./persona.js";
@@ -237,15 +239,19 @@ function requestedBrainV3RolloutMode(env: Record<string, string | undefined>): B
   return "disabled";
 }
 
+export function brainV3PromotionStatus(env: Record<string, string | undefined> = process.env) {
+  return brainV3PromotionGateStatus(env, ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL);
+}
+
 export function brainV3PromotionReady(env: Record<string, string | undefined> = process.env): boolean {
-  return /^(?:1|true|yes)$/i.test(String(env.TAKI_BRAIN_V3_READY || "").trim());
+  return brainV3PromotionStatus(env).ready;
 }
 
 export function normalizeBrainV3RolloutMode(env: Record<string, string | undefined> = process.env): BrainV3RolloutMode {
   const requested = requestedBrainV3RolloutMode(env);
   // A mode change alone cannot promote an unverified provider/model. The
-  // explicit readiness flag is set only after the rollout checklist, staged
-  // provider run, and rollback rehearsal have passed.
+  // readiness flag is accepted only alongside the evaluator-issued evidence
+  // for the committed release.
   if ((requested === "canary" || requested === "active") && !brainV3PromotionReady(env)) return "disabled";
   return requested;
 }

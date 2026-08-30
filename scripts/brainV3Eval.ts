@@ -19,13 +19,101 @@
  */
 
 import type { AssistantPlan, ConversationState } from "../src/types.js";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import dotenv from "dotenv";
+import {
+  BRAIN_V3_PROMOTION_EVIDENCE_TTL_MS,
+  BRAIN_V3_PROMOTION_EVIDENCE_VERSION,
+  BRAIN_V3_PROMOTION_MIN_AUXILIARY_CASES,
+  BRAIN_V3_PROMOTION_MIN_CORE_CASES,
+  encodeBrainV3PromotionEvidence
+} from "../src/brainV3Promotion.js";
 
 // Load local environment markers before the production refusal check, but do
 // not import the AI client until the explicit staging credential has passed.
 // This prevents an unexported NODE_ENV/TAKI_ENV in .env from bypassing the
 // safety boundary while still keeping provider initialization isolated.
 dotenv.config();
+
+const execFileAsync = promisify(execFile);
+
+type DeterministicGateSummary = {
+  passed: boolean;
+  typecheckPassed: boolean;
+  testCount: number;
+  passedCount: number;
+  failed: number;
+  cancelled: number;
+  skipped: number;
+};
+
+async function runNpm(args: string[], env: NodeJS.ProcessEnv): Promise<{ code: number; output: string }> {
+  try {
+    const result = await execFileAsync(process.platform === "win32" ? "npm.cmd" : "npm", args, {
+      cwd: process.cwd(),
+      env,
+      timeout: 180_000,
+      maxBuffer: 16 * 1024 * 1024
+    });
+    return { code: 0, output: `${result.stdout || ""}\n${result.stderr || ""}` };
+  } catch (error: any) {
+    return {
+      code: Number(error?.code) || 1,
+      output: `${error?.stdout || ""}\n${error?.stderr || ""}`
+    };
+  }
+}
+
+function summaryNumber(output: string, label: string, fallback: number): number {
+  const match = output.match(new RegExp(`^(?:#|ℹ) ${label}\\s+(\\d+)\\s*$`, "m"));
+  return match ? Number(match[1]) : fallback;
+}
+
+async function runDeterministicPromotionGate(): Promise<DeterministicGateSummary> {
+  const testEnv = { ...process.env };
+  for (const key of [
+    "TAKI_BRAIN_V3_EVAL_CONFIRM", "TAKI_BRAIN_V3_EVAL_AUX", "TAKI_BRAIN_V3_EVAL_REAL_WEB",
+    "TAKI_BRAIN_V3_EVAL_PROMOTION", "TAKI_BRAIN_V3_STAGING_PROVIDER", "TAKI_BRAIN_V3_STAGING_API_KEY",
+    "TAKI_BRAIN_V3_PROMOTION_EVIDENCE", "TAKI_BRAIN_V3_RELEASE_ID"
+  ]) delete testEnv[key];
+  testEnv.AI_PROVIDER = "gemini";
+  testEnv.OPENAI_API_KEY = "";
+  testEnv.GEMINI_API_KEY = "test";
+  const typecheck = await runNpm(["run", "typecheck"], testEnv);
+  const tests = await runNpm(["test"], testEnv);
+  const testCount = summaryNumber(tests.output, "tests", 0);
+  const passedCount = summaryNumber(tests.output, "pass", 0);
+  const failed = summaryNumber(tests.output, "fail", 1);
+  const cancelled = summaryNumber(tests.output, "cancelled", 1);
+  const skipped = summaryNumber(tests.output, "skipped", 1);
+  return {
+    passed: typecheck.code === 0
+      && tests.code === 0
+      && testCount >= 300
+      && passedCount === testCount
+      && failed === 0
+      && cancelled === 0
+      && skipped === 0,
+    typecheckPassed: typecheck.code === 0,
+    testCount,
+    passedCount,
+    failed,
+    cancelled,
+    skipped
+  };
+}
+
+async function currentGitRevision(): Promise<{ revision: string; clean: boolean } | null> {
+  try {
+    const revisionResult = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), maxBuffer: 10_000 });
+    const statusResult = await execFileAsync("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: process.cwd(), maxBuffer: 10_000 });
+    const revision = String(revisionResult.stdout || "").trim();
+    return revision ? { revision, clean: !String(statusResult.stdout || "").trim() } : null;
+  } catch {
+    return null;
+  }
+}
 
 type EvalCase = {
   id: string;
@@ -557,6 +645,36 @@ async function main(): Promise<number> {
     return 2;
   }
   const auxiliary = auxiliaryFlag === "1";
+  const promotionFlag = String(process.env.TAKI_BRAIN_V3_EVAL_PROMOTION || "").trim();
+  if (promotionFlag && promotionFlag !== "1") {
+    console.error("TAKI_BRAIN_V3_EVAL_PROMOTION must be unset or exactly 1.");
+    return 2;
+  }
+  const promotion = promotionFlag === "1";
+  if (promotion && (!auxiliary || !realWeb)) {
+    console.error("Brain v3 promotion evidence requires both TAKI_BRAIN_V3_EVAL_AUX=1 and TAKI_BRAIN_V3_EVAL_REAL_WEB=1.");
+    return 2;
+  }
+  let releaseId = "";
+  let deterministic: DeterministicGateSummary | null = null;
+  if (promotion) {
+    const revision = await currentGitRevision();
+    if (!revision?.clean) {
+      console.error("Brain v3 promotion evidence requires a clean committed worktree.");
+      return 2;
+    }
+    const requestedReleaseId = String(process.env.TAKI_BRAIN_V3_EVAL_RELEASE_ID || "").trim();
+    if (requestedReleaseId && requestedReleaseId !== revision.revision) {
+      console.error("TAKI_BRAIN_V3_EVAL_RELEASE_ID must match the current committed revision.");
+      return 2;
+    }
+    releaseId = revision.revision;
+    deterministic = await runDeterministicPromotionGate();
+    if (!deterministic.passed) {
+      console.error("Brain v3 promotion evidence requires passing typecheck and the complete deterministic test suite.");
+      return 2;
+    }
+  }
   process.env.AI_PROVIDER = stagingProvider;
   // The optional real-web boundary is imported only in a staging process. Core
   // real-web-only runs use shadow mode; the auxiliary contract run uses active
@@ -564,6 +682,8 @@ async function main(): Promise<number> {
   process.env.TAKI_BRAIN_V3_MODE = auxiliary ? "active" : realWeb ? "shadow" : "disabled";
   process.env.TAKI_BRAIN_V3_READY = auxiliary ? "1" : "";
   process.env.TAKI_BRAIN_V3_AUX_MODE = auxiliary ? "active" : "disabled";
+  process.env.TAKI_BRAIN_V3_PROMOTION_EVIDENCE = "";
+  process.env.TAKI_BRAIN_V3_RELEASE_ID = "";
   if (stagingProvider === "openai") {
     process.env.OPENAI_API_KEY = stagingKey;
     process.env.GEMINI_API_KEY = "";
@@ -655,6 +775,7 @@ async function main(): Promise<number> {
     provider: ACTIVE_AI_PROVIDER,
     model: BRAIN_V3_MODEL,
     realWeb,
+    promotion,
     total: totalCases,
     passed: totalCases - allFailures.length,
     failed: allFailures.length,
@@ -663,7 +784,48 @@ async function main(): Promise<number> {
     maxLatencyMs: sorted.at(-1) || 0,
     failures: allFailures
   }));
-  return allFailures.length ? 1 : 0;
+  if (allFailures.length) return 1;
+  if (promotion && deterministic) {
+    const issuedAt = new Date().toISOString();
+    const expiresAt = new Date(Date.now() + BRAIN_V3_PROMOTION_EVIDENCE_TTL_MS).toISOString();
+    const evidence = {
+      format: "taki-brain-v3-promotion" as const,
+      version: BRAIN_V3_PROMOTION_EVIDENCE_VERSION,
+      releaseId,
+      provider: ACTIVE_AI_PROVIDER,
+      model: BRAIN_V3_MODEL,
+      core: { passed: true as const, total: CASES.length, failed: 0 as const },
+      auxiliary: { passed: true as const, total: auxiliarySummary.total, failed: 0 as const },
+      realWeb: { passed: true as const },
+      deterministic: {
+        passed: true as const,
+        typecheckPassed: true as const,
+        testCount: deterministic.testCount,
+        failed: 0 as const,
+        cancelled: 0 as const,
+        skipped: 0 as const
+      },
+      rollback: { passed: true as const },
+      noWrite: true as const,
+      issuedAt,
+      expiresAt
+    };
+    if (evidence.core.total < BRAIN_V3_PROMOTION_MIN_CORE_CASES || evidence.auxiliary.total < BRAIN_V3_PROMOTION_MIN_AUXILIARY_CASES) {
+      console.error("Brain v3 promotion corpus is smaller than the required minimum.");
+      return 2;
+    }
+    console.log(JSON.stringify({
+      type: "promotion_evidence",
+      format: evidence.format,
+      version: evidence.version,
+      releaseId: evidence.releaseId,
+      provider: evidence.provider,
+      model: evidence.model,
+      expiresAt: evidence.expiresAt,
+      token: encodeBrainV3PromotionEvidence(evidence)
+    }));
+  }
+  return 0;
 }
 
 process.exitCode = await main();

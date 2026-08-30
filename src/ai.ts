@@ -8,6 +8,7 @@ import {
   OpenAIHTTPError,
   UnsupportedOpenAIInputError
 } from "./openaiProvider.js";
+import { brainV3PromotionGateStatus } from "./brainV3Promotion.js";
 
 dotenv.config();
 
@@ -460,16 +461,16 @@ export const BRAIN_V3_MODEL = ACTIVE_AI_PROVIDER === "openai"
  * use the core pipeline; it deliberately does not include device bucketing.
  * The planner still calls shouldUseBrainV3(state) before passing brainV3Core.
  *
- * Shadow is the one exception to the readiness requirement: its detached,
+ * Shadow is the one exception to the promotion-evidence requirement: its detached,
  * discarded run must exercise the same strict research path as a promoted
  * request so staging evidence is meaningful. The planner never passes
  * brainV3Core for customer traffic while mode is shadow.
  */
 export function brainV3CoreEnabled(env: ModelEnvironment = process.env): boolean {
-  const ready = /^(?:1|true|yes)$/i.test(String(env.TAKI_BRAIN_V3_READY || "").trim());
   const coreMode = String(env.TAKI_BRAIN_V3_MODE || "disabled").trim().toLowerCase();
   if (coreMode === "shadow") return true;
-  return ready && (coreMode === "active" || coreMode === "canary" || coreMode === "v3");
+  return brainV3PromotionGateStatus(env, ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL).ready
+    && (coreMode === "active" || coreMode === "canary" || coreMode === "v3");
 }
 
 /**

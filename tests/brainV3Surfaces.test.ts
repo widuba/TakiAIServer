@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { brainV3AuxEnabled, brainV3CoreEnabled, brainV3StructuredRequest } from "../src/ai.js";
+import { ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL, brainV3AuxEnabled, brainV3CoreEnabled, brainV3StructuredRequest } from "../src/ai.js";
 import {
   BRAIN_V3_ALARM_SCHEMA,
   BRAIN_V3_EVENT_MATCH_SCHEMA,
@@ -27,19 +27,42 @@ import { DURABLE_MEMORY_SCHEMA } from "../src/userMemory.js";
 import { URL_SUMMARY_SCHEMA } from "../src/websummary.js";
 import { NEUTRAL_VECTOR } from "../src/messageStyle.js";
 import { restyleMessageBody, rewritePreservesMessageContent } from "../src/messageStyleRewrite.js";
+import { BRAIN_V3_PROMOTION_EVIDENCE_TTL_MS, encodeBrainV3PromotionEvidence } from "../src/brainV3Promotion.js";
+
+const PROMOTION_RELEASE_ID = "0123456789abcdef0123456789abcdef01234567";
+const PROMOTION_ENV = {
+  TAKI_BRAIN_V3_READY: "1",
+  TAKI_BRAIN_V3_RELEASE_ID: PROMOTION_RELEASE_ID,
+  TAKI_BRAIN_V3_PROMOTION_EVIDENCE: encodeBrainV3PromotionEvidence({
+    format: "taki-brain-v3-promotion",
+    version: 1,
+    releaseId: PROMOTION_RELEASE_ID,
+    provider: ACTIVE_AI_PROVIDER,
+    model: BRAIN_V3_MODEL,
+    core: { passed: true, total: 18, failed: 0 },
+    auxiliary: { passed: true, total: 18, failed: 0 },
+    realWeb: { passed: true },
+    deterministic: { passed: true, typecheckPassed: true, testCount: 350, failed: 0, cancelled: 0, skipped: 0 },
+    rollback: { passed: true },
+    noWrite: true,
+    issuedAt: new Date(Date.now() - 1_000).toISOString(),
+    expiresAt: new Date(Date.now() + BRAIN_V3_PROMOTION_EVIDENCE_TTL_MS - 1_000).toISOString()
+  })
+};
 
 test("Brain v3 auxiliary surfaces require the core rollout and an explicit opt-in", () => {
   assert.equal(brainV3CoreEnabled({}), false);
-  assert.equal(brainV3CoreEnabled({ TAKI_BRAIN_V3_READY: "1", TAKI_BRAIN_V3_MODE: "active" }), true);
-  assert.equal(brainV3CoreEnabled({ TAKI_BRAIN_V3_READY: "1", TAKI_BRAIN_V3_MODE: "canary" }), true);
+  assert.equal(brainV3CoreEnabled({ TAKI_BRAIN_V3_READY: "1", TAKI_BRAIN_V3_MODE: "active" }), false);
+  assert.equal(brainV3CoreEnabled({ ...PROMOTION_ENV, TAKI_BRAIN_V3_MODE: "active" }), true);
+  assert.equal(brainV3CoreEnabled({ ...PROMOTION_ENV, TAKI_BRAIN_V3_MODE: "canary" }), true);
   // Detached shadow runs use the strict core research path for meaningful
   // staging evidence, but the planner never selects it for live traffic.
   assert.equal(brainV3CoreEnabled({ TAKI_BRAIN_V3_MODE: "shadow" }), true);
   assert.equal(brainV3AuxEnabled({}), false);
   assert.equal(brainV3AuxEnabled({ TAKI_BRAIN_V3_READY: "1", TAKI_BRAIN_V3_MODE: "active" }), false);
-  assert.equal(brainV3AuxEnabled({ TAKI_BRAIN_V3_READY: "1", TAKI_BRAIN_V3_MODE: "canary", TAKI_BRAIN_V3_AUX_MODE: "active" }), false);
-  assert.equal(brainV3AuxEnabled({ TAKI_BRAIN_V3_READY: "1", TAKI_BRAIN_V3_MODE: "active", TAKI_BRAIN_V3_AUX_MODE: "active" }), true);
-  assert.equal(brainV3AuxEnabled({ TAKI_BRAIN_V3_READY: "1", TAKI_BRAIN_V3_MODE: "v3", TAKI_BRAIN_V3_AUX_MODE: "v3" }), true);
+  assert.equal(brainV3AuxEnabled({ ...PROMOTION_ENV, TAKI_BRAIN_V3_MODE: "canary", TAKI_BRAIN_V3_AUX_MODE: "active" }), false);
+  assert.equal(brainV3AuxEnabled({ ...PROMOTION_ENV, TAKI_BRAIN_V3_MODE: "active", TAKI_BRAIN_V3_AUX_MODE: "active" }), true);
+  assert.equal(brainV3AuxEnabled({ ...PROMOTION_ENV, TAKI_BRAIN_V3_MODE: "v3", TAKI_BRAIN_V3_AUX_MODE: "v3" }), true);
 });
 
 test("Brain v3 surface requests use strict named JSON schemas", () => {
@@ -81,7 +104,7 @@ test("Brain v3 owns learned message-style rewrites when the auxiliary gate is en
       "Maya",
       false,
       {
-        env: { TAKI_BRAIN_V3_READY: "1", TAKI_BRAIN_V3_MODE: "active", TAKI_BRAIN_V3_AUX_MODE: "active" },
+        env: { ...PROMOTION_ENV, TAKI_BRAIN_V3_MODE: "active", TAKI_BRAIN_V3_AUX_MODE: "active" },
         generateContent: async (request) => {
           calls.push(request);
           return { text: JSON.stringify({ text: "im late lol" }) };

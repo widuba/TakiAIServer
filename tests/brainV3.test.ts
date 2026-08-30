@@ -19,8 +19,10 @@ import {
   shouldShadowBrainV3,
   shouldUseBrainV3
 } from "../src/brainV3.js";
+import { ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL } from "../src/ai.js";
 import { buildConversationState } from "../src/context.js";
 import { resetBrainV3SpecialistCircuit } from "../src/brainV3Specialists.js";
+import { BRAIN_V3_PROMOTION_EVIDENCE_TTL_MS, encodeBrainV3PromotionEvidence } from "../src/brainV3Promotion.js";
 import { blankAction } from "../src/types.js";
 
 function state(message: string, voice = false, userProfile?: Record<string, unknown>, styleProfiles?: any[]) {
@@ -104,6 +106,31 @@ const directUnderstanding = {
   contact: null,
   place: null
 };
+
+const PROMOTION_RELEASE_ID = "0123456789abcdef0123456789abcdef01234567";
+const PROMOTION_ENV = {
+  TAKI_BRAIN_V3_READY: "1",
+  TAKI_BRAIN_V3_RELEASE_ID: PROMOTION_RELEASE_ID,
+  TAKI_BRAIN_V3_PROMOTION_EVIDENCE: encodeBrainV3PromotionEvidence({
+    format: "taki-brain-v3-promotion",
+    version: 1,
+    releaseId: PROMOTION_RELEASE_ID,
+    provider: ACTIVE_AI_PROVIDER,
+    model: BRAIN_V3_MODEL,
+    core: { passed: true, total: 18, failed: 0 },
+    auxiliary: { passed: true, total: 18, failed: 0 },
+    realWeb: { passed: true },
+    deterministic: { passed: true, typecheckPassed: true, testCount: 350, failed: 0, cancelled: 0, skipped: 0 },
+    rollback: { passed: true },
+    noWrite: true,
+    issuedAt: new Date(Date.now() - 1_000).toISOString(),
+    expiresAt: new Date(Date.now() + BRAIN_V3_PROMOTION_EVIDENCE_TTL_MS - 1_000).toISOString()
+  })
+};
+
+function promotedEnvironment(overrides: Record<string, string | undefined> = {}) {
+  return { ...PROMOTION_ENV, ...overrides };
+}
 
 test("Brain v3 preserves raw speech while normalizing stutters and sarcasm", () => {
   const signals = normalizeBrainV3Input("Um, I I I need a follow-up about w-w-well-known Dyckert, yeah right.");
@@ -235,12 +262,13 @@ test("Brain v3 keeps an explicit correction when the model labels it a question"
 test("Brain v3 rollout is independently disabled and device-stable", () => {
   assert.equal(normalizeBrainV3RolloutMode({}), "disabled");
   assert.equal(normalizeBrainV3RolloutMode({ TAKI_BRAIN_V3_MODE: "v3" }), "disabled");
-  assert.equal(brainV3PromotionReady({ TAKI_BRAIN_V3_READY: "1" }), true);
-  assert.equal(normalizeBrainV3RolloutMode({ TAKI_BRAIN_V3_MODE: "v3", TAKI_BRAIN_V3_READY: "1" }), "active");
+  assert.equal(brainV3PromotionReady({ TAKI_BRAIN_V3_READY: "1" }), false);
+  assert.equal(brainV3PromotionReady(PROMOTION_ENV), true);
+  assert.equal(normalizeBrainV3RolloutMode(promotedEnvironment({ TAKI_BRAIN_V3_MODE: "v3" })), "active");
   assert.equal(brainV3CanaryPercent({}), 0);
   assert.equal(shouldUseBrainV3({ deviceId: "12345678" }, {}), false);
   assert.equal(shouldUseBrainV3({ deviceId: "12345678" }, { TAKI_BRAIN_V3_MODE: "canary", TAKI_BRAIN_V3_PERCENT: "100" }), false);
-  assert.equal(shouldUseBrainV3({ deviceId: "12345678" }, { TAKI_BRAIN_V3_MODE: "canary", TAKI_BRAIN_V3_READY: "1", TAKI_BRAIN_V3_PERCENT: "100" }), true);
+  assert.equal(shouldUseBrainV3({ deviceId: "12345678" }, promotedEnvironment({ TAKI_BRAIN_V3_MODE: "canary", TAKI_BRAIN_V3_PERCENT: "100" })), true);
   assert.equal(shouldUseBrainV3({ deviceId: "12345678" }, { TAKI_BRAIN_V3_MODE: "canary", TAKI_BRAIN_V3_PERCENT: "0" }), false);
   assert.equal(
     shouldUseBrainV3({ deviceId: "12345678" }, { TAKI_BRAIN_V3_MODE: "canary", TAKI_BRAIN_V3_PERCENT: "50" }),
@@ -369,7 +397,7 @@ test("Brain v3 preserves learned message style and feedback metadata for actions
     }]),
     undefined,
     {
-      env: { TAKI_BRAIN_V3_READY: "1", TAKI_BRAIN_V3_MODE: "active", TAKI_BRAIN_V3_AUX_MODE: "active" },
+      env: promotedEnvironment({ TAKI_BRAIN_V3_MODE: "active", TAKI_BRAIN_V3_AUX_MODE: "active" }),
       generateContent: async (request: any) => {
         calls.push(request);
         const name = request.config?.responseJsonSchemaName;
