@@ -264,6 +264,46 @@ const CASES: EvalCase[] = [
     ]
   },
   {
+    id: "exactly-wanted-sarcasm-answer",
+    message: "Fantastic, exactly what I wanted. Can you explain why leaves change color?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /leaves|chlorophyll|pigment|color/i, "exactly_wanted_sarcasm_misses_topic")
+    ]
+  },
+  {
+    id: "because-sarcasm-answer",
+    message: "Right, because that makes total sense. Can you explain compound interest?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /interest|money|grow|rate/i, "because_sarcasm_misses_topic")
+    ]
+  },
+  {
+    id: "portuguese-article-answer",
+    message: "Certo, mais um erro, que ótimo. Pode explicar juros compostos?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /juros|dinheiro|taxa|interest|money|rate/i, "portuguese_article_misses_topic")
+    ]
+  },
+  {
+    id: "well-negative-sarcasm-answer",
+    message: "Well, well, well, another failure. Can you explain compound interest?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /interest|money|grow|rate/i, "well_negative_sarcasm_misses_topic")
+    ]
+  },
+  {
+    id: "love-crash-sarcasm-answer",
+    message: "I just love when it crashes. Can you explain why leaves change color?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /leaves|chlorophyll|pigment|color/i, "love_crash_sarcasm_misses_topic")
+    ]
+  },
+  {
     id: "benign-model-refusal",
     message: "Explain what a firewall does in plain English.",
     expect: (plan) => [

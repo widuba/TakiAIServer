@@ -39,7 +39,7 @@ const PROMOTION_ENV = {
     releaseId: PROMOTION_RELEASE_ID,
     provider: ACTIVE_AI_PROVIDER,
     model: BRAIN_V3_MODEL,
-    core: { passed: true, total: 26, failed: 0 },
+    core: { passed: true, total: 31, failed: 0 },
     auxiliary: { passed: true, total: 18, failed: 0 },
     realWeb: { passed: true },
     deterministic: { passed: true, typecheckPassed: true, testCount: 350, failed: 0, cancelled: 0, skipped: 0 },
