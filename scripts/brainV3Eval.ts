@@ -1,7 +1,7 @@
 /*
  * Provider-backed Brain v3 gate.
  *
- * This is intentionally a direct staging harness, not an API route. It uses a
+ * This is intentionally a direct staging/maintenance harness, not an API route. It uses a
  * synthetic device id, never charges an account, never executes a native
  * action, and prints case ids/metrics only (never prompts or model output).
  * The explicit confirmation prevents an accidental run from a production
@@ -10,6 +10,12 @@
  *   TAKI_BRAIN_V3_EVAL_CONFIRM=staging \
  *   TAKI_BRAIN_V3_STAGING_PROVIDER=openai \
  *   TAKI_BRAIN_V3_STAGING_API_KEY=... npm run eval:brain-v3
+ *
+ * A planned maintenance run may explicitly reuse the existing backend key by
+ * setting TAKI_BRAIN_V3_EVAL_CONFIRM=maintenance and
+ * TAKI_BRAIN_V3_EVAL_USE_EXISTING_KEY=1. This does not relax the production
+ * rollout gate; it only changes which credential the isolated evaluator may
+ * use when a separate staging project is unavailable.
  *
  * Add TAKI_BRAIN_V3_EVAL_REAL_WEB=1 for the opt-in current-fact case that uses
  * the provider's real web-search path. The default corpus uses a deterministic
@@ -1123,8 +1129,11 @@ async function main(): Promise<number> {
     console.error("Brain v3 provider evaluation refuses to run with a production environment marker.");
     return 2;
   }
-  if (String(process.env.TAKI_BRAIN_V3_EVAL_CONFIRM || "").trim().toLocaleLowerCase() !== "staging") {
-    console.error("Brain v3 provider evaluation is staging-only. Set TAKI_BRAIN_V3_EVAL_CONFIRM=staging.");
+  const confirmation = String(process.env.TAKI_BRAIN_V3_EVAL_CONFIRM || "").trim().toLocaleLowerCase();
+  const useExistingKey = String(process.env.TAKI_BRAIN_V3_EVAL_USE_EXISTING_KEY || "").trim() === "1";
+  const maintenanceKeyApproved = confirmation === "maintenance" && useExistingKey;
+  if (confirmation !== "staging" && !maintenanceKeyApproved) {
+    console.error("Brain v3 provider evaluation requires TAKI_BRAIN_V3_EVAL_CONFIRM=staging, or explicit maintenance confirmation with TAKI_BRAIN_V3_EVAL_USE_EXISTING_KEY=1.");
     return 2;
   }
 
@@ -1144,8 +1153,11 @@ async function main(): Promise<number> {
     (stagingProvider === "openai" && inheritedOpenAIKey && inheritedOpenAIKey === stagingKey)
     || (stagingProvider === "gemini" && inheritedGeminiKey && inheritedGeminiKey === stagingKey)
   ) {
-    console.error("Brain v3 provider evaluation requires a staging key distinct from the inherited generic provider key.");
-    return 2;
+    if (!maintenanceKeyApproved) {
+      console.error("Brain v3 provider evaluation requires a staging key distinct from the inherited generic provider key.");
+      return 2;
+    }
+    console.error("Brain v3 maintenance evaluation explicitly reuses the existing backend provider key; production rollout still requires a passing promotion gate.");
   }
   const realWebFlag = String(process.env.TAKI_BRAIN_V3_EVAL_REAL_WEB || "").trim();
   if (realWebFlag && realWebFlag !== "1") {

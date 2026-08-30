@@ -91,13 +91,13 @@ test("Brain v3 promotion worktree checks include tracked and untracked changes",
   assert.equal(brainV3WorktreeClean("?? local-staging-notes.txt\n"), false);
 });
 
-test("Brain v3 evaluator is staging-only and never reuses a generic key", async () => {
+test("Brain v3 evaluator requires explicit staging or maintenance key use", async () => {
   const missingConfirmation = await runBrainV3Evaluator({
     TAKI_BRAIN_V3_STAGING_PROVIDER: "openai",
     TAKI_BRAIN_V3_STAGING_API_KEY: "staging-only"
   });
   assert.equal(missingConfirmation.code, 2);
-  assert.match(missingConfirmation.output, /staging-only/);
+  assert.match(missingConfirmation.output, /staging|maintenance/);
 
   const productionMarker = await runBrainV3Evaluator({
     NODE_ENV: "production",
