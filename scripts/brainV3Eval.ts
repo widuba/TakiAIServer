@@ -74,11 +74,15 @@ function summaryNumber(output: string, label: string, fallback: number): number 
 
 async function runDeterministicPromotionGate(): Promise<DeterministicGateSummary> {
   const testEnv = { ...process.env };
-  for (const key of [
-    "TAKI_BRAIN_V3_EVAL_CONFIRM", "TAKI_BRAIN_V3_EVAL_AUX", "TAKI_BRAIN_V3_EVAL_REAL_WEB",
-    "TAKI_BRAIN_V3_EVAL_PROMOTION", "TAKI_BRAIN_V3_STAGING_PROVIDER", "TAKI_BRAIN_V3_STAGING_API_KEY",
-    "TAKI_BRAIN_V3_PROMOTION_EVIDENCE", "TAKI_BRAIN_V3_RELEASE_ID"
-  ]) delete testEnv[key];
+  // The deterministic child must not inherit any rollout or staging marker
+  // from the shell that launched promotion. This keeps its result independent
+  // of operator state and prevents a copied production flag from selecting v3.
+  for (const key of Object.keys(testEnv)) {
+    if (key.startsWith("TAKI_BRAIN_V3_")) delete testEnv[key];
+  }
+  for (const key of ["OPENAI_API_KEY", "OPENAI_ORG_ID", "OPENAI_PROJECT_ID", "OPENAI_BASE_URL"]) {
+    delete testEnv[key];
+  }
   testEnv.AI_PROVIDER = "gemini";
   testEnv.OPENAI_API_KEY = "";
   testEnv.GEMINI_API_KEY = "test";
