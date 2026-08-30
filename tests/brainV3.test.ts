@@ -242,6 +242,37 @@ test("Brain v3 grounds polite inflected commands without executing instructional
   assert.equal(instructional.needsExecution, false);
 });
 
+test("Brain v3 accepts natural action leads across supported surfaces", async () => {
+  const cases = [
+    ["Email Chris I am late", "compose_email", { recipientName: "Chris", contactQuery: "Chris", body: "I am late" }],
+    ["Ring Chris", "call_phone", { recipientName: "Chris", contactQuery: "Chris" }],
+    ["Share the trail closes at sunset", "share_content", { shareKind: "text", shareText: "The trail closes at sunset" }],
+    ["Get directions to Amicalola Falls", "maps_directions", { mapsDestination: "Amicalola Falls" }],
+    ["Set a reminder to call Mom tomorrow at 9 AM", "reminder_create", { title: "call Mom" }],
+    ["Skip this song", "music_control", { musicAction: "next" }]
+  ] as const;
+  for (const [message, type, fields] of cases) {
+    const stages = fakeStages({
+      ...directUnderstanding,
+      intent: type,
+      answerMode: "action",
+      speechAct: "request",
+      action: { ...blankAction(type as any), type, ...fields }
+    });
+    const result = await runBrainV3Plan(state(message), undefined, stages.deps);
+    assert.equal(result.action?.type, type, message);
+  }
+
+  const instructionalStages = fakeStages({
+    ...directUnderstanding,
+    intent: "compose_email",
+    answerMode: "action",
+    action: { ...blankAction("compose_email"), type: "compose_email", recipientName: "Chris", contactQuery: "Chris", body: "Hello" }
+  });
+  const instructional = await runBrainV3Plan(state("How do I email Chris?"), undefined, instructionalStages.deps);
+  assert.equal(instructional.action, null);
+});
+
 test("Brain v3 requires an explicit memory or undo command before compiling a mutation", async () => {
   const memoryUnderstanding = {
     ...directUnderstanding,

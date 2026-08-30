@@ -1357,10 +1357,34 @@ function canonicalIntent(value: unknown): PlannerIntent {
   return VALID_INTENTS.includes(mapped as PlannerIntent) ? mapped as PlannerIntent : "answer_only";
 }
 
+const ACTION_LEAD_PATTERN = [
+  String.raw`text(?:s|ed|ing)?`, String.raw`message(?:s|d|ing)?`, String.raw`email(?:s|ed|ing)?`, String.raw`mail(?:s|d|ing)?`, String.raw`send(?:s|ing)?`,
+  String.raw`call(?:s|ed|ing)?`, String.raw`phone(?:s|d|ing)?`, String.raw`ring(?:s|ing)?`, String.raw`add(?:s|ed|ing)?`, String.raw`put(?:s|ting)?`,
+  String.raw`schedule(?:s|d|ing)?`, String.raw`set(?:s|ting)?`, String.raw`remind(?:s|ed|ing)?`, String.raw`open(?:s|ed|ing)?`, String.raw`show(?:s|ed|ing)?`,
+  String.raw`find(?:s|ing)?`, String.raw`search(?:es|ed|ing)?`, String.raw`look(?:s|ed|ing)?`, String.raw`play(?:s|ed|ing)?`, String.raw`pause(?:s|d|ing)?`,
+  String.raw`resume(?:s|d|ing)?`, String.raw`skip(?:s|ped|ping)?`, String.raw`next`, String.raw`previous`, String.raw`restart(?:s|ed|ing)?`, String.raw`shuffle(?:s|d|ing)?`,
+  String.raw`turn(?:s|ed|ing)?`, String.raw`toggle(?:s|d|ing)?`, String.raw`lock(?:s|ed|ing)?`, String.raw`unlock(?:s|ed|ing)?`, String.raw`make(?:s|made|ing)?`,
+  String.raw`draft(?:s|ed|ing)?`, String.raw`writ(?:e|es|ten|ing)`, String.raw`let(?:ting)?\s+(?!me\b)[\p{L}\p{N}'’\-]+(?:\s+[\p{L}\p{N}'’\-]+){0,3}\s+know`,
+  String.raw`navigat(?:e|es|ed|ing)?`, String.raw`get(?:s|ting)?`, String.raw`take`, String.raw`drive`, String.raw`walk`, String.raw`remove(?:s|d|ing)?`,
+  String.raw`delete(?:s|d|ing)?`, String.raw`cancel(?:s|led|ling)?`, String.raw`create(?:s|d|ing)?`, String.raw`save(?:s|d|ing)?`, String.raw`download(?:s|ed|ing)?`,
+  String.raw`start(?:s|ed|ing)?`, String.raw`stop(?:s|ped|ping)?`, String.raw`change(?:s|d|ing)?`, String.raw`update(?:s|d|ing)?`, String.raw`edit(?:s|ed|ing)?`,
+  String.raw`move(?:s|d|ing)?`, String.raw`reschedule(?:s|d|ing)?`, String.raw`rename(?:s|d|ing)?`, String.raw`retitle(?:s|d|ing)?`, String.raw`complete(?:s|d|ing)?`,
+  String.raw`finish(?:es|ed|ing)?`, String.raw`reopen(?:s|ed|ing)?`, String.raw`uncomplete(?:s|d|ing)?`, String.raw`mark(?:s|ed|ing)?`, String.raw`cop(?:y|ies|ied|ying)?`,
+  String.raw`export(?:s|ed|ing)?`, String.raw`track(?:s|ed|ing)?`, String.raw`follow(?:s|ed|ing)?`, String.raw`book(?:s|ed|ing)?`, String.raw`reserve(?:s|d|ing)?`,
+  String.raw`order(?:s|ed|ing)?`, String.raw`cook(?:s|ed|ing)?`, String.raw`plan(?:s|ned|ning)?`, String.raw`organize(?:s|d|ing)?`, String.raw`list(?:s|ed|ing)?`,
+  String.raw`check(?:s|ed|ing)?`, String.raw`log(?:s|ged|ging)?`, String.raw`record(?:s|ed|ing)?`, String.raw`alert`, String.raw`notif(?:y|ies|ied|ying)`,
+  String.raw`watch`, String.raw`launch(?:es|ed|ing)?`, String.raw`remember(?:s|ed|ing)?`, String.raw`forget(?:s|ting)?`, String.raw`clear`, String.raw`undo`,
+  String.raw`reverse`, String.raw`revert`, String.raw`share(?:s|d|ing)?`, String.raw`dim(?:s|med|ming)?`
+].join("|");
+
+const ACTION_LEAD = new RegExp(String.raw`^(?:${ACTION_LEAD_PATTERN})\b`, "iu");
+const DIRECT_ACTION_LEAD = new RegExp(String.raw`^(?:please\s+)?(?:${ACTION_LEAD_PATTERN})\b`, "iu");
+const POLITE_ACTION_LEAD = new RegExp(String.raw`^(?:please\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:help\s+me\s+)?(?:to\s+)?(?:${ACTION_LEAD_PATTERN})\b`, "iu");
+
 function requestedActionShape(signals: BrainV3Signals): boolean {
   return signals.speechAct === "request"
-    || /^(?:please\s+)?(?:text|message|email|call|add|put|schedule|remind|open|show|find|search|play|pause|resume|turn|make|draft|write|tell|navigate|send|remove|delete|cancel|create|save|start|stop|change|update|copy|export|track|follow|plan|log|record|alert|notify|launch|remember|forget|clear|undo|reverse|revert)\b/i.test(signals.normalizedText)
-    || /^(?:please\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:help\s+me\s+)?(?:text|message|email|call|add|put|schedule|remind|open|show|find|search|play|pause|resume|turn|make|draft|write|tell|navigate|send|remove|delete|cancel|create|save|start|stop|change|update|copy|export|track|follow|plan|log|record|alert|notify|launch|remember|forget|clear|undo|reverse|revert)\b/i.test(signals.normalizedText);
+    || DIRECT_ACTION_LEAD.test(signals.normalizedText)
+    || POLITE_ACTION_LEAD.test(signals.normalizedText);
 }
 
 const BRAIN_V3_READ_ACTION_TYPES = new Set([
@@ -1372,19 +1396,19 @@ const BRAIN_V3_ACTION_CUES: Record<string, RegExp> = {
   compose_message: /\b(?:text(?:s|ed|ing)?|message(?:s|d|ing)?|send(?:s|ing)?|tell(?:s|ing)?|let(?:ting)?)\b/i,
   compose_email: /\b(?:email(?:s|ed|ing)?|e-mail|mail(?:s|d|ing)?|send(?:s|ing)?)\b/i,
   call_phone: /\b(?:call(?:s|ed|ing)?|phone(?:s|d|ing)?|ring(?:s|ing)?)\b/i,
-  calendar_create: /\b(?:add(?:s|ed|ing)?|put(?:s|ting)?|schedule(?:s|d|ing)?|create(?:s|d|ing)?|book(?:s|ed|ing)?)\b.{0,50}\b(?:calendar|event|appointment|meeting)\b|\b(?:calendar|event|appointment|meeting)\b.{0,50}\b(?:add(?:s|ed|ing)?|put(?:s|ting)?|schedule(?:s|d|ing)?|create(?:s|d|ing)?|book(?:s|ed|ing)?)\b/i,
-  calendar_update: /\b(?:change(?:s|d|ing)?|edit(?:s|ed|ing)?|move(?:s|d|ing)?|reschedule(?:s|d|ing)?|update(?:s|d|ing)?)\b.{0,50}\b(?:calendar|event|appointment|meeting|it|that|this)\b|\b(?:calendar|event|appointment|meeting)\b.{0,50}\b(?:change(?:s|d|ing)?|edit(?:s|ed|ing)?|move(?:s|d|ing)?|reschedule(?:s|d|ing)?|update(?:s|d|ing)?)\b/i,
+  calendar_create: /\b(?:add(?:s|ed|ing)?|put(?:s|ting)?|schedule(?:s|d|ing)?|set(?:s|ting)?|create(?:s|d|ing)?|book(?:s|ed|ing)?)\b.{0,50}\b(?:calendar|event|appointment|meeting)\b|\b(?:calendar|event|appointment|meeting)\b.{0,50}\b(?:add(?:s|ed|ing)?|put(?:s|ting)?|schedule(?:s|d|ing)?|set(?:s|ting)?|create(?:s|d|ing)?|book(?:s|ed|ing)?)\b/i,
+  calendar_update: /\b(?:change(?:s|d|ing)?|edit(?:s|ed|ing)?|move(?:s|d|ing)?|reschedule(?:s|d|ing)?|rename(?:s|d|ing)?|retitle(?:s|d|ing)?|mark(?:s|ed|ing)?|complete(?:s|d|ing)?|finish(?:es|ed|ing)?|reopen(?:s|ed|ing)?|uncomplete(?:s|d|ing)?|update(?:s|d|ing)?)\b.{0,50}\b(?:calendar|event|appointment|meeting|it|that|this)\b|\b(?:calendar|event|appointment|meeting)\b.{0,50}\b(?:change(?:s|d|ing)?|edit(?:s|ed|ing)?|move(?:s|d|ing)?|reschedule(?:s|d|ing)?|rename(?:s|d|ing)?|retitle(?:s|d|ing)?|mark(?:s|ed|ing)?|complete(?:s|d|ing)?|finish(?:es|ed|ing)?|reopen(?:s|ed|ing)?|uncomplete(?:s|d|ing)?|update(?:s|d|ing)?)\b/i,
   calendar_delete: /\b(?:remove(?:s|d|ing)?|delete(?:s|d|ing)?|cancel(?:s|led|ling)?)\b.{0,50}\b(?:calendar|event|appointment|meeting|it|that|this)\b|\b(?:calendar|event|appointment|meeting)\b.{0,50}\b(?:remove(?:s|d|ing)?|delete(?:s|d|ing)?|cancel(?:s|led|ling)?)\b/i,
   reminder_create: /\b(?:remind(?:s|ed|ing)?|reminder)\b/i,
-  reminder_update: /\b(?:change(?:s|d|ing)?|edit(?:s|ed|ing)?|move(?:s|d|ing)?|reschedule(?:s|d|ing)?|update(?:s|d|ing)?)\b.{0,40}\breminder\b|\breminder\b.{0,40}\b(?:change(?:s|d|ing)?|edit(?:s|ed|ing)?|move(?:s|d|ing)?|reschedule(?:s|d|ing)?|update(?:s|d|ing)?)\b/i,
+  reminder_update: /\b(?:change(?:s|d|ing)?|edit(?:s|ed|ing)?|move(?:s|d|ing)?|reschedule(?:s|d|ing)?|rename(?:s|d|ing)?|retitle(?:s|d|ing)?|mark(?:s|ed|ing)?|complete(?:s|d|ing)?|finish(?:es|ed|ing)?|reopen(?:s|ed|ing)?|uncomplete(?:s|d|ing)?|update(?:s|d|ing)?)\b.{0,40}\breminder\b|\breminder\b.{0,40}\b(?:change(?:s|d|ing)?|edit(?:s|ed|ing)?|move(?:s|d|ing)?|reschedule(?:s|d|ing)?|rename(?:s|d|ing)?|retitle(?:s|d|ing)?|mark(?:s|ed|ing)?|complete(?:s|d|ing)?|finish(?:es|ed|ing)?|reopen(?:s|ed|ing)?|uncomplete(?:s|d|ing)?|update(?:s|d|ing)?)\b/i,
   reminder_delete: /\b(?:remove(?:s|d|ing)?|delete(?:s|d|ing)?|cancel(?:s|led|ling)?)\b.{0,40}\breminder\b|\breminder\b.{0,40}\b(?:remove(?:s|d|ing)?|delete(?:s|d|ing)?|cancel(?:s|led|ling)?)\b/i,
   open_app: /\b(?:open(?:s|ed|ing)?|launch(?:es|ed|ing)?|start(?:s|ed|ing)?)\b/i,
   maps_search: /\b(?:maps?|place|restaurant|coffee|store|shop|near me)\b/i,
-  maps_directions: /\b(?:direction|navigate|route|drive|walk|transit|get there|take me)\b/i,
-  calendar_directions: /\b(?:calendar|schedule|appointment|meeting|event)\b.{0,80}\b(?:direction|navigate|route|drive|get there)\b|\b(?:direction|navigate|route|drive|get there)\b.{0,80}\b(?:calendar|schedule|appointment|meeting|event)\b/i,
+  maps_directions: /\b(?:directions?|navigate|route|drive|walk|transit|get there|take me)\b/i,
+  calendar_directions: /\b(?:calendar|schedule|appointment|meeting|event)\b.{0,80}\b(?:directions?|navigate|route|drive|get there)\b|\b(?:directions?|navigate|route|drive|get there)\b.{0,80}\b(?:calendar|schedule|appointment|meeting|event)\b/i,
   live_activity: /\b(?:track|follow|tracker|live activity|lock screen|dynamic island|commute)\b/i,
   day_plan: /\b(?:day plan|plan my day|organize my day|schedule my day|itinerary)\b/i,
-  service_handoff: /\b(?:uber|lyft|doordash|ubereats|grubhub|opentable|resy|instacart|yelp|ride|delivery|reservation|groceries)\b/i,
+  service_handoff: /\b(?:uber|lyft|doordash|ubereats|grubhub|opentable|resy|instacart|yelp|ride|delivery|reservation|reserve|book|groceries)\b/i,
   list_action: /\b(?:list|grocery|groceries|to-do|todo)\b/i,
   expense_action: /\b(?:expense|spend|spent|spending|budget|purchase)\b/i,
   habit_action: /\b(?:habit|streak|workout|meditation)\b/i,
@@ -1398,9 +1422,9 @@ const BRAIN_V3_ACTION_CUES: Record<string, RegExp> = {
   memory_save: /\b(?:remember|forget|clear what you remember|memory)\b/i,
   share_content: /\b(?:share(?:s|d|ing)?|send(?:s|ing)?)\b/i,
   clipboard_copy: /\b(?:copy|copies|copied|copying)\b/i,
-  file_export: /\b(?:file|export|save as)\b/i,
+  file_export: /\b(?:file|export|save as|download)\b/i,
   flashlight_control: /\bflashlight\b/i,
-  contact_create: /\b(?:contact|save)\b/i,
+  contact_create: /\b(?:contact|save)\b|\bremember\b.{0,60}\b(?:number|phone|email)\b/i,
   contact_update: /\bcontact\b/i,
   contact_delete: /\bcontact\b/i,
   health_log: /\b(?:log|record|track)\b/i,
@@ -1426,8 +1450,6 @@ const ACTION_REQUEST_PREFIXES = [
   /^(?:please\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:help\s+me\s+)?(?:to\s+)?/i,
   /^(?:please\s+)?(?:i\s+(?:want|need|would\s+like|['’]d\s+like)\s+(?:you\s+)?(?:to\s+)?|go\s+ahead\s+and\s+|please\s+)/i
 ];
-
-const ACTION_LEAD = /^(?:text(?:s|ed|ing)?|message(?:s|d|ing)?|send(?:s|ing)?|call(?:s|ed|ing)?|add(?:s|ed|ing)?|put(?:s|ting)?|schedule(?:s|d|ing)?|remind(?:s|ed|ing)?|open(?:s|ed|ing)?|show(?:s|ed|ing)?|find(?:s|ing)?|search(?:es|ed|ing)?|play(?:s|ed|ing)?|pause(?:s|d|ing)?|resume(?:s|d|ing)?|turn(?:s|ed|ing)?|make(?:s|made|ing)?|draft(?:s|ed|ing)?|writ(?:e|es|ten|ing)|tell(?:s|ing)?|let(?:ting)?\s+(?!me\b)[\p{L}\p{N}'’\-]+(?:\s+[\p{L}\p{N}'’\-]+){0,3}\s+know|navigat(?:e|es|ed|ing)|remove(?:s|d|ing)?|delete(?:s|d|ing)?|cancel(?:s|led|ling)?|create(?:s|d|ing)?|save(?:s|d|ing)?|start(?:s|ed|ing)?|stop(?:s|ped|ping)?|change(?:s|d|ing)?|update(?:s|d|ing)?|cop(?:y|ies|ied|ying)|export(?:s|ed|ing)?|track(?:s|ed|ing)?|follow(?:s|ed|ing)?|book(?:s|ed|ing)?|order(?:s|ed|ing)?|cook(?:s|ed|ing)?|plan(?:s|ned|ning)?|log(?:s|ged|ging)?|record(?:s|ed|ing)?|alert|notif(?:y|ies|ied|ying)|launch(?:es|ed|ing)?|remember(?:s|ed|ing)?|forget(?:s|ting)?|clear|undo|reverse|revert)\b/iu;
 
 function actionFrameRemainder(text: string): string {
   let remainder = text.trim();
