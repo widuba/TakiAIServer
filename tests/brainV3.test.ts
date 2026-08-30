@@ -117,7 +117,7 @@ const PROMOTION_ENV = {
     releaseId: PROMOTION_RELEASE_ID,
     provider: ACTIVE_AI_PROVIDER,
     model: BRAIN_V3_MODEL,
-    core: { passed: true, total: 22, failed: 0 },
+    core: { passed: true, total: 26, failed: 0 },
     auxiliary: { passed: true, total: 18, failed: 0 },
     realWeb: { passed: true },
     deterministic: { passed: true, typecheckPassed: true, testCount: 350, failed: 0, cancelled: 0, skipped: 0 },
@@ -228,6 +228,11 @@ test("Brain v3 preserves sarcasm as frustration and recognizes disfluent non-Eng
   assert.equal(normalizeBrainV3Input("Ich bin nervös.").tone, "anxious");
   assert.equal(normalizeBrainV3Input("Sono triste.").language, "it");
   assert.equal(normalizeBrainV3Input("Sono triste.").tone, "sad");
+  assert.equal(normalizeBrainV3Input("Io io ho bisogno di aiuto.").language, "it");
+  assert.equal(normalizeBrainV3Input("Yeah, because that is exactly what I needed.").sarcasm, "likely");
+  assert.equal(normalizeBrainV3Input("Sure, because that is helpful.").sarcasm, "likely");
+  assert.equal(normalizeBrainV3Input("Nice job, genius.").sarcasm, "likely");
+  assert.equal(normalizeBrainV3Input("Well, well, well, look who finally fixed it.").sarcasm, "likely");
   assert.equal(normalizeBrainV3Input("Estou com raiva, isto não funciona.").tone, "angry");
   const thanksSarcasm = normalizeBrainV3Input("Thanks for breaking it again.");
   assert.equal(thanksSarcasm.sarcasm, "likely");

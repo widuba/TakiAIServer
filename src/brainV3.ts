@@ -595,6 +595,10 @@ function detectSarcasm(value: string): BrainV3Sarcasm {
     /\bmy favorite\b.{0,30}\b(?:problem|disaster|error|failure)\b/,
     /\b(?:sure|of course|thanks|thank you)\b.{0,48}\b(?:another|again|error|problem|broken|breaking|bug|crash|crashed|failed|failure)\b/,
     /\b(?:great|fantastic|wonderful|lovely|nice)\b.{0,48}\b(?:error|problem|broken|breaking|bug|crash|crashed|again|another|failed)\b/,
+    /\b(?:yeah|sure|right)[,; ]+because\b.{0,80}\b(?:exactly|just)\s+what\s+i\s+(?:needed|wanted)\b/,
+    /\b(?:yeah|sure)[,; ]+because\b.{0,60}\b(?:helpful|great|perfect|useful)\b/,
+    /\bnice\s+job\b.{0,30}\bgenius\b/,
+    /\bwell[,; ]+well[,; ]+well\b.{0,50}\blook\s+who\b/,
     /(?:^|[^\p{L}\p{N}])(?:sí|si),?\s*claro\b.{0,48}(?:otra vez|error|problema|fall[oó]|roto|se rompió)/iu,
     /(?:^|[^\p{L}\p{N}])claro\b.{0,48}(?:otra vez|error|problema|fall[oó]|roto|se rompió)/iu,
     /(?:^|[^\p{L}\p{N}])(?:qué|que)\s+(?:útil|genial|perfecto)\b.{0,32}(?:otra vez|error|problema|se rompió)/iu,
@@ -698,7 +702,7 @@ function detectLanguage(value: string): string {
     ["fr", ["bonjour", "merci", "je", "veux", "pouvez", "pouvez-vous", "expliquer", "français", "super", "génial", "encore", "erreur", "problème", "où", "quand", "comment", "aujourd'hui", "demain", "s'il vous plaît"]],
     ["de", ["hallo", "danke", "ich", "möchte", "kannst", "können", "erklären", "deutsch", "fehler", "kaputt", "noch", "nervös", "wo", "wann", "bedeutet", "heute", "morgen", "bitte"]],
     ["pt", ["olá", "obrigado", "obrigada", "você", "voce", "pode", "podes", "quero", "explicar", "isso", "português", "ótimo", "ótima", "perfeito", "perfeita", "outro", "outra", "problema", "erro", "falha", "de novo", "onde", "quando", "hoje", "amanhã", "por favor", "estou", "preciso", "ajuda", "agora", "triste", "sozinha", "não", "nao", "funciona"]],
-    ["it", ["ciao", "grazie", "sono", "voglio", "puoi", "potete", "spiegare", "questo", "italiano", "perfetto", "ottimo", "altro", "problema", "errore", "triste", "dove", "quando", "oggi", "domani", "per favore"]],
+    ["it", ["ciao", "grazie", "io", "sono", "ho", "bisogno", "aiuto", "voglio", "puoi", "potete", "spiegare", "questo", "italiano", "perfetto", "ottimo", "altro", "problema", "errore", "triste", "dove", "quando", "oggi", "domani", "per favore"]],
     ["nl", ["dank je", "waarom", "alsjeblieft", "kun je", "graag", "vandaag", "weer"]]
   ];
   let best: { language: string; score: number } = { language: "en", score: 0 };

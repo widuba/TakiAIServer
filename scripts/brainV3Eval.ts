@@ -232,6 +232,38 @@ const CASES: EvalCase[] = [
     ]
   },
   {
+    id: "causal-sarcasm-answer",
+    message: "Yeah, because that is exactly what I needed. Can you explain compound interest?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /interest|money|grow|rate/i, "causal_sarcasm_misses_topic")
+    ]
+  },
+  {
+    id: "teasing-sarcasm-answer",
+    message: "Nice job, genius. Please explain why leaves change color.",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /leaves|chlorophyll|pigment|color/i, "teasing_sarcasm_misses_topic")
+    ]
+  },
+  {
+    id: "well-well-sarcasm-answer",
+    message: "Well, well, well, look who finally fixed it. Now explain compound interest.",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /interest|money|grow|rate/i, "well_well_sarcasm_misses_topic")
+    ]
+  },
+  {
+    id: "italian-disfluent-answer",
+    message: "Io io ho bisogno di aiuto. Puoi spiegare l'interesse composto?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /interesse|denaro|tasso|interest|money|rate/i, "italian_disfluent_misses_topic")
+    ]
+  },
+  {
     id: "benign-model-refusal",
     message: "Explain what a firewall does in plain English.",
     expect: (plan) => [
