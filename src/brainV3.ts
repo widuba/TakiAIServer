@@ -348,12 +348,27 @@ export function brainV3PromotionReady(env: Record<string, string | undefined> = 
   return brainV3PromotionStatus(env).ready;
 }
 
+/**
+ * Explicit maintenance-only break-glass for an operator who has intentionally
+ * approved using the existing provider credential. It is never enabled by a
+ * mode value alone: the readiness marker and a release id are also required.
+ * This keeps the normal evidence gate intact while allowing a planned outage
+ * to cut over without waiting for a second provider project.
+ */
+export function brainV3MaintenanceOverrideEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return requestedBrainV3RolloutMode(env) === "active"
+    && /^(?:1|true|yes|maintenance)$/i.test(String(env.TAKI_BRAIN_V3_MAINTENANCE_OVERRIDE || "").trim())
+    && /^(?:1|true|yes)$/i.test(String(env.TAKI_BRAIN_V3_READY || "").trim())
+    && /^[A-Za-z0-9._-]{7,128}$/.test(String(env.TAKI_BRAIN_V3_RELEASE_ID || "").trim());
+}
+
 export function normalizeBrainV3RolloutMode(env: Record<string, string | undefined> = process.env): BrainV3RolloutMode {
   const requested = requestedBrainV3RolloutMode(env);
   // A mode change alone cannot promote an unverified provider/model. The
   // readiness flag is accepted only alongside the evaluator-issued evidence
-  // for the committed release.
-  if ((requested === "canary" || requested === "active") && !brainV3PromotionReady(env)) return "disabled";
+  // for the committed release. The sole exception is an explicit, release-
+  // bound maintenance override for the operator-approved existing key.
+  if ((requested === "canary" || requested === "active") && !brainV3PromotionReady(env) && !brainV3MaintenanceOverrideEnabled(env)) return "disabled";
   return requested;
 }
 

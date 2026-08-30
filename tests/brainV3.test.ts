@@ -8,6 +8,7 @@ import {
   brainV3CanaryPercent,
   brainV3CanAttempt,
   brainV3CircuitOpen,
+  brainV3MaintenanceOverrideEnabled,
   brainV3PromotionReady,
   brainV3RolloutStats,
   brainV3ShadowPercent,
@@ -633,6 +634,16 @@ test("Brain v3 rollout is independently disabled and device-stable", () => {
   assert.equal(brainV3PromotionReady({ TAKI_BRAIN_V3_READY: "1" }), false);
   assert.equal(brainV3PromotionReady(PROMOTION_ENV), true);
   assert.equal(normalizeBrainV3RolloutMode(promotedEnvironment({ TAKI_BRAIN_V3_MODE: "v3" })), "active");
+  const maintenanceEnvironment = {
+    TAKI_BRAIN_V3_MODE: "active",
+    TAKI_BRAIN_V3_MAINTENANCE_OVERRIDE: "1",
+    TAKI_BRAIN_V3_READY: "1",
+    TAKI_BRAIN_V3_RELEASE_ID: PROMOTION_RELEASE_ID
+  };
+  assert.equal(brainV3MaintenanceOverrideEnabled(maintenanceEnvironment), true);
+  assert.equal(normalizeBrainV3RolloutMode(maintenanceEnvironment), "active");
+  assert.equal(brainV3PromotionReady(maintenanceEnvironment), false);
+  assert.equal(brainV3MaintenanceOverrideEnabled({ ...maintenanceEnvironment, TAKI_BRAIN_V3_MODE: "canary" }), false);
   assert.equal(brainV3CanaryPercent({}), 0);
   assert.equal(shouldUseBrainV3({ deviceId: "12345678" }, {}), false);
   assert.equal(shouldUseBrainV3({ deviceId: "12345678" }, { TAKI_BRAIN_V3_MODE: "canary", TAKI_BRAIN_V3_PERCENT: "100" }), false);

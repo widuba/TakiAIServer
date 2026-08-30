@@ -15,6 +15,23 @@ The health endpoint exposes the effective `brainV3.version`, `brainV3.promotionR
 
 `TAKI_BRAIN_V3_SHADOW_MAX_CONCURRENCY` bounds detached shadow provider work to 1 by default (maximum 4). This protects the live provider from an accidental shadow stampede; use a separate staging provider project for evaluation.
 
+### Planned maintenance cutover with the existing provider key
+
+If a separately isolated provider project is unavailable but the operator has
+explicitly approved using the existing backend credential during a planned
+maintenance window, the normal evidence gate can be bypassed only through the
+release-bound active maintenance override:
+
+- `TAKI_BRAIN_V3_MODE=active`
+- `TAKI_BRAIN_V3_READY=1`
+- `TAKI_BRAIN_V3_RELEASE_ID=<current committed revision>`
+- `TAKI_BRAIN_V3_MAINTENANCE_OVERRIDE=1`
+
+This is intentionally active-only and does not enable auxiliary surfaces. Keep
+the override for the maintenance window only, then replace it with evaluator
+evidence or roll back to `disabled`. The service retains its bounded circuit
+and compatibility fallback if a v3 provider attempt fails.
+
 If an active or canary v3 request fails, the process-local v3 circuit opens for a bounded cooldown based on the typed provider error. Brain v3 requests are pinned to the provider/model named by the promotion evidence; they never silently cross-fail over to the legacy alternate provider. Subsequent eligible requests use the compatibility planner immediately until a successful v3 attempt closes it. This limits repeated latency and provider pressure during a bad rollout without changing the environment flag or touching deterministic device routes.
 
 The auxiliary strict boundary has its own short circuit. A provider, timeout, unsupported-input, or malformed-contract failure immediately returns that surface to its compatibility implementation; later auxiliary attempts are skipped for a bounded cooldown instead of adding a second provider wait to every request.

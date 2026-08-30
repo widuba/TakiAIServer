@@ -483,7 +483,10 @@ export const BRAIN_V3_MODELS = Array.from(new Set([
 export function brainV3CoreEnabled(env: ModelEnvironment = process.env): boolean {
   const coreMode = String(env.TAKI_BRAIN_V3_MODE || "disabled").trim().toLowerCase();
   if (coreMode === "shadow") return true;
-  return brainV3PromotionGateStatus(env, ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL, Date.now(), BRAIN_V3_MODELS).ready
+  const maintenanceOverride = /^(?:1|true|yes|maintenance)$/i.test(String(env.TAKI_BRAIN_V3_MAINTENANCE_OVERRIDE || "").trim())
+    && /^(?:1|true|yes)$/i.test(String(env.TAKI_BRAIN_V3_READY || "").trim())
+    && /^[A-Za-z0-9._-]{7,128}$/.test(String(env.TAKI_BRAIN_V3_RELEASE_ID || "").trim());
+  return (brainV3PromotionGateStatus(env, ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL, Date.now(), BRAIN_V3_MODELS).ready || maintenanceOverride)
     && (coreMode === "active" || coreMode === "canary" || coreMode === "v3");
 }
 
