@@ -14,7 +14,8 @@
  * Add TAKI_BRAIN_V3_EVAL_REAL_WEB=1 for the opt-in current-fact case that uses
  * the provider's real web-search path. The default corpus uses a deterministic
  * fixture so the core gate is repeatable and cannot accidentally create
- * uncontrolled web traffic.
+ * uncontrolled web traffic. Add TAKI_BRAIN_V3_EVAL_AUX=1 to run the strict
+ * provider contract corpus for every promoted auxiliary surface as well.
  */
 
 import type { AssistantPlan, ConversationState } from "../src/types.js";
@@ -33,6 +34,15 @@ type EvalCase = {
   voice?: boolean;
   maxLatencyMs?: number;
   expect: (plan: AssistantPlan) => string[];
+};
+
+type AuxiliaryEvalCase = {
+  id: string;
+  name: string;
+  contents: string;
+  schema: Record<string, unknown>;
+  options?: Record<string, unknown>;
+  validate: (value: any, response: any) => string[];
 };
 
 function genericRefusal(text: string): boolean {
@@ -245,6 +255,265 @@ const CASES: EvalCase[] = [
   }
 ];
 
+/**
+ * Provider-backed contract smoke tests for the strict auxiliary surfaces.
+ * These intentionally use synthetic inputs and never call a native action,
+ * mutate account state, or use a user's conversation. The deterministic suite
+ * already exercises the local validators; this gate proves that the selected
+ * staging provider can actually emit every schema that promotion depends on.
+ */
+async function runAuxiliaryProviderGate(
+  generateContent: (...args: any[]) => Promise<any>,
+  timeZone: string
+): Promise<{ total: number; failures: Array<{ id: string; reasons: string[] }>; latencies: number[] }> {
+  const [
+    specialists,
+    cooking,
+    dayplan,
+    memory,
+    chatTitle,
+    safetyReview,
+    websummary
+  ] = await Promise.all([
+    import("../src/brainV3Specialists.js"),
+    import("../src/cooking.js"),
+    import("../src/dayplan.js"),
+    import("../src/userMemory.js"),
+    import("../src/chatTitle.js"),
+    import("../src/safetyReview.js"),
+    import("../src/websummary.js")
+  ]);
+
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const nowLocal = now.toLocaleString("en-US", { timeZone, dateStyle: "full", timeStyle: "short" });
+  const schema = (value: any) => value as Record<string, unknown>;
+  const nonEmpty = (value: unknown, reason: string): string[] => String(value || "").trim() ? [] : [reason];
+  const cases: AuxiliaryEvalCase[] = [
+    {
+      id: "aux-recipe",
+      name: "recipe",
+      contents: "Return a valid compact recipe object for a peanut-free chickpea pasta dinner. Use at least two ingredients and two ordered steps. Every step must include timerMin, using null when there is no hands-off wait.",
+      schema: schema(cooking.RECIPE_SCHEMA),
+      options: { timeoutMs: 22_000, maxOutputTokens: 1_600, reasoning: "low", temperature: 0.2 },
+      validate: (value) => [
+        ...nonEmpty(value?.title, "recipe_title_missing"),
+        ...(Array.isArray(value?.ingredients) && value.ingredients.length >= 2 ? [] : ["recipe_ingredients_missing"]),
+        ...(Array.isArray(value?.steps) && value.steps.length >= 2 ? [] : ["recipe_steps_missing"])
+      ]
+    },
+    {
+      id: "aux-day-plan",
+      name: "day_plan",
+      contents: `Right now it is ${nowLocal} (${timeZone}). Return a realistic 4-item plan beginning at the next available local half-hour. Use only future local times, chronological order, 1-2 event blocks with positive integer durationMin, and alarms with durationMin null.`,
+      schema: schema(dayplan.DAY_PLAN_SCHEMA),
+      options: { timeoutMs: 22_000, maxOutputTokens: 1_600, reasoning: "low", temperature: 0.2 },
+      validate: (value) => {
+        const normalized = dayplan.normalizeDayPlanObject(value, nowIso, timeZone);
+        return normalized ? [] : ["day_plan_boundary_rejected_provider_output"];
+      }
+    },
+    {
+      id: "aux-memory",
+      name: "memory",
+      contents: "Return the selective-memory object for this user statement: I work as a nurse and I am allergic to peanuts. Add only those durable facts, use the allowed categories, and remove nothing.",
+      schema: schema(memory.DURABLE_MEMORY_SCHEMA),
+      options: { timeoutMs: 10_000, maxOutputTokens: 600, reasoning: "low", temperature: 0 },
+      validate: (value) => [
+        ...(Array.isArray(value?.add) && value.add.length >= 1 ? [] : ["memory_add_missing"]),
+        ...(Array.isArray(value?.remove) && value.remove.length === 0 ? [] : ["memory_remove_not_empty"]),
+        ...(Array.isArray(value?.add) && value.add.some((item: any) => /nurse|peanut/i.test(String(item?.text || ""))) ? [] : ["memory_fact_not_preserved"])
+      ]
+    },
+    {
+      id: "aux-chat-title",
+      name: "chat_title",
+      contents: "Create a concise 2-5 word title for this message: Help me compare the newest iPhone cameras.",
+      schema: schema(chatTitle.CHAT_TITLE_SCHEMA),
+      options: { timeoutMs: 8_000, maxOutputTokens: 120, reasoning: "low", temperature: 0.1 },
+      validate: (value) => {
+        const title = chatTitle.normalizeChatTitle(String(value?.title || ""));
+        const words = title ? title.split(/\s+/).length : 0;
+        return [
+          ...(words >= 1 && words <= 6 ? [] : ["chat_title_not_bounded"]),
+          ...nonEmpty(title, "chat_title_missing")
+        ];
+      }
+    },
+    {
+      id: "aux-safety-review",
+      name: "safety_review",
+      contents: safetyReview.safetyReviewPrompt("What does a firewall do in plain English?"),
+      schema: schema(safetyReview.SAFETY_REVIEW_SCHEMA),
+      options: { timeoutMs: 9_000, maxOutputTokens: 100, reasoning: "none", temperature: 0 },
+      validate: (value) => [
+        ...(safetyReview.parseSafetyDecision(JSON.stringify(value)).flag ? ["benign_safety_question_flagged"] : [])
+      ]
+    },
+    {
+      id: "aux-url-summary",
+      name: "url_summary",
+      contents: "Summarize this synthetic page in one short paragraph, using only its stated facts: The Taki staging page says that a strict structured pipeline separates understanding, policy, grounding, and final answer writing. It is tested without changing live traffic.",
+      schema: schema(websummary.URL_SUMMARY_SCHEMA),
+      options: { timeoutMs: 20_000, maxOutputTokens: 500, reasoning: "low", temperature: 0 },
+      validate: (value) => [
+        ...nonEmpty(value?.summary, "url_summary_missing"),
+        ...(/structured|pipeline|live traffic|understanding|policy/i.test(String(value?.summary || "")) ? [] : ["url_summary_misses_source"])
+      ]
+    },
+    {
+      id: "aux-venue",
+      name: "venue_fast",
+      contents: "Extract the venue from this supplied event data. Event title: Summer Jazz. Venue: Prospect Park Bandshell. Return found=true and the exact venue name; do not invent a different venue.",
+      schema: schema(specialists.BRAIN_V3_VENUE_SCHEMA),
+      options: { timeoutMs: 9_000, maxOutputTokens: 120, reasoning: "low" },
+      validate: (value) => [
+        ...(value?.found === true ? [] : ["venue_not_found"]),
+        ...(/prospect park bandshell/i.test(String(value?.venue || "")) ? [] : ["venue_not_preserved"])
+      ]
+    },
+    {
+      id: "aux-event-match",
+      name: "event_match",
+      contents: "Choose the matching event index for the requested event. Requested: New York vs Boston on September 4. Candidates: index 0 = New York vs Boston on September 3; index 1 = New York vs Boston on September 4; index 2 = Miami vs Boston on September 4. Return only the object with eventIndex 1.",
+      schema: schema(specialists.BRAIN_V3_EVENT_MATCH_SCHEMA),
+      options: { timeoutMs: 9_000, maxOutputTokens: 80, reasoning: "low" },
+      validate: (value) => value?.eventIndex === 1 ? [] : ["event_match_wrong_index"]
+    },
+    {
+      id: "aux-alarm",
+      name: "alarm_parse",
+      contents: "Parse this alarm request: Set an alarm tomorrow at 7:30 AM labeled school. Return valid=true, hour 7, minute 30, ampmGiven=true, dayOffset=1, label school.",
+      schema: schema(specialists.BRAIN_V3_ALARM_SCHEMA),
+      options: { timeoutMs: 9_000, maxOutputTokens: 120, reasoning: "low" },
+      validate: (value) => value?.valid === true && value?.hour === 7 && value?.minute === 30 && value?.dayOffset === 1
+        ? [] : ["alarm_fields_not_preserved"]
+    },
+    {
+      id: "aux-timer",
+      name: "timer_parse",
+      contents: "Parse this timer request: Start a 90-second timer for tea. Return seconds 90 and label tea.",
+      schema: schema(specialists.BRAIN_V3_TIMER_SCHEMA),
+      options: { timeoutMs: 9_000, maxOutputTokens: 100, reasoning: "low" },
+      validate: (value) => value?.seconds === 90 && /tea/i.test(String(value?.label || "")) ? [] : ["timer_fields_not_preserved"]
+    },
+    {
+      id: "aux-math",
+      name: "math_translate",
+      contents: "Translate this calculation into a safe JavaScript expression using only numbers and permitted Math functions: What is 17 percent of 240? Return a non-null expression and a short label.",
+      schema: schema(specialists.BRAIN_V3_MATH_SCHEMA),
+      options: { timeoutMs: 9_000, maxOutputTokens: 140, reasoning: "low" },
+      validate: (value) => {
+        const expr = String(value?.expr || "");
+        const stripped = expr.replace(/Math\.[A-Za-z][A-Za-z0-9]*/g, "0");
+        return value?.expr && expr.length <= 200 && /^[0-9+\-*/%.()\s,]*$/.test(stripped)
+          ? [] : ["math_expression_not_safe"];
+      }
+    },
+    {
+      id: "aux-style",
+      name: "message_style_rewrite",
+      contents: "Rewrite this message in a friendly casual style while preserving its exact fact and time: I will be late to the 5:30 meeting.",
+      schema: schema(specialists.BRAIN_V3_STYLE_SCHEMA),
+      options: { timeoutMs: 9_000, maxOutputTokens: 180, reasoning: "low", temperature: 0.2 },
+      validate: (value) => specialists.brainV3SchemaMatches(value, specialists.BRAIN_V3_STYLE_SCHEMA) && /late|5:30|five thirty/i.test(String(value?.text || ""))
+        ? [] : ["style_rewrite_lost_fact"]
+    },
+    {
+      id: "aux-events",
+      name: "events_extract",
+      contents: "Extract the two supplied future events into the required object: 'Dentist on 2026-09-04 at 09:00 in Boston' and 'Lunch on 2026-09-05 at 12:00 in Cambridge'. Do not invent more events.",
+      schema: schema(specialists.BRAIN_V3_EVENTS_SCHEMA),
+      options: { timeoutMs: 12_000, maxOutputTokens: 500, reasoning: "low" },
+      validate: (value) => Array.isArray(value?.events) && value.events.length === 2 && value.events.every((item: any) => item?.title && item?.localDate && item?.localTime)
+        ? [] : ["events_not_extracted"]
+    },
+    {
+      id: "aux-sports-tracker",
+      name: "sports_tracker",
+      contents: "Return a strict tracker snapshot for the supplied fixture: Boston Celtics vs New York Knicks, eventDate 2026-09-04, scheduled with no score. Use found=true, a non-empty title, line1, line2, and status.",
+      schema: schema(specialists.BRAIN_V3_SPORTS_TRACKER_SCHEMA),
+      options: { timeoutMs: 12_000, maxOutputTokens: 220, reasoning: "low" },
+      validate: (value) => value?.found === true && value?.eventDate === "2026-09-04" && value?.title && value?.line1 && value?.status
+        ? [] : ["sports_tracker_contract_failed"]
+    },
+    {
+      id: "aux-product-tracker",
+      name: "product_tracker",
+      contents: "Return a strict product-price tracker snapshot for this supplied fixture: Example Laptop, starting price $999, source context Example Store. Use found=true and preserve the price in line1.",
+      schema: schema(specialists.BRAIN_V3_PRODUCT_TRACKER_SCHEMA),
+      options: { timeoutMs: 12_000, maxOutputTokens: 220, reasoning: "low" },
+      validate: (value) => value?.found === true && /(?:\$\s*999|999)/.test(String(value?.line1 || "")) && value?.title && value?.status
+        ? [] : ["product_tracker_contract_failed"]
+    },
+    {
+      id: "aux-flight-tracker",
+      name: "flight_tracker",
+      contents: "Return a strict tracker snapshot for this supplied fixture: UA328, Denver to Honolulu, scheduled 6:00p departure and 9:45p arrival, on time. Use found=true, depColor and arrColor green, trend up, and preserve the flight code in the title.",
+      schema: schema(specialists.BRAIN_V3_FLIGHT_TRACKER_SCHEMA),
+      options: { timeoutMs: 12_000, maxOutputTokens: 260, reasoning: "low" },
+      validate: (value) => value?.found === true && /UA328/i.test(String(value?.title || "")) && value?.depColor === "green" && value?.arrColor === "green" && value?.trend === "up"
+        ? [] : ["flight_tracker_contract_failed"]
+    },
+    {
+      id: "aux-web-answer",
+      name: "web_answer",
+      contents: "Answer this grounded synthetic question using only the supplied source fact: Source fact: Canberra is the capital of Australia. Question: What is Australia's capital? Return a concise answer object.",
+      schema: schema(specialists.BRAIN_V3_WEB_ANSWER_SCHEMA),
+      options: { timeoutMs: 12_000, maxOutputTokens: 180, reasoning: "low" },
+      validate: (value) => /canberra/i.test(String(value?.answer || "")) ? [] : ["web_answer_misses_source"]
+    },
+    {
+      id: "aux-event",
+      name: "event_extract",
+      contents: "Extract one supplied event into the required object: 'Dentist appointment on 2026-09-04 at 09:00 in Boston'. Set found=true and preserve the date, time, title, and location.",
+      schema: schema(specialists.BRAIN_V3_EVENT_SCHEMA),
+      options: { timeoutMs: 12_000, maxOutputTokens: 260, reasoning: "low" },
+      validate: (value) => value?.found === true && /2026-09-04/.test(String(value?.localDate || "")) && /09:00|9:00/.test(String(value?.localTime || ""))
+        ? [] : ["event_contract_failed"]
+    }
+  ];
+
+  const failures: Array<{ id: string; reasons: string[] }> = [];
+  const latencies: number[] = [];
+  for (const item of cases) {
+    specialists.resetBrainV3SpecialistCircuit();
+    const started = Date.now();
+    const reasons: string[] = [];
+    let value: any = null;
+    let response: any = null;
+    try {
+      const result = await specialists.runBrainV3Structured<any>(
+        item.name,
+        item.contents,
+        item.schema,
+        { timeoutMs: 12_000, maxOutputTokens: 1_200, reasoning: "low", ...(item.options || {}) },
+        generateContent
+      );
+      value = result.value;
+      response = result.response;
+      reasons.push(...item.validate(value, response));
+    } catch (error) {
+      const kind = String((error as any)?.kind || (error as any)?.name || "provider_or_contract_error")
+        .replace(/[^a-z0-9_\-]/gi, "_")
+        .slice(0, 80);
+      reasons.push(kind || "provider_or_contract_error");
+    }
+    const latencyMs = Date.now() - started;
+    latencies.push(latencyMs);
+    if (reasons.length) failures.push({ id: item.id, reasons });
+    console.log(JSON.stringify({
+      type: "auxiliary_case",
+      id: item.id,
+      ok: reasons.length === 0,
+      reasons,
+      latencyMs,
+      responseHasUsage: !!response?.usageMetadata
+    }));
+  }
+  return { total: cases.length, failures, latencies };
+}
+
 async function main(): Promise<number> {
   const productionMarker = [process.env.NODE_ENV, process.env.TAKI_ENV, process.env.APP_ENV]
     .some((value) => /^(?:production|prod)$/i.test(String(value || "").trim()));
@@ -282,13 +551,19 @@ async function main(): Promise<number> {
     return 2;
   }
   const realWeb = realWebFlag === "1";
+  const auxiliaryFlag = String(process.env.TAKI_BRAIN_V3_EVAL_AUX || "").trim();
+  if (auxiliaryFlag && auxiliaryFlag !== "1") {
+    console.error("TAKI_BRAIN_V3_EVAL_AUX must be unset or exactly 1.");
+    return 2;
+  }
+  const auxiliary = auxiliaryFlag === "1";
   process.env.AI_PROVIDER = stagingProvider;
-  // The optional real-web boundary is imported only in a staging process and
-  // uses shadow mode to make the core-gated research utility available without
-  // implying that this evaluator has promoted customer traffic.
-  process.env.TAKI_BRAIN_V3_MODE = realWeb ? "shadow" : "disabled";
-  process.env.TAKI_BRAIN_V3_READY = "";
-  process.env.TAKI_BRAIN_V3_AUX_MODE = "disabled";
+  // The optional real-web boundary is imported only in a staging process. Core
+  // real-web-only runs use shadow mode; the auxiliary contract run uses active
+  // mode solely inside this isolated evaluator, never in the deployed service.
+  process.env.TAKI_BRAIN_V3_MODE = auxiliary ? "active" : realWeb ? "shadow" : "disabled";
+  process.env.TAKI_BRAIN_V3_READY = auxiliary ? "1" : "";
+  process.env.TAKI_BRAIN_V3_AUX_MODE = auxiliary ? "active" : "disabled";
   if (stagingProvider === "openai") {
     process.env.OPENAI_API_KEY = stagingKey;
     process.env.GEMINI_API_KEY = "";
@@ -367,21 +642,28 @@ async function main(): Promise<number> {
     }));
   }
 
-  const sorted = [...latencies].sort((a, b) => a - b);
+  const auxiliarySummary = auxiliary
+    ? await runAuxiliaryProviderGate(generateContent, "America/New_York")
+    : { total: 0, failures: [] as Array<{ id: string; reasons: string[] }>, latencies: [] as number[] };
+  const allFailures = [...failures, ...auxiliarySummary.failures];
+  const totalCases = CASES.length + auxiliarySummary.total;
+
+  const sorted = [...latencies, ...auxiliarySummary.latencies].sort((a, b) => a - b);
   const p95 = sorted.length ? sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)] : 0;
   console.log(JSON.stringify({
     type: "summary",
     provider: ACTIVE_AI_PROVIDER,
     model: BRAIN_V3_MODEL,
     realWeb,
-    total: CASES.length,
-    passed: CASES.length - failures.length,
-    failed: failures.length,
+    total: totalCases,
+    passed: totalCases - allFailures.length,
+    failed: allFailures.length,
+    auxiliary,
     p95LatencyMs: p95,
     maxLatencyMs: sorted.at(-1) || 0,
-    failures
+    failures: allFailures
   }));
-  return failures.length ? 1 : 0;
+  return allFailures.length ? 1 : 0;
 }
 
 process.exitCode = await main();
