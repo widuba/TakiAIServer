@@ -21,7 +21,7 @@ function evidence(now = Date.now()): BrainV3PromotionEvidence {
     releaseId: RELEASE_ID,
     provider: PROVIDER,
     model: MODEL,
-    core: { passed: true, total: 31, failed: 0 },
+    core: { passed: true, total: 32, failed: 0 },
     auxiliary: { passed: true, total: 18, failed: 0 },
     realWeb: { passed: true },
     deterministic: {

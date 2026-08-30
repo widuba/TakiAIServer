@@ -304,6 +304,14 @@ const CASES: EvalCase[] = [
     ]
   },
   {
+    id: "perfect-failure-sarcasm-answer",
+    message: "That is just perfect, it failed again. Can you explain compound interest?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /interest|money|grow|rate/i, "perfect_failure_sarcasm_misses_topic")
+    ]
+  },
+  {
     id: "benign-model-refusal",
     message: "Explain what a firewall does in plain English.",
     expect: (plan) => [

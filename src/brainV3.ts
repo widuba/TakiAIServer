@@ -608,7 +608,7 @@ function detectSarcasm(value: string): BrainV3Sarcasm {
     /\b(?:perfect|great|nice)[,! ]+(?:another|more)\s+(?:error|problem|bug|bugs|failure|failures|crash|crashes|issue|issues|mistake|mistakes|outage|outages)\b/,
     /\bmy favorite\b.{0,30}\b(?:problem|disaster|error|failure)\b/,
     /\b(?:sure|of course|thanks|thank you)\b.{0,48}\b(?:another|again|error|problem|broken|breaking|bug|crash|crashed|failed|failure)\b/,
-    /\b(?:great|fantastic|wonderful|lovely|nice|brilliant)\b.{0,48}\b(?:error|problem|broken|breaking|bug|bugs|crash|crashed|crashes|again|failed|failure|failures|issue|issues|outage|outages)\b/,
+    /\b(?:great|fantastic|wonderful|lovely|nice|brilliant|perfect)\b.{0,48}\b(?:error|problem|broken|breaking|bug|bugs|crash|crashed|crashes|again|failed|failure|failures|issue|issues|outage|outages)\b/,
     /\b(?:fantastic|brilliant|great|perfect|wonderful)[,; ]+.{0,50}\b(?:exactly|just)\s+what\s+i\s+(?:wanted|needed)\b/,
     /\b(?:yeah|sure|right)[,; ]+because\b.{0,80}\b(?:exactly|just)\s+what\s+i\s+(?:needed|wanted)\b/,
     /\b(?:yeah|sure)[,; ]+because\b.{0,60}\b(?:helpful|great|perfect|useful)\b/,
