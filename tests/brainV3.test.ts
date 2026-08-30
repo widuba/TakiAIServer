@@ -168,7 +168,9 @@ test("Brain v3 preserves sarcasm as frustration and recognizes disfluent non-Eng
   assert.ok(accentedStutter.repeatedFragments.includes("sí"));
   assert.equal(normalizeBrainV3Input("é é éclair").repeatedFragments[0], "éclair");
   assert.equal(normalizeBrainV3Input("Você pode explicar isso?").language, "pt");
-  assert.equal(normalizeBrainV3Input("あ あ あしたの天気").language, "ja");
+  const japanese = normalizeBrainV3Input("あ あ あしたの天気");
+  assert.equal(japanese.language, "ja");
+  assert.equal(japanese.normalizedText, "あしたの天気");
   assert.equal(normalizeBrainV3Input("안녕하세요, 오늘 날씨가 어때요?").language, "ko");
   assert.equal(normalizeBrainV3Input("नमस्ते, आज मौसम कैसा है?").language, "hi");
 });
