@@ -579,6 +579,30 @@ const CASES: EvalCase[] = [
     ]
   },
   {
+    id: "sincere-resolution-answer",
+    message: "Great, the bug is fixed now. Can you explain what changed?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /changed|fixed|resolved|working|explained/i, "sincere_resolution_misses_topic")
+    ],
+    expectStages: (stages) => [
+      ...notDefinitelySarcastic(stages, "sincere_resolution"),
+      ...semanticStages(stages, { language: "en" }, "sincere_resolution")
+    ]
+  },
+  {
+    id: "active-failure-answer",
+    message: "Thanks for fixing it, but it keeps failing. What should I try next?",
+    expect: (plan) => [
+      ...answerable(plan),
+      ...includes(plan.spokenText, /try|fix|fail|help|next/i, "active_failure_misses_topic")
+    ],
+    expectStages: (stages) => semanticStages(stages, {
+      tone: "frustrated",
+      language: "en"
+    }, "active_failure")
+  },
+  {
     id: "benign-model-refusal",
     message: "Explain what a firewall does in plain English.",
     expect: (plan) => [
@@ -607,6 +631,19 @@ const CASES: EvalCase[] = [
     expectStages: (stages) => [
       ...understandingIntent(stages, "compose_message", "noisy_message"),
       ...semanticStages(stages, { disfluencyDetected: true, language: "en" }, "noisy_message")
+    ]
+  },
+  {
+    id: "indirect-request-action",
+    message: "Would you mind texting Chris that I am late?",
+    expect: (plan) => [
+      ...action(plan, "compose_message"),
+      ...(plan.action?.recipientName?.toLocaleLowerCase().includes("chris") ? [] : ["indirect_recipient_not_preserved"]),
+      ...(plan.action?.body?.toLocaleLowerCase().includes("late") ? [] : ["indirect_body_not_preserved"])
+    ],
+    expectStages: (stages) => [
+      ...understandingIntent(stages, "compose_message", "indirect_request"),
+      ...semanticStages(stages, { speechAct: "request", language: "en" }, "indirect_request")
     ]
   },
   {
