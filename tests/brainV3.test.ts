@@ -295,6 +295,44 @@ test("Brain v3 requires an explicit memory or undo command before compiling a mu
   assert.equal(undoCommand.action?.type, "undo_last");
 });
 
+test("Brain v3 distinguishes personal lookup requests from generic definitions", async () => {
+  const runModelAction = (message: string, type: any, fields: Record<string, unknown> = {}) => {
+    const stages = fakeStages({
+      ...directUnderstanding,
+      intent: type,
+      answerMode: "action",
+      action: { ...blankAction(type), type, ...fields }
+    });
+    return runBrainV3Plan(state(message), undefined, stages.deps);
+  };
+
+  for (const [message, type] of [
+    ["What is an event?", "calendar_search"],
+    ["What is a reminder?", "reminder_search"],
+    ["What is a contact?", "contact_search"],
+    ["What is a phone?", "device_status"],
+    ["What is health?", "health_query"],
+    ["What did I do to deserve this?", "action_history"]
+  ] as const) {
+    const result = await runModelAction(message, type);
+    assert.equal(result.action, null, message);
+    assert.equal(result.needsExecution, false, message);
+  }
+
+  const calendar = await runModelAction("What's on my calendar tomorrow?", "calendar_search", { daysAhead: 1 });
+  assert.equal(calendar.action?.type, "calendar_search");
+  const reminders = await runModelAction("Show me my reminders", "reminder_search");
+  assert.equal(reminders.action?.type, "reminder_search");
+  const contact = await runModelAction("What's Chris's phone number?", "contact_search", { contactQuery: "Chris", contactField: "phone" });
+  assert.equal(contact.action?.type, "contact_search");
+  const health = await runModelAction("How many steps did I take today?", "health_query", { metric: "steps" });
+  assert.equal(health.action?.type, "health_query");
+  const device = await runModelAction("What's my battery level?", "device_status");
+  assert.equal(device.action?.type, "device_status");
+  const history = await runModelAction("What did you just do?", "action_history");
+  assert.equal(history.action?.type, "action_history");
+});
+
 test("Brain v3 recognizes punctuated sarcasm and separates freshness from urgency", () => {
   assert.equal(normalizeBrainV3Input("Yeah, right — who is the CEO right now?").sarcasm, "likely");
   assert.equal(normalizeBrainV3Input("Who is the CEO right now?").tone, "neutral");

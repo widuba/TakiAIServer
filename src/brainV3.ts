@@ -1455,22 +1455,38 @@ function hasExplicitActionFrame(text: string): boolean {
   return ACTION_LEAD.test(remainder);
 }
 
+function isBareDefinitionQuestion(value: string, subject: string): boolean {
+  return new RegExp(`^(?:what(?:'s| is)|define|meaning of)\\s+(?:a|an)\\s+${subject}\\s*[?.!]*$`, "i").test(value.trim());
+}
+
 function modelActionHasUserCue(actionType: string, text: string): boolean {
   const value = text.toLocaleLowerCase();
   if (BRAIN_V3_READ_ACTION_TYPES.has(actionType)) {
     switch (actionType) {
       case "calendar_search":
-        return /\b(?:calendar|schedule|appointment|meeting|event)\b/.test(value) && /\b(?:what|when|show|check|find|look|upcoming|next|do i have)\b/.test(value)
+        return !isBareDefinitionQuestion(value, "(?:calendar|schedule|appointment|meeting|event)")
+          && /\b(?:calendar|schedule|appointment|meeting|event)\b/.test(value) && /\b(?:what|when|show|check|find|look|upcoming|next|do i have)\b/.test(value)
           || /\bwhat\s+do\s+i\s+have\b/.test(value) && /\b(?:today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|week)\b/.test(value);
-      case "reminder_search": return /\breminders?\b/.test(value) && /\b(?:what|show|check|find|list|which)\b/.test(value);
+      case "reminder_search": return !isBareDefinitionQuestion(value, "reminders?")
+        && /\breminders?\b/.test(value) && /\b(?:what|show|check|find|list|which)\b/.test(value);
       case "personal_search": return /\b(?:find|search|look\s+for|show)\b/.test(value) && /\b(?:my|across|email|calendar|photos|chats|data|apps)\b/.test(value);
-      case "contact_search": return /\bcontacts?\b|\b(?:find|look\s+up)\b.{0,40}\b(?:number|phone|email)\b/.test(value) && /\b(?:find|look|show|search|what|which|who)\b/.test(value);
+      case "contact_search": return !isBareDefinitionQuestion(value, "contacts?")
+        && (
+          /\bcontacts?\b/.test(value) && /\b(?:find|look|show|search|what|which|who)\b/.test(value)
+          || /\b(?:find|look\s+up)\b.{0,40}\b(?:number|phone|email)\b/.test(value)
+          || /\b(?:what(?:'s| is)|show(?:\s+me)?|give(?:\s+me)?|find|look\s+up)\b.{0,80}\b[\p{L}\p{N}'’_-]+(?:'s|’s)\s+(?:phone|phone\s+number|number|email|email\s+address)\b/iu.test(value)
+        );
       case "health_query":
-      case "health_trend": return /\b(?:health|steps?|distance|cycling|calories?|energy|exercise|stand|flights?|water|heart|sleep|weight|bmi|oxygen|glucose|blood pressure)\b/.test(value);
+      case "health_trend": return /\b(?:steps?|distance|cycling|calories?|energy|exercise|stand|flights?|water|heart(?:\s+rate)?|sleep|weight|bmi|oxygen|glucose|blood pressure|body fat|lean mass|height|respiratory|temperature|hrv|vo2)\b/.test(value)
+        && /\b(?:what|how|show|check|my|did|is|are|am i|have|track|trend|average|today|yesterday|last|this week)\b/.test(value);
       case "photos_show":
       case "photos_search": return /\b(?:photo|photos|picture|pictures|album)\b/.test(value) && /\b(?:show|find|search|look|recent|latest|from)\b/.test(value);
-      case "action_history": return /\b(?:history|recent activity|recent actions?|last action|what did i (?:do|change|ask)|things i did)\b/.test(value);
-      case "device_status": return /\b(?:phone|device|battery|storage|status|charged|charging)\b/.test(value);
+      case "action_history": return /\b(?:recent activity|recent actions?|action history|last action|what did you just do|what have you done on (?:my\s+)?(?:iphone|phone|device)|did that work)\b/.test(value)
+        || /^what did i (?:do|change|ask)\s+(?:recently|just now|today|on (?:my\s+)?(?:iphone|phone|device))\s*[?.!]*$/i.test(value);
+      case "device_status": return !isBareDefinitionQuestion(value, "(?:phone|device|iphone|battery|storage)")
+        && /\b(?:phone|device|iphone|battery|storage)\b/.test(value)
+        && /\b(?:status|level|percentage|percent|charged|charging|power|signal|storage|battery|charge)\b/.test(value)
+        || /\b(?:how much|how many|do i have)\b.{0,40}\b(?:battery|charge|storage)\b/.test(value);
       default: return false;
     }
   }
