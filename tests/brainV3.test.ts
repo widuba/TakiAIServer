@@ -141,6 +141,21 @@ test("Brain v3 recognizes punctuated sarcasm and separates freshness from urgenc
   assert.equal(normalizeBrainV3Input("I need help right now.").tone, "urgent");
 });
 
+test("Brain v3 preserves sarcasm as frustration and recognizes disfluent non-English speech", () => {
+  const sarcastic = normalizeBrainV3Input("Oh great, another error — exactly what I needed.");
+  assert.equal(sarcastic.sarcasm, "likely");
+  assert.equal(sarcastic.tone, "frustrated");
+
+  const chinese = normalizeBrainV3Input("嗯，嗯，我想知道今天的天气");
+  assert.equal(chinese.language, "zh");
+  assert.equal(chinese.disfluencyDetected, true);
+  assert.ok(chinese.repeatedFragments.includes("嗯"));
+  assert.equal(chinese.normalizedText, "嗯,我想知道今天的天气");
+
+  assert.equal(normalizeBrainV3Input("S s sí, puedes explicar esto en español?").language, "es");
+  assert.equal(normalizeBrainV3Input("Você pode explicar isso?").language, "pt");
+});
+
 test("Brain v3 keeps explicit sarcasm and urgent tone when a model disagrees", async () => {
   const stages = fakeStages({ ...directUnderstanding, tone: "neutral", sarcasm: "unlikely" });
   await runBrainV3Plan(state("I I need help, yeah right."), undefined, stages.deps);

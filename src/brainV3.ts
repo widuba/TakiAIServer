@@ -406,6 +406,21 @@ function collapseLetterStutter(value: string, repeated: string[]): string {
   );
 }
 
+// Some languages do not use ASCII word boundaries, and speech recognizers may
+// preserve a one-syllable hesitation as punctuation-separated text (for
+// example, "嗯，嗯，我想..."). Treat only repeated single-letter/grapheme
+// fragments as disfluency here; ordinary repeated words and rhetorical
+// emphasis remain governed by the existing, more conservative rule.
+function collapseUnicodeSingleCharStutter(value: string, repeated: string[]): string {
+  return value.replace(
+    /(?<![\p{L}\p{N}])([\p{L}])(?:[\s,;:/—–\-，。！？、]+\1){1,5}(?=[\s,;:/—–\-，。！？、]+[\p{L}\p{N}]|$)/giu,
+    (whole, character: string) => {
+      repeated.push(character);
+      return character;
+    }
+  );
+}
+
 function stripAudioMarkers(value: string): string {
   return value
     .replace(/\((?:inaudible|unintelligible|background noise|silence|noise|music)\)/gi, " ")
@@ -512,6 +527,11 @@ function mergeSpeechActSignal(
 
 function detectTone(value: string): BrainV3Tone {
   const text = value.toLocaleLowerCase();
+  const sarcastic = detectSarcasm(value) === "likely";
+  if (sarcastic && /\b(?:great|good|perfect|awesome|helpful|thanks|thank you)\b/.test(text)
+    && /\b(?:error|broken|failed|failure|problem|wrong|late|stuck|crash|disaster|again|unacceptable)\b/.test(text)) {
+    return "frustrated";
+  }
   // "right now" is usually a freshness qualifier ("what is the score right
   // now?"), not an emotional urgency signal. Treat it as urgent only when it
   // is attached to a request for immediate help or action.
@@ -532,10 +552,23 @@ function detectLanguage(value: string): string {
   if (/[\u0400-\u04ff]/u.test(value)) return "ru";
   if (/[\u4e00-\u9fff]/u.test(value)) return "zh";
   if (/[\u3040-\u30ff]/u.test(value)) return "ja";
-  if (/\b(?:hola|gracias|quiero|dónde|cuando|qué|por favor)\b/i.test(value)) return "es";
-  if (/\b(?:bonjour|merci|je veux|où|quand|s'il vous plaît)\b/i.test(value)) return "fr";
-  if (/\b(?:hallo|danke|ich möchte|wo|wann|bitte)\b/i.test(value)) return "de";
-  return "en";
+  const marker = (word: string): RegExp => new RegExp(
+    `(?<![\\p{L}\\p{N}])${word.replace(/[.*+?^${}()|[\]\\]/g, "\\\\$&")}(?![\\p{L}\\p{N}])`,
+    "iu"
+  );
+  const markers: Array<[string, string[]]> = [
+    ["es", ["hola", "gracias", "sí", "quiero", "puedes", "puede", "explicar", "esto", "español", "dónde", "cuándo", "qué", "cómo", "hoy", "mañana", "por favor"]],
+    ["fr", ["bonjour", "merci", "je", "veux", "pouvez", "pouvez-vous", "expliquer", "français", "où", "quand", "comment", "aujourd'hui", "demain", "s'il vous plaît"]],
+    ["de", ["hallo", "danke", "ich", "möchte", "kannst", "können", "erklären", "deutsch", "wo", "wann", "was", "bedeutet", "heute", "morgen", "bitte"]],
+    ["pt", ["olá", "obrigado", "obrigada", "você", "voce", "pode", "podes", "quero", "explicar", "isso", "português", "onde", "quando", "hoje", "amanhã", "por favor"]],
+    ["it", ["ciao", "grazie", "voglio", "puoi", "potete", "spiegare", "questo", "italiano", "dove", "quando", "oggi", "domani", "per favore"]]
+  ];
+  let best: { language: string; score: number } = { language: "en", score: 0 };
+  for (const [language, words] of markers) {
+    const score = words.reduce((sum, word) => sum + (marker(word).test(value) ? 1 : 0), 0);
+    if (score > best.score) best = { language, score };
+  }
+  return best.language;
 }
 
 function detectSpeechAct(raw: string, normalized: string): BrainV3Signals["speechAct"] {
@@ -553,6 +586,7 @@ export function normalizeBrainV3Input(input: unknown, state?: Pick<ConversationS
   const fillerWords: string[] = [];
   let normalizedText = stripAudioMarkers(rawText);
   normalizedText = collapseLetterStutter(normalizedText, repeatedFragments);
+  normalizedText = collapseUnicodeSingleCharStutter(normalizedText, repeatedFragments);
   normalizedText = collapseSpelledStutter(normalizedText, repeatedFragments);
   normalizedText = collapseRepeatedWords(normalizedText, repeatedFragments);
   normalizedText = removeEdgeFillers(normalizedText, fillerWords);
@@ -1096,7 +1130,7 @@ function normalizeUnderstanding(raw: any, signals: BrainV3Signals): BrainV3Under
     speechAct: mergeSpeechActSignal(signals.speechAct, modelSpeechAct),
     tone: mergeToneSignal(signals.tone, modelTone),
     sarcasm: mergeSarcasmSignal(signals.sarcasm, modelSarcasm),
-    language: boundedText(raw?.language, 32) || signals.language,
+    language: signals.language !== "en" ? signals.language : boundedText(raw?.language, 32) || signals.language,
     disfluencyDetected: signals.disfluencyDetected || raw?.disfluencyDetected === true,
     repeatedFragments: [...new Set([
       ...signals.repeatedFragments,
