@@ -242,6 +242,35 @@ test("Brain v3 grounds polite inflected commands without executing instructional
   assert.equal(instructional.needsExecution, false);
 });
 
+test("Brain v3 does not clarify a complete indirect command when the model is cautious", async () => {
+  const stages = fakeStages({
+    ...directUnderstanding,
+    intent: "compose_message",
+    answerMode: "clarify",
+    speechAct: "request",
+    confidence: 0.68,
+    needsClarification: true,
+    clarifyingQuestion: "What should the message say?",
+    missing: ["confidence"],
+    action: {
+      type: "compose_message",
+      recipientName: "Chris",
+      contactQuery: "Chris",
+      body: "I am late"
+    },
+    contact: { name: "Chris", phone: null, email: null, confidence: 0.96 }
+  });
+  const result = await runBrainV3Plan(
+    state("Would you mind texting Chris that I am late?"),
+    undefined,
+    stages.deps
+  );
+  assert.equal(result.action?.type, "compose_message");
+  assert.equal(result.action?.recipientName, "Chris");
+  assert.match(result.action?.body || "", /late/i);
+  assert.equal(result.needsExecution, true);
+});
+
 test("Brain v3 accepts natural action leads across supported surfaces", async () => {
   const cases = [
     ["Email Chris I am late", "compose_email", { recipientName: "Chris", contactQuery: "Chris", body: "I am late" }],

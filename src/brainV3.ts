@@ -1520,6 +1520,67 @@ function modelActionHasUserCue(actionType: string, text: string): boolean {
   return !!cue && hasExplicitActionFrame(text) && cue.test(text);
 }
 
+/**
+ * A model can be cautious about a polite command and return confidence just
+ * below the normal executable threshold even when every required slot is
+ * present. Keep that caution for incomplete proposals, but do not turn a
+ * fully grounded user command into an unnecessary clarification.
+ */
+function actionHasRequiredDetails(intent: string, action: Partial<AssistantAction>): boolean {
+  const recipient = action.recipientName || action.contactQuery || action.recipientPhone || action.emailAddress;
+  switch (intent) {
+    case "compose_message":
+    case "compose_email":
+      return Boolean(recipient && action.body);
+    case "call_phone":
+      return Boolean(recipient);
+    case "calendar_create":
+      return Boolean(action.title && action.startDate && action.endDate);
+    case "calendar_create_from_context":
+      return Boolean(action.title || action.calendarQuery);
+    case "reminder_create":
+      return Boolean(action.title);
+    case "maps_search":
+      return Boolean(action.mapsQuery);
+    case "maps_directions":
+      return Boolean(action.mapsDestination);
+    case "open_app":
+      return Boolean(action.appName);
+    case "home_control":
+      return Boolean(action.homeAction);
+    case "music_control":
+      return Boolean(action.musicAction);
+    case "contact_create":
+      return Boolean(action.recipientName && (action.recipientPhone || action.emailAddress));
+    case "contact_search":
+    case "contact_update":
+    case "contact_delete":
+      return Boolean(action.contactQuery);
+    case "clipboard_copy":
+    case "file_export":
+      return Boolean(action.body);
+    case "list_action":
+      return Boolean(action.listOp) && (action.listOp !== "add" && action.listOp !== "remove" || Boolean(action.listItem));
+    case "scheduled_message":
+      return Boolean(recipient && action.body && action.dueDate);
+    case "alert_create":
+      return Boolean(action.alertKind && action.alertQuery)
+        && (action.alertKind !== "price" || Boolean(action.alertTarget != null && action.alertDirection));
+    case "automation_create":
+      return Boolean(action.automationPlace && action.automationAction);
+    case "recurring_reminder":
+      return Boolean(action.title && action.recurKind);
+    case "personal_search":
+      return Boolean(action.personalSearchQuery);
+    case "share_content":
+      return action.shareKind === "calendar" || action.shareKind === "calendar_list" || Boolean(action.shareText);
+    default:
+      // Read-only/control actions have their own strict compiler/audit checks;
+      // an explicit user cue is enough to preserve those proposals here.
+      return true;
+  }
+}
+
 function normalizeUnderstanding(raw: any, signals: BrainV3Signals): BrainV3Understanding {
   const output = baseUnderstanding(signals);
   const action = sanitizeAction(raw?.action);
@@ -1609,6 +1670,21 @@ function normalizeUnderstanding(raw: any, signals: BrainV3Signals): BrainV3Under
       // An executable intent with a correctly typed action must not depend on
       // the model remembering to set a second, redundant enum consistently.
       normalized.answerMode = "action";
+    }
+
+    // Polite indirect requests are still authorization to prepare the named
+    // action. The later planner audit and compiler remain authoritative for
+    // grounding and required fields; this only removes a model-confidence
+    // clarification when the user supplied a complete, explicit command.
+    if (
+      normalized.action
+      && modelActionHasUserCue(String(normalized.action.type), signals.normalizedText)
+      && actionHasRequiredDetails(normalized.intent, normalized.action)
+    ) {
+      normalized.needsClarification = false;
+      normalized.answerMode = "action";
+      normalized.clarifyingQuestion = null;
+      normalized.missing = [];
     }
   }
 
