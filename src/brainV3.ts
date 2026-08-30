@@ -1359,8 +1359,8 @@ function canonicalIntent(value: unknown): PlannerIntent {
 
 function requestedActionShape(signals: BrainV3Signals): boolean {
   return signals.speechAct === "request"
-    || /^(?:please\s+)?(?:text|message|email|call|add|put|schedule|remind|open|show|find|search|play|pause|resume|turn|make|draft|write|tell|navigate|send|remove|delete|cancel|create|save|start|stop|change|update|copy|export|track|follow|plan|log|record|alert|notify|launch)\b/i.test(signals.normalizedText)
-    || /^(?:please\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:help\s+me\s+)?(?:text|message|email|call|add|put|schedule|remind|open|show|find|search|play|pause|resume|turn|make|draft|write|tell|navigate|send|remove|delete|cancel|create|save|start|stop|change|update|copy|export|track|follow|plan|log|record|alert|notify|launch)\b/i.test(signals.normalizedText);
+    || /^(?:please\s+)?(?:text|message|email|call|add|put|schedule|remind|open|show|find|search|play|pause|resume|turn|make|draft|write|tell|navigate|send|remove|delete|cancel|create|save|start|stop|change|update|copy|export|track|follow|plan|log|record|alert|notify|launch|remember|forget|clear|undo|reverse|revert)\b/i.test(signals.normalizedText)
+    || /^(?:please\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:help\s+me\s+)?(?:text|message|email|call|add|put|schedule|remind|open|show|find|search|play|pause|resume|turn|make|draft|write|tell|navigate|send|remove|delete|cancel|create|save|start|stop|change|update|copy|export|track|follow|plan|log|record|alert|notify|launch|remember|forget|clear|undo|reverse|revert)\b/i.test(signals.normalizedText);
 }
 
 const BRAIN_V3_READ_ACTION_TYPES = new Set([
@@ -1369,16 +1369,16 @@ const BRAIN_V3_READ_ACTION_TYPES = new Set([
 ]);
 
 const BRAIN_V3_ACTION_CUES: Record<string, RegExp> = {
-  compose_message: /\b(?:text|message|send)\b/i,
-  compose_email: /\b(?:email|e-mail|mail)\b/i,
-  call_phone: /\b(?:call|phone|ring)\b/i,
-  calendar_create: /\b(?:add|put|schedule|create|book)\b.{0,50}\b(?:calendar|event|appointment|meeting)\b|\b(?:calendar|event|appointment|meeting)\b.{0,50}\b(?:add|put|schedule|create|book)\b/i,
-  calendar_update: /\b(?:change|edit|move|reschedule|update)\b.{0,50}\b(?:calendar|event|appointment|meeting|it|that|this)\b|\b(?:calendar|event|appointment|meeting)\b.{0,50}\b(?:change|edit|move|reschedule|update)\b/i,
-  calendar_delete: /\b(?:remove|delete|cancel)\b.{0,50}\b(?:calendar|event|appointment|meeting|it|that|this)\b|\b(?:calendar|event|appointment|meeting)\b.{0,50}\b(?:remove|delete|cancel)\b/i,
-  reminder_create: /\b(?:remind|reminder)\b/i,
-  reminder_update: /\b(?:change|edit|move|reschedule|update)\b.{0,40}\breminder\b|\breminder\b.{0,40}\b(?:change|edit|move|reschedule|update)\b/i,
-  reminder_delete: /\b(?:remove|delete|cancel)\b.{0,40}\breminder\b|\breminder\b.{0,40}\b(?:remove|delete|cancel)\b/i,
-  open_app: /\b(?:open|launch|start)\b/i,
+  compose_message: /\b(?:text(?:s|ed|ing)?|message(?:s|d|ing)?|send(?:s|ing)?|tell(?:s|ing)?|let(?:ting)?)\b/i,
+  compose_email: /\b(?:email(?:s|ed|ing)?|e-mail|mail(?:s|d|ing)?|send(?:s|ing)?)\b/i,
+  call_phone: /\b(?:call(?:s|ed|ing)?|phone(?:s|d|ing)?|ring(?:s|ing)?)\b/i,
+  calendar_create: /\b(?:add(?:s|ed|ing)?|put(?:s|ting)?|schedule(?:s|d|ing)?|create(?:s|d|ing)?|book(?:s|ed|ing)?)\b.{0,50}\b(?:calendar|event|appointment|meeting)\b|\b(?:calendar|event|appointment|meeting)\b.{0,50}\b(?:add(?:s|ed|ing)?|put(?:s|ting)?|schedule(?:s|d|ing)?|create(?:s|d|ing)?|book(?:s|ed|ing)?)\b/i,
+  calendar_update: /\b(?:change(?:s|d|ing)?|edit(?:s|ed|ing)?|move(?:s|d|ing)?|reschedule(?:s|d|ing)?|update(?:s|d|ing)?)\b.{0,50}\b(?:calendar|event|appointment|meeting|it|that|this)\b|\b(?:calendar|event|appointment|meeting)\b.{0,50}\b(?:change(?:s|d|ing)?|edit(?:s|ed|ing)?|move(?:s|d|ing)?|reschedule(?:s|d|ing)?|update(?:s|d|ing)?)\b/i,
+  calendar_delete: /\b(?:remove(?:s|d|ing)?|delete(?:s|d|ing)?|cancel(?:s|led|ling)?)\b.{0,50}\b(?:calendar|event|appointment|meeting|it|that|this)\b|\b(?:calendar|event|appointment|meeting)\b.{0,50}\b(?:remove(?:s|d|ing)?|delete(?:s|d|ing)?|cancel(?:s|led|ling)?)\b/i,
+  reminder_create: /\b(?:remind(?:s|ed|ing)?|reminder)\b/i,
+  reminder_update: /\b(?:change(?:s|d|ing)?|edit(?:s|ed|ing)?|move(?:s|d|ing)?|reschedule(?:s|d|ing)?|update(?:s|d|ing)?)\b.{0,40}\breminder\b|\breminder\b.{0,40}\b(?:change(?:s|d|ing)?|edit(?:s|ed|ing)?|move(?:s|d|ing)?|reschedule(?:s|d|ing)?|update(?:s|d|ing)?)\b/i,
+  reminder_delete: /\b(?:remove(?:s|d|ing)?|delete(?:s|d|ing)?|cancel(?:s|led|ling)?)\b.{0,40}\breminder\b|\breminder\b.{0,40}\b(?:remove(?:s|d|ing)?|delete(?:s|d|ing)?|cancel(?:s|led|ling)?)\b/i,
+  open_app: /\b(?:open(?:s|ed|ing)?|launch(?:es|ed|ing)?|start(?:s|ed|ing)?)\b/i,
   maps_search: /\b(?:maps?|place|restaurant|coffee|store|shop|near me)\b/i,
   maps_directions: /\b(?:direction|navigate|route|drive|walk|transit|get there|take me)\b/i,
   calendar_directions: /\b(?:calendar|schedule|appointment|meeting|event)\b.{0,80}\b(?:direction|navigate|route|drive|get there)\b|\b(?:direction|navigate|route|drive|get there)\b.{0,80}\b(?:calendar|schedule|appointment|meeting|event)\b/i,
@@ -1389,15 +1389,15 @@ const BRAIN_V3_ACTION_CUES: Record<string, RegExp> = {
   expense_action: /\b(?:expense|spend|spent|spending|budget|purchase)\b/i,
   habit_action: /\b(?:habit|streak|workout|meditation)\b/i,
   automation_create: /\b(?:automation|arrive|leave)\b/i,
-  scheduled_message: /\b(?:schedule|scheduled|later|tomorrow|at\s+\d)\b.{0,70}\b(?:text|message|email|send)\b|\b(?:text|message|email|send)\b.{0,70}\b(?:schedule|scheduled|later|tomorrow|at\s+\d)\b/i,
+  scheduled_message: /\b(?:schedule(?:s|d|ing)?|scheduled|later|tomorrow|at\s+\d)\b.{0,70}\b(?:text(?:s|ed|ing)?|message(?:s|d|ing)?|email(?:s|ed|ing)?|send(?:s|ing)?)\b|\b(?:text(?:s|ed|ing)?|message(?:s|d|ing)?|email(?:s|ed|ing)?|send(?:s|ing)?)\b.{0,70}\b(?:schedule(?:s|d|ing)?|scheduled|later|tomorrow|at\s+\d)\b/i,
   cooking_mode: /\b(?:cook|cooking|recipe|make)\b/i,
   cooking_schedule: /\b(?:cook|cooking|recipe)\b/i,
   alert_create: /\b(?:alert|notify|notification|tell me when|let me know when|watch for)\b/i,
   alert_cancel: /\b(?:alerts?|notifications?)\b/i,
   recurring_reminder: /\b(?:remind|reminder|every\s+(?:day|weekday|week|month|\d))\b/i,
   memory_save: /\b(?:remember|forget|clear what you remember|memory)\b/i,
-  share_content: /\b(?:share|send)\b/i,
-  clipboard_copy: /\bcopy\b/i,
+  share_content: /\b(?:share(?:s|d|ing)?|send(?:s|ing)?)\b/i,
+  clipboard_copy: /\b(?:copy|copies|copied|copying)\b/i,
   file_export: /\b(?:file|export|save as)\b/i,
   flashlight_control: /\bflashlight\b/i,
   contact_create: /\b(?:contact|save)\b/i,
@@ -1412,18 +1412,47 @@ const BRAIN_V3_ACTION_CUES: Record<string, RegExp> = {
   calendar_forward: /\b(?:calendar|event|appointment|meeting)\b.{0,80}\b(?:share|send|text|email)\b|\b(?:share|send|text|email)\b.{0,80}\b(?:calendar|event|appointment|meeting)\b/i
 };
 
+// Politeness and verb aspect should not change whether a model-proposed action
+// is grounded in an actual command. This is deliberately separate from speech
+// normalization: it never rewrites the user text sent to the model, it only
+// exposes the command head to the authorization check.
+const ACTION_REQUEST_PREFIXES = [
+  /^(?:please\s+)?i\s+was\s+wondering\s+if\s+you\s+could\s+/i,
+  /^(?:please\s+)?would\s+you\s+mind\s+(?:please\s+)?/i,
+  /^(?:please\s+)?do\s+you\s+mind\s+(?:please\s+)?/i,
+  /^(?:please\s+)?could\s+you\s+do\s+me\s+a\s+favor\s+and\s+/i,
+  /^(?:please\s+)?would\s+it\s+be\s+(?:possible|okay|ok)\s+to\s+/i,
+  /^(?:please\s+)?is\s+it\s+(?:possible|okay|ok)\s+to\s+/i,
+  /^(?:please\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:help\s+me\s+)?(?:to\s+)?/i,
+  /^(?:please\s+)?(?:i\s+(?:want|need|would\s+like|['’]d\s+like)\s+(?:you\s+)?(?:to\s+)?|go\s+ahead\s+and\s+|please\s+)/i
+];
+
+const ACTION_LEAD = /^(?:text(?:s|ed|ing)?|message(?:s|d|ing)?|send(?:s|ing)?|call(?:s|ed|ing)?|add(?:s|ed|ing)?|put(?:s|ting)?|schedule(?:s|d|ing)?|remind(?:s|ed|ing)?|open(?:s|ed|ing)?|show(?:s|ed|ing)?|find(?:s|ing)?|search(?:es|ed|ing)?|play(?:s|ed|ing)?|pause(?:s|d|ing)?|resume(?:s|d|ing)?|turn(?:s|ed|ing)?|make(?:s|made|ing)?|draft(?:s|ed|ing)?|writ(?:e|es|ten|ing)|tell(?:s|ing)?|let(?:ting)?\s+(?!me\b)[\p{L}\p{N}'’\-]+(?:\s+[\p{L}\p{N}'’\-]+){0,3}\s+know|navigat(?:e|es|ed|ing)|remove(?:s|d|ing)?|delete(?:s|d|ing)?|cancel(?:s|led|ling)?|create(?:s|d|ing)?|save(?:s|d|ing)?|start(?:s|ed|ing)?|stop(?:s|ped|ping)?|change(?:s|d|ing)?|update(?:s|d|ing)?|cop(?:y|ies|ied|ying)|export(?:s|ed|ing)?|track(?:s|ed|ing)?|follow(?:s|ed|ing)?|book(?:s|ed|ing)?|order(?:s|ed|ing)?|cook(?:s|ed|ing)?|plan(?:s|ned|ning)?|log(?:s|ged|ging)?|record(?:s|ed|ing)?|alert|notif(?:y|ies|ied|ying)|launch(?:es|ed|ing)?|remember(?:s|ed|ing)?|forget(?:s|ting)?|clear|undo|reverse|revert)\b/iu;
+
+function actionFrameRemainder(text: string): string {
+  let remainder = text.trim();
+  for (const prefix of ACTION_REQUEST_PREFIXES) {
+    const stripped = remainder.replace(prefix, "");
+    if (stripped !== remainder) {
+      remainder = stripped.trim();
+      break;
+    }
+  }
+  return remainder;
+}
+
 function hasExplicitActionFrame(text: string): boolean {
   const value = text.trim();
   // "How do I ...?" and "What does ... mean?" are instructional questions,
   // not authorization to open an app, mutate data, or contact someone.
   if (/^(?:how|why|what)\b/i.test(value) && !/^what(?:'s| is)\s+on\s+my\b/i.test(value)) return false;
-  const actionLead = /^(?:text|message|email|call|add|put|schedule|remind|open|show|find|search|play|pause|resume|turn|make|draft|write|tell|navigate|send|remove|delete|cancel|create|save|start|stop|change|update|copy|export|track|follow|book|order|cook|plan|log|record|alert|notify|launch)\b/i;
+  const remainder = actionFrameRemainder(value);
+  // Indirect requests such as "Would you mind texting ...?" are commands,
+  // while "Can you tell me how to text ...?" is an explanation request. A
+  // model proposal must never turn the latter into an external action.
+  if (/^(?:tell|explain|describe|show|walk(?:\s+me)?\s+through)\s+me\b/i.test(remainder)) return false;
   if (/^(?:please\s+)?(?:remind\s+me\s+to|alert\s+me\s+(?:if|when))\b/i.test(value)) return true;
-  const canYou = value.replace(/^(?:please\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:help\s+me\s+)?/i, "");
-  if (canYou !== value) return actionLead.test(canYou);
-  const firstPerson = value.replace(/^(?:please\s+)?(?:i\s+(?:want|need|would\s+like|d like)\s+(?:you\s+)?(?:to\s+)?|go\s+ahead\s+and\s+|please\s+)/i, "");
-  if (firstPerson !== value) return actionLead.test(firstPerson);
-  return actionLead.test(value);
+  return ACTION_LEAD.test(remainder);
 }
 
 function modelActionHasUserCue(actionType: string, text: string): boolean {
@@ -1445,8 +1474,8 @@ function modelActionHasUserCue(actionType: string, text: string): boolean {
       default: return false;
     }
   }
-  if (actionType === "undo_last") return /\b(?:undo|reverse|revert)\b/.test(value);
-  if (actionType === "memory_save") return /\b(?:remember|forget|clear what you remember|memory)\b/.test(value);
+  if (actionType === "undo_last") return hasExplicitActionFrame(text) && /\b(?:undo|reverse|revert)\b/.test(value);
+  if (actionType === "memory_save") return hasExplicitActionFrame(text) && /\b(?:remember|forget|clear\s+what\s+you\s+remember)\b/.test(value);
   const cue = BRAIN_V3_ACTION_CUES[actionType];
   return !!cue && hasExplicitActionFrame(text) && cue.test(text);
 }

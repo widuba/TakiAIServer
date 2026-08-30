@@ -192,6 +192,109 @@ test("Brain v3 treats indirect requests as requests even when they end in a ques
   assert.equal(normalizeBrainV3Input("Why do leaves change color?").speechAct, "question");
 });
 
+test("Brain v3 grounds polite inflected commands without executing instructional questions", async () => {
+  const actionUnderstanding = {
+    ...directUnderstanding,
+    intent: "compose_message",
+    answerMode: "action",
+    speechAct: "request",
+    action: {
+      type: "compose_message",
+      recipientName: "Chris",
+      contactQuery: "Chris",
+      body: "I am late"
+    },
+    contact: { name: "Chris", phone: null, email: null, confidence: 0.96 }
+  };
+  const indirectStages = fakeStages(actionUnderstanding);
+  const indirect = await runBrainV3Plan(
+    state("Would you mind texting Chris that I am late?"),
+    undefined,
+    indirectStages.deps
+  );
+  assert.equal(indirect.action?.type, "compose_message");
+  assert.equal(indirect.action?.recipientName, "Chris");
+  assert.match(indirect.action?.body || "", /late/i);
+
+  const letKnowStages = fakeStages(actionUnderstanding);
+  const letKnow = await runBrainV3Plan(
+    state("Could you let Chris know I am late?"),
+    undefined,
+    letKnowStages.deps
+  );
+  assert.equal(letKnow.action?.type, "compose_message");
+
+  const lettingKnowStages = fakeStages(actionUnderstanding);
+  const lettingKnow = await runBrainV3Plan(
+    state("Would you mind letting Chris know I am late?"),
+    undefined,
+    lettingKnowStages.deps
+  );
+  assert.equal(lettingKnow.action?.type, "compose_message");
+
+  const instructionalStages = fakeStages(actionUnderstanding);
+  const instructional = await runBrainV3Plan(
+    state("Can you tell me how to text Chris?"),
+    undefined,
+    instructionalStages.deps
+  );
+  assert.equal(instructional.action, null);
+  assert.equal(instructional.needsExecution, false);
+});
+
+test("Brain v3 requires an explicit memory or undo command before compiling a mutation", async () => {
+  const memoryUnderstanding = {
+    ...directUnderstanding,
+    intent: "memory_save",
+    answerMode: "action",
+    action: {
+      type: "memory_save",
+      memoryOperation: "save",
+      memoryFact: "I prefer concise answers"
+    }
+  };
+  const memoryQuestionStages = fakeStages(memoryUnderstanding);
+  const memoryQuestion = await runBrainV3Plan(
+    state("Can you tell me what you remember about me?"),
+    undefined,
+    memoryQuestionStages.deps
+  );
+  assert.equal(memoryQuestion.action, null);
+  assert.equal(memoryQuestion.needsExecution, false);
+
+  const memoryCommandStages = fakeStages({ ...memoryUnderstanding, speechAct: "request" });
+  const memoryCommand = await runBrainV3Plan(
+    state("Remember that I prefer concise answers."),
+    undefined,
+    memoryCommandStages.deps
+  );
+  assert.equal(memoryCommand.action?.type, "memory_save");
+  assert.equal(memoryCommand.action?.memoryOperation, "save");
+
+  const undoUnderstanding = {
+    ...directUnderstanding,
+    intent: "undo_last",
+    answerMode: "action",
+    action: { type: "undo_last" }
+  };
+  const undoQuestionStages = fakeStages(undoUnderstanding);
+  const undoQuestion = await runBrainV3Plan(
+    state("What does undo mean?"),
+    undefined,
+    undoQuestionStages.deps
+  );
+  assert.equal(undoQuestion.action, null);
+  assert.equal(undoQuestion.needsExecution, false);
+
+  const undoCommandStages = fakeStages({ ...undoUnderstanding, speechAct: "request" });
+  const undoCommand = await runBrainV3Plan(
+    state("Undo my last action."),
+    undefined,
+    undoCommandStages.deps
+  );
+  assert.equal(undoCommand.action?.type, "undo_last");
+});
+
 test("Brain v3 recognizes punctuated sarcasm and separates freshness from urgency", () => {
   assert.equal(normalizeBrainV3Input("Yeah, right — who is the CEO right now?").sarcasm, "likely");
   assert.equal(normalizeBrainV3Input("Who is the CEO right now?").tone, "neutral");
