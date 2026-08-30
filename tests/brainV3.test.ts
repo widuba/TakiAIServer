@@ -249,6 +249,12 @@ test("Brain v3 preserves sarcasm as frustration and recognizes disfluent non-Eng
   assert.equal(repeatedPortuguese.disfluencyDetected, true);
   assert.ok(repeatedPortuguese.repeatedFragments.some((item) => item.toLocaleLowerCase() === "você"));
 
+  const stutteredRequest = normalizeBrainV3Input("I I I need help");
+  assert.equal(stutteredRequest.normalizedText, "I need help");
+  assert.equal(stutteredRequest.speechAct, "request");
+  assert.equal(stutteredRequest.disfluencyDetected, true);
+  assert.equal(normalizeBrainV3Input("I’d like directions").speechAct, "request");
+
   const koreanPrefixStutter = normalizeBrainV3Input("안 안녕하세요, 오늘 날씨가 어때요?");
   assert.equal(koreanPrefixStutter.normalizedText, "안녕하세요, 오늘 날씨가 어때요?");
   assert.equal(koreanPrefixStutter.language, "ko");
@@ -321,8 +327,12 @@ test("Brain v3 preserves sarcasm as frustration and recognizes disfluent non-Eng
     assert.equal(signals.sarcasm, "likely", text);
     assert.equal(signals.tone, "frustrated", text);
   }
-  assert.equal(normalizeBrainV3Input("Yeah, no, that was super helpful.").sarcasm, "possible");
-  assert.equal(normalizeBrainV3Input("Well, this is just perfect.").sarcasm, "possible");
+  const possibleSarcasm = normalizeBrainV3Input("Yeah, no, that was super helpful.");
+  assert.equal(possibleSarcasm.sarcasm, "possible");
+  assert.equal(possibleSarcasm.tone, "frustrated");
+  const perfectSarcasm = normalizeBrainV3Input("Well, this is just perfect.");
+  assert.equal(perfectSarcasm.sarcasm, "possible");
+  assert.equal(perfectSarcasm.tone, "frustrated");
   assert.equal(normalizeBrainV3Input("Thanks, that solved it.").sarcasm, "unlikely");
   assert.equal(normalizeBrainV3Input("Perfect, this is exactly right.").sarcasm, "unlikely");
   const spanishSarcasmWithoutSí = normalizeBrainV3Input("Claro, otro error, qué útil.");

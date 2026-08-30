@@ -820,12 +820,13 @@ function mergeSpeechActSignal(
 
 function detectTone(value: string): BrainV3Tone {
   const text = value.toLocaleLowerCase();
-  const sarcastic = detectSarcasm(value) === "likely";
+  const sarcasm = detectSarcasm(value);
+  const sarcastic = sarcasm === "likely";
   const positiveCue = /(?:^|[^\p{L}\p{N}])(?:great|good|perfect|awesome|helpful|thanks|thank you|sure|of course|genial|perfecto|útil|ótimo|ótima|perfeito|perfeita|super|toll|perfetto|ottimo|brilliant|fantastic|wonderful|lovely|nice|amazing)(?![\p{L}\p{N}])|(?:太好了|真有用|谢谢啊|最高|すごい|よかった|최고|대단해|좋네)/iu;
   const negativeCue = /(?:^|[^\p{L}\p{N}])(?:error|broken|breaking|broke|failed|failure|problem|bug|wrong|late|stuck|crash|crashed|crashes|crashing|outage|outages|issue|issues|disaster|again|unacceptable|problema|problemas|erro|falha|fallo|falla|otra vez|de novo|erreur|problème|panne|fehler|noch|wieder|absturz|ausfall|errore|guaio)(?![\p{L}\p{N}])|(?:問題|错误|出错|坏了|また|エラー|失敗|오류|문제|실패|또)/iu;
   const sarcasticPositiveCue = /(?:yeah[,;]?\s+right|sure[,;]?\s+(?:that's|that is)|as if|what could possibly go wrong|love that for me|(?:i\s+)?(?:just\s+)?love\b|(?:just|exactly) what i needed|thanks a lot|nice job\b.{0,30}\bgenius\b|(?:fantastic|fantastico|fantastica|perfetto|perfetta|ottimo|ottima))\b/iu;
   const sarcasticFrustrationCue = /\bthanks\s+for\s+nothing\b|\b(?:yeah|sure|right)[,; ]+because\b.{0,80}\b(?:makes total sense|exactly what i (?:needed|wanted))\b|\b(?:oh\s+)?(?:good|great|perfect|amazing)\b[,;:! ]+(?:more|another|yet another)\b.{0,50}\b(?:error|errors|problem|problems|broken|broke|bug|bugs|crash|crashed|crashes|failed|failure|failures|issue|issues|outage|outages)\b|\bwhat\s+a\s+(?:delightful|wonderful|nice|great)\s+surprise\b.{0,50}\b(?:broke|broken|failed|failure|error|errors|problem|problems|crash|crashes|again)\b|\bwell[,;: ]+(?:this|that)\s+is\s+(?:just\s+)?perfect\b|\b(?:yeah|yes),?\s+no\b.{0,60}\b(?:super|so|really)?\s*(?:helpful|useful|great|perfect)\b|\b(?:i\s+)?(?:just\s+)?love\b.{0,40}\b(?:waiting forever|doing this again|being ignored)\b/iu;
-  if (sarcastic && sarcasticFrustrationCue.test(text)) return "frustrated";
+  if ((sarcastic || sarcasm === "possible") && sarcasticFrustrationCue.test(text)) return "frustrated";
   if (sarcastic && (positiveCue.test(text) || sarcasticPositiveCue.test(text)) && negativeCue.test(text)) {
     return "frustrated";
   }
@@ -893,7 +894,7 @@ function detectLanguage(value: string): string {
 function detectSpeechAct(raw: string, normalized: string): BrainV3Signals["speechAct"] {
   if (/(?:\bi\s+meant\b|\bnot\s+that\b|\bthat's\s+not\b|\bwhat\s+i\s+meant\b|\bcorrection\b|^\s*no\s*,)/i.test(raw)) return "correction";
   if (/[?؟]$/.test(raw.trim()) || /^(?:what|why|how|who|when|where|which|can|could|would|is|are|do|does|did)\b/i.test(normalized)) return "question";
-  if (/^(?:please\s+)?(?:can you|could you|would you|will you|help me|i need you to|text|message|email|call|add|put|schedule|remind|open|show|find|search|play|turn|make|write|tell|navigate|send|remove|delete|create|save|start|stop|change|update)\b/i.test(normalized)) return "request";
+  if (/^(?:please\s+)?(?:can you|could you|would you|will you|help me|i need\b|i want\b|i(?:['’]d| would) like\b|i need you to|text|message|email|call|add|put|schedule|remind|open|show|find|search|play|turn|make|write|tell|navigate|send|remove|delete|create|save|start|stop|change|update)\b/i.test(normalized)) return "request";
   if (/^(?:hi|hello|hey|thanks|thank you|good morning|good night|how are you)\b/i.test(normalized)) return "social";
   return "statement";
 }
