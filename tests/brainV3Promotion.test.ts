@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import test from "node:test";
+import { promisify } from "node:util";
 import {
   BRAIN_V3_PROMOTION_EVIDENCE_TTL_MS,
   brainV3PromotionGateStatus,
@@ -38,6 +40,37 @@ function evidence(now = Date.now()): BrainV3PromotionEvidence {
 }
 
 const CURRENT_EVIDENCE = evidence();
+const execFileAsync = promisify(execFile);
+
+async function runBrainV3Evaluator(env: Record<string, string>): Promise<{ code: number; output: string }> {
+  const childEnv = {
+    ...process.env,
+    NODE_ENV: "test",
+    TAKI_ENV: "",
+    APP_ENV: "",
+    AI_PROVIDER: "gemini",
+    OPENAI_API_KEY: "",
+    GEMINI_API_KEY: "",
+    TAKI_BRAIN_V3_EVAL_CONFIRM: "",
+    TAKI_BRAIN_V3_STAGING_PROVIDER: "",
+    TAKI_BRAIN_V3_STAGING_API_KEY: "",
+    ...env
+  };
+  try {
+    const result = await execFileAsync(process.execPath, ["--import", "tsx", "scripts/brainV3Eval.ts"], {
+      cwd: process.cwd(),
+      env: childEnv,
+      timeout: 15_000,
+      maxBuffer: 1_000_000
+    });
+    return { code: 0, output: `${result.stdout || ""}\n${result.stderr || ""}` };
+  } catch (error: any) {
+    return {
+      code: Number(error?.code) || 1,
+      output: `${error?.stdout || ""}\n${error?.stderr || ""}`
+    };
+  }
+}
 
 function environment(overrides: Record<string, string | undefined> = {}) {
   return {
@@ -52,6 +85,40 @@ test("Brain v3 promotion worktree checks include tracked and untracked changes",
   assert.equal(brainV3WorktreeClean(""), true);
   assert.equal(brainV3WorktreeClean(" M src/brainV3.ts\n"), false);
   assert.equal(brainV3WorktreeClean("?? local-staging-notes.txt\n"), false);
+});
+
+test("Brain v3 evaluator is staging-only and never reuses a generic key", async () => {
+  const missingConfirmation = await runBrainV3Evaluator({
+    TAKI_BRAIN_V3_STAGING_PROVIDER: "openai",
+    TAKI_BRAIN_V3_STAGING_API_KEY: "staging-only"
+  });
+  assert.equal(missingConfirmation.code, 2);
+  assert.match(missingConfirmation.output, /staging-only/);
+
+  const productionMarker = await runBrainV3Evaluator({
+    NODE_ENV: "production",
+    TAKI_BRAIN_V3_EVAL_CONFIRM: "staging",
+    TAKI_BRAIN_V3_STAGING_PROVIDER: "openai",
+    TAKI_BRAIN_V3_STAGING_API_KEY: "staging-only"
+  });
+  assert.equal(productionMarker.code, 2);
+  assert.match(productionMarker.output, /production environment marker/);
+
+  const missingCredential = await runBrainV3Evaluator({
+    TAKI_BRAIN_V3_EVAL_CONFIRM: "staging",
+    TAKI_BRAIN_V3_STAGING_PROVIDER: "openai"
+  });
+  assert.equal(missingCredential.code, 2);
+  assert.match(missingCredential.output, /STAGING_API_KEY/);
+
+  const reusedCredential = await runBrainV3Evaluator({
+    OPENAI_API_KEY: "generic-key",
+    TAKI_BRAIN_V3_EVAL_CONFIRM: "staging",
+    TAKI_BRAIN_V3_STAGING_PROVIDER: "openai",
+    TAKI_BRAIN_V3_STAGING_API_KEY: "generic-key"
+  });
+  assert.equal(reusedCredential.code, 2);
+  assert.match(reusedCredential.output, /distinct from the inherited generic provider key/);
 });
 
 test("Brain v3 cannot promote from a readiness flag alone", () => {
