@@ -259,6 +259,7 @@ test("Brain v3 preserves sarcasm as frustration and recognizes disfluent non-Eng
   assert.equal(normalizeBrainV3Input("Großartig, wieder ein Problem.").sarcasm, "likely");
   assert.equal(normalizeBrainV3Input("Qué genial, otro fallo.").sarcasm, "likely");
   assert.equal(normalizeBrainV3Input("Fantastico, un altro errore.").sarcasm, "likely");
+  assert.equal(normalizeBrainV3Input("Fantastico, un altro errore.").tone, "frustrated");
   assert.equal(normalizeBrainV3Input("Amazing, another outage.").tone, "frustrated");
   assert.equal(normalizeBrainV3Input("Right, because that makes total sense.").sarcasm, "likely");
   assert.equal(normalizeBrainV3Input("Estou com raiva, isto não funciona.").tone, "angry");
@@ -404,6 +405,32 @@ test("Brain v3 uses separate understanding, policy, and answer stages", async ()
   assert.equal(result.action, null);
   assert.match(String(stages.calls[0].contents), /yeah right/i);
   assert.match(String(stages.calls[0].contents), /normalized/i);
+});
+
+test("Brain v3 stage diagnostics expose bounded semantics without affecting the plan", async () => {
+  const stages = fakeStages({ ...directUnderstanding, tone: "neutral", sarcasm: "unlikely" });
+  const observed: Record<string, any> = {};
+  const result = await runBrainV3Plan(
+    state("I I need help, yeah right."),
+    undefined,
+    {
+      ...stages.deps,
+      observeStage: (stage: string, snapshot: unknown) => {
+        observed[stage] = snapshot;
+        throw new Error("diagnostic sink unavailable");
+      }
+    }
+  );
+
+  assert.deepEqual(Object.keys(observed).sort(), ["policy", "signals", "understanding"]);
+  assert.equal(observed.signals.sarcasm, "likely");
+  assert.equal(observed.signals.disfluencyDetected, true);
+  assert.ok(observed.signals.repeatedFragmentCount > 0);
+  assert.equal(observed.understanding.sarcasm, "likely");
+  assert.equal(observed.policy.decision, "allow");
+  assert.equal(Object.prototype.hasOwnProperty.call(observed.signals, "rawText"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(observed.signals, "normalizedText"), false);
+  assert.equal(result.spokenText, "A useful answer.");
 });
 
 test("Brain v3 repairs malformed final text inside the strict answer contract", async () => {

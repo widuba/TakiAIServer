@@ -155,9 +155,56 @@ export type BrainV3Understanding = {
   place: PlaceMemory | null;
 };
 
+// Staging-only diagnostics deliberately contain semantic labels and bounded
+// counts, not raw/normalized user text, entities, prompts, or model output.
+// They let the provider gate verify that the pipeline understood a turn before
+// it produced a plausible-looking final answer. No production dependency sets
+// the observer, and observer failures are swallowed below so diagnostics can
+// never change a user's plan.
+export type BrainV3DiagnosticSignals = {
+  disfluencyDetected: boolean;
+  repeatedFragmentCount: number;
+  fillerWordCount: number;
+  sarcasm: BrainV3Sarcasm;
+  tone: BrainV3Tone;
+  language: string;
+  speechAct: BrainV3Signals["speechAct"];
+};
+
+export type BrainV3DiagnosticUnderstanding = {
+  intent: PlannerIntent;
+  answerMode: BrainV3Understanding["answerMode"];
+  speechAct: BrainV3Understanding["speechAct"];
+  tone: BrainV3Tone;
+  sarcasm: BrainV3Sarcasm;
+  language: string;
+  disfluencyDetected: boolean;
+  repeatedFragmentCount: number;
+  fillerWordCount: number;
+  confidence: number;
+  needsClarification: boolean;
+  actionType: string | null;
+};
+
+export type BrainV3DiagnosticPolicy = {
+  decision: BrainV3Policy["decision"];
+  riskCategory: BrainV3Policy["riskCategory"];
+  confidence: number;
+};
+
+export type BrainV3StageSnapshots = {
+  signals: BrainV3DiagnosticSignals;
+  understanding: BrainV3DiagnosticUnderstanding;
+  policy: BrainV3DiagnosticPolicy;
+};
+
+export type BrainV3StageName = keyof BrainV3StageSnapshots;
+export type BrainV3StageSnapshot = BrainV3StageSnapshots[BrainV3StageName];
+
 export type BrainV3Dependencies = {
   generateContent: (args: any) => Promise<any>;
   generateContentStream?: (args: any) => AsyncGenerator<any>;
+  observeStage?: (stage: BrainV3StageName, snapshot: BrainV3StageSnapshot) => void;
   env?: Record<string, string | undefined>;
   getStrictWebAnswer?: (...args: any[]) => Promise<any>;
   findVerifiedFutureEvent?: (...args: any[]) => Promise<any>;
@@ -173,6 +220,56 @@ const DEFAULT_DEPENDENCIES: BrainV3Dependencies = {
   getWeatherAnswer,
   getLocationAnswer
 };
+
+function observeBrainV3Stage(
+  deps: BrainV3Dependencies,
+  stage: BrainV3StageName,
+  snapshot: BrainV3StageSnapshot
+): void {
+  try {
+    deps.observeStage?.(stage, snapshot);
+  } catch {
+    // Diagnostics are strictly non-functional. A broken staging observer must
+    // never fail, delay, or alter the user-facing request path.
+  }
+}
+
+function diagnosticSignals(signals: BrainV3Signals): BrainV3DiagnosticSignals {
+  return {
+    disfluencyDetected: signals.disfluencyDetected,
+    repeatedFragmentCount: signals.repeatedFragments.length,
+    fillerWordCount: signals.fillerWords.length,
+    sarcasm: signals.sarcasm,
+    tone: signals.tone,
+    language: signals.language,
+    speechAct: signals.speechAct
+  };
+}
+
+function diagnosticUnderstanding(understanding: BrainV3Understanding): BrainV3DiagnosticUnderstanding {
+  return {
+    intent: understanding.intent,
+    answerMode: understanding.answerMode,
+    speechAct: understanding.speechAct,
+    tone: understanding.tone,
+    sarcasm: understanding.sarcasm,
+    language: understanding.language,
+    disfluencyDetected: understanding.disfluencyDetected,
+    repeatedFragmentCount: understanding.repeatedFragments.length,
+    fillerWordCount: understanding.fillerWords.length,
+    confidence: understanding.confidence,
+    needsClarification: understanding.needsClarification,
+    actionType: understanding.action?.type ? String(understanding.action.type) : null
+  };
+}
+
+function diagnosticPolicy(policy: BrainV3Policy): BrainV3DiagnosticPolicy {
+  return {
+    decision: policy.decision,
+    riskCategory: policy.riskCategory,
+    confidence: policy.confidence
+  };
+}
 
 export type BrainV3RolloutStats = {
   understandingAttempts: number;
@@ -674,7 +771,7 @@ function detectTone(value: string): BrainV3Tone {
   const sarcastic = detectSarcasm(value) === "likely";
   const positiveCue = /(?:^|[^\p{L}\p{N}])(?:great|good|perfect|awesome|helpful|thanks|thank you|sure|of course|genial|perfecto|útil|ótimo|ótima|perfeito|perfeita|super|toll|perfetto|ottimo|brilliant|fantastic|wonderful|lovely|nice|amazing)(?![\p{L}\p{N}])|(?:太好了|真有用|谢谢啊|最高|すごい|よかった|최고|대단해|좋네)/iu;
   const negativeCue = /(?:^|[^\p{L}\p{N}])(?:error|broken|breaking|broke|failed|failure|problem|bug|wrong|late|stuck|crash|crashed|crashes|crashing|outage|outages|issue|issues|disaster|again|unacceptable|problema|problemas|erro|falha|fallo|falla|otra vez|de novo|erreur|problème|panne|fehler|noch|wieder|absturz|ausfall|errore|guaio)(?![\p{L}\p{N}])|(?:問題|错误|出错|坏了|また|エラー|失敗|오류|문제|실패|또)/iu;
-  const sarcasticPositiveCue = /(?:yeah[,;]?\s+right|sure[,;]?\s+(?:that's|that is)|as if|what could possibly go wrong|love that for me|(?:i\s+)?(?:just\s+)?love\b|(?:just|exactly) what i needed|thanks a lot|nice job\b.{0,30}\bgenius\b)/iu;
+  const sarcasticPositiveCue = /(?:yeah[,;]?\s+right|sure[,;]?\s+(?:that's|that is)|as if|what could possibly go wrong|love that for me|(?:i\s+)?(?:just\s+)?love\b|(?:just|exactly) what i needed|thanks a lot|nice job\b.{0,30}\bgenius\b|(?:fantastic|fantastico|fantastica|perfetto|perfetta|ottimo|ottima))\b/iu;
   if (sarcastic && (positiveCue.test(text) || sarcasticPositiveCue.test(text)) && negativeCue.test(text)) {
     return "frustrated";
   }
@@ -2611,6 +2708,7 @@ export async function runBrainV3Plan(
 ): Promise<AssistantPlan> {
   rolloutStats.activePlans += 1;
   const signals = normalizeBrainV3Input(state.message, state);
+  observeBrainV3Stage(deps, "signals", diagnosticSignals(signals));
   if (!signals.normalizedText) return answerPlan("What would you like me to do?", state);
 
   // A clearly harmful request should never depend on a provider returning a
@@ -2619,6 +2717,7 @@ export async function runBrainV3Plan(
   // compatibility fallback that consumes time or produces different copy.
   const deterministic = deterministicPolicy(signals.normalizedText);
   if (deterministic.decision === "refuse") {
+    observeBrainV3Stage(deps, "policy", diagnosticPolicy(deterministic));
     rolloutStats.refusalPlans += 1;
     return answerPlan(refusalText(deterministic.riskCategory, deterministic.safeAlternative), state);
   }
@@ -2632,6 +2731,7 @@ export async function runBrainV3Plan(
     Boolean(state.userProfile?.teen)
   );
   const understanding = normalizeUnderstanding(rawUnderstanding, signals);
+  observeBrainV3Stage(deps, "understanding", diagnosticUnderstanding(understanding));
 
   let policy: BrainV3Policy = deterministic;
   try {
@@ -2651,6 +2751,7 @@ export async function runBrainV3Plan(
     // live response contract.
     throw error;
   }
+  observeBrainV3Stage(deps, "policy", diagnosticPolicy(policy));
 
   if (policy.decision === "refuse") {
     rolloutStats.refusalPlans += 1;
