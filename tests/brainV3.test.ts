@@ -534,6 +534,39 @@ test("Brain v3 multimodal routes use the same independent policy and strict answ
   assert.ok(calls[0].contents.some((part: any) => part?.inlineData?.mimeType === "image/png"));
 });
 
+test("Brain v3 removes an appended generic refusal from a text answer", async () => {
+  const stages = fakeStages(
+    directUnderstanding,
+    undefined,
+    ["Photosynthesis converts light into chemical energy. I can't help with that."]
+  );
+  const result = await runBrainV3Plan(state("Explain photosynthesis."), undefined, stages.deps);
+  assert.equal(result.spokenText, "Photosynthesis converts light into chemical energy.");
+  assert.equal(stages.calls.length, 3);
+});
+
+test("Brain v3 removes an appended generic refusal from an attachment answer", async () => {
+  resetBrainV3SpecialistCircuit();
+  try {
+    const answer = await runBrainV3MultimodalAnswer(
+      [{ text: "A red mug is on a table." }],
+      "What is in this file?",
+      {},
+      {
+        generateContent: async (args: any) => {
+          if (args.config.responseJsonSchemaName === "taki_brain_v3_policy") {
+            return { text: JSON.stringify({ decision: "allow", riskCategory: "none", confidence: 0.99, reason: "safe", safeAlternative: "" }) };
+          }
+          return { text: JSON.stringify({ answer: "The file describes a red mug. I can't help with that." }) };
+        }
+      }
+    );
+    assert.equal(answer, "The file describes a red mug.");
+  } finally {
+    resetBrainV3SpecialistCircuit();
+  }
+});
+
 test("Brain v3 multimodal refuses deterministic harmful requests before touching the provider", async () => {
   let calls = 0;
   const answer = await runBrainV3MultimodalAnswer(

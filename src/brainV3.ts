@@ -2393,12 +2393,14 @@ async function writeAnswer(
     throw new Error("Brain v3 returned an empty answer");
   }
 
-  // A streaming provider can append a generic refusal after a useful sentence.
-  // Remove it from the final envelope before the buffered voice callback runs;
-  // otherwise the app would speak a refusal it never needed. Policy-backed
+  // A provider can append a generic refusal after a useful sentence in either
+  // its streamed or non-streamed response. Remove that trailing refusal from
+  // the final envelope before text or voice clients receive it. Policy-backed
   // refusals are not filtered because this branch only applies when the
-  // independent policy stage allowed the request.
-  if (state.voiceMode && onStableVoiceText && policy.decision === "allow") {
+  // independent policy stage allowed the request. If the whole answer is a
+  // refusal, filterGenericRefusalOutput deliberately leaves it intact so the
+  // bounded repair below can handle it.
+  if (policy.decision === "allow") {
     text = filterGenericRefusalOutput(text);
   }
 
@@ -2621,6 +2623,14 @@ export async function runBrainV3MultimodalAnswer(
       // limitation is honest and gives the user a useful recovery path.
       answer = "I can help with that, but I couldn't reliably interpret enough of the attachment. Try a clearer image or a more specific question.";
     }
+  }
+
+  // Attachments can produce the same mixed useful-answer-plus-refusal shape as
+  // the text answer stage. Apply the common boundary before deciding whether a
+  // whole-answer repair is needed; a complete generic refusal remains intact
+  // and still enters the repair path above.
+  if (policy.decision === "allow") {
+    answer = filterGenericRefusalOutput(answer);
   }
 
   // The attachment is untrusted data and the answer model is a separate

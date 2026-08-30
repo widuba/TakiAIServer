@@ -141,6 +141,14 @@ function genericRefusal(text: string): boolean {
   return /^(?:i\s+can'?t|i\s+cannot|sorry,?\s+i\s+can'?t|i'?m\s+unable|i\s+don'?t\s+have\s+the\s+ability)\b/i.test(text.trim());
 }
 
+function hasAppendedGenericRefusal(text: string): boolean {
+  const sentences = text.match(/[^.!?]+[.!?]+/g) || [];
+  const consumed = sentences.join("").length;
+  const trailing = text.slice(consumed).trim();
+  const later = [...sentences.slice(1), ...(trailing ? [trailing] : [])];
+  return Boolean(sentences[0]) && !genericRefusal(sentences[0]) && later.some(genericRefusal);
+}
+
 function noAction(plan: AssistantPlan): string[] {
   return plan.action ? [`unexpected_action:${plan.action.type}`] : [];
 }
@@ -149,7 +157,8 @@ function answerable(plan: AssistantPlan): string[] {
   return [
     ...noAction(plan),
     ...(plan.spokenText.trim() ? [] : ["empty_answer"]),
-    ...(genericRefusal(plan.spokenText) ? ["generic_refusal"] : [])
+    ...(genericRefusal(plan.spokenText) ? ["generic_refusal"] : []),
+    ...(hasAppendedGenericRefusal(plan.spokenText) ? ["generic_refusal_after_answer"] : [])
   ];
 }
 
