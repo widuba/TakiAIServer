@@ -1,4 +1,16 @@
-import { generateContent, generateContentStream, activeTakiModelInfo, withTakiModel, FAST_MODEL, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, LIST_RESEARCH_TIMEOUT_MS, TIME_ZONE, safetyConfig, ServiceError } from "./ai.js";
+import { generateContent, generateContentStream, activeTakiModelInfo, brainV3AuxEnabled, brainV3CoreEnabled, withTakiModel, FAST_MODEL, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, LIST_RESEARCH_TIMEOUT_MS, TIME_ZONE, safetyConfig, ServiceError } from "./ai.js";
+import {
+  BRAIN_V3_ALARM_SCHEMA,
+  BRAIN_V3_EVENT_MATCH_SCHEMA,
+  BRAIN_V3_EVENT_SCHEMA,
+  BRAIN_V3_EVENTS_SCHEMA,
+  BRAIN_V3_MATH_SCHEMA,
+  BRAIN_V3_STYLE_SCHEMA,
+  BRAIN_V3_TIMER_SCHEMA,
+  BRAIN_V3_VENUE_SCHEMA,
+  BRAIN_V3_WEB_ANSWER_SCHEMA,
+  runBrainV3Structured
+} from "./brainV3Specialists.js";
 import { personaPromptBlock, characterDirective, GUARDRAILS } from "./persona.js";
 import { capabilityPromptBlock } from "./capabilities.js";
 import { productKnowledgePromptBlock } from "./productKnowledge.js";
@@ -372,6 +384,46 @@ Rules:
 - Generic personal activity (gym, dentist, haircut, "tennis", "practice") with no clear venue: only name a specific local place if the user's city is given and one is the obvious choice; otherwise reply "UNKNOWN".
 - Output ONE line: the venue name followed by its full street address and city, e.g. "Truist Park, 755 Battery Ave SE, Atlanta, GA 30339". No commentary. If you truly cannot tell, reply exactly "UNKNOWN".`;
 
+  const usableVenue = (value: unknown): string | null => {
+    const line = String(value || "").trim().split(/\r?\n/)[0].trim();
+    if (!line || /^unknown$/i.test(line) || line.length > 320) return null;
+    return line;
+  };
+
+  // Auxiliary v3 owns this narrow inference when explicitly promoted. The
+  // established two-pass Gemini path remains below as a reversible fallback.
+  if (brainV3AuxEnabled()) {
+    try {
+      const result = await runBrainV3Structured<{ found: boolean; venue: string }>(
+        "venue_fast",
+        prompt,
+        BRAIN_V3_VENUE_SCHEMA,
+        { timeoutMs: 9_000, maxOutputTokens: 240, reasoning: "low" }
+      );
+      const venue = result.value.found ? usableVenue(result.value.venue) : null;
+      if (venue) return venue;
+    } catch (error) {
+      console.error("Brain v3 venue inference (fast) error:", error);
+    }
+    try {
+      const result = await runBrainV3Structured<{ found: boolean; venue: string }>(
+        "venue_search",
+        prompt,
+        BRAIN_V3_VENUE_SCHEMA,
+        {
+          timeoutMs: RESEARCH_TIMEOUT_MS,
+          maxOutputTokens: 240,
+          reasoning: "low",
+          tools: [{ googleSearch: {} }]
+        }
+      );
+      const venue = result.value.found ? usableVenue(result.value.venue) : null;
+      if (venue) return venue;
+    } catch (error) {
+      console.error("Brain v3 venue inference (search) error:", error);
+    }
+  }
+
   // Fast path: flash, thinking off, no web search.
   try {
     const res: any = await withTimeout(
@@ -523,9 +575,24 @@ Pick the ONE event that genuinely matches their reference. Reason about:
 - team names + nicknames (e.g. "the braves game" = an Atlanta Braves matchup, which may be titled "Padres @ Braves", "ATL vs SD", "Braves baseball", etc.)
 - abbreviations, venues, and any timing words ("tonight", "tomorrow", "later").
 
-Be strict: the event must actually correspond to what they said. If they named a DIFFERENT kind of thing than anything on the list (e.g. they said "the concert" but the events are only a baseball game and a dentist appointment), reply -1. Do NOT force a match just to pick something.
+  Be strict: the event must actually correspond to what they said. If they named a DIFFERENT kind of thing than anything on the list (e.g. they said "the concert" but the events are only a baseball game and a dentist appointment), reply -1. Do NOT force a match just to pick something.
 
 Reply with ONLY the index number of the genuine match, or -1 if none. No other text.`;
+
+  if (brainV3AuxEnabled()) {
+    try {
+      const result = await runBrainV3Structured<{ eventIndex: number }>(
+        "event_match",
+        prompt,
+        BRAIN_V3_EVENT_MATCH_SCHEMA,
+        { timeoutMs: 9_000, maxOutputTokens: 80, reasoning: "low" }
+      );
+      const index = Number(result.value.eventIndex);
+      if (Number.isInteger(index) && (index === -1 || (index >= 0 && index < events.length))) return index;
+    } catch (error) {
+      console.error("Brain v3 event match error:", error);
+    }
+  }
 
   try {
     const res: any = await withTimeout(
@@ -640,6 +707,39 @@ Rules:
 Reply with ONLY JSON: {"valid":true,"hour":<0-23>,"minute":<0-59>,"ampmGiven":<true|false>,"dayOffset":<0-7>,"label":"..."}
 If you cannot determine a time at all, reply {"valid":false}.`;
 
+  if (brainV3AuxEnabled()) {
+    try {
+      const result = await runBrainV3Structured<{
+        valid: boolean;
+        hour: number;
+        minute: number;
+        ampmGiven: boolean;
+        dayOffset: number;
+        label: string;
+      }>("alarm_parse", prompt, BRAIN_V3_ALARM_SCHEMA, { timeoutMs: 9_000, maxOutputTokens: 180, reasoning: "low" });
+      const obj = result.value;
+      if (obj.valid === false) return null;
+      if (!Number.isInteger(obj.hour) || obj.hour < 0 || obj.hour > 23
+        || !Number.isInteger(obj.minute) || obj.minute < 0 || obj.minute > 59
+        || !Number.isInteger(obj.dayOffset) || obj.dayOffset < 0 || obj.dayOffset > 7) {
+        throw new Error("Brain v3 alarm result was outside the time bounds");
+      }
+      const todayYmd = ymdInTimeZone(new Date(now), tz);
+      const baseYmd = addDaysToYmd(todayYmd, obj.dayOffset);
+      let ms = Date.parse(isoFromYmdTime(baseYmd, obj.hour, obj.minute, tz));
+      if (!Number.isFinite(ms)) throw new Error("Brain v3 alarm result had an invalid local time");
+      const explicitAmPm = obj.ampmGiven === true
+        || /\b(am|pm|a\.m|p\.m|noon|midnight|morning|afternoon|evening|tonight)\b/i.test(message)
+        || /\bin\s+\d+\s*(min|minute|hour|hr)/i.test(message);
+      const stepMs = explicitAmPm ? 24 * 3600 * 1000 : 12 * 3600 * 1000;
+      let guard = 0;
+      while (ms <= now + 1000 && guard++ < 4) ms += stepMs;
+      return { iso: new Date(ms).toISOString(), label: String(obj.label || "").trim().slice(0, 40) };
+    } catch (error) {
+      console.error("Brain v3 alarm parse error:", error);
+    }
+  }
+
   try {
     const res: any = await withTimeout(
       generateContent({
@@ -724,6 +824,24 @@ Message: "${message}"
 Reply with ONLY JSON: {"seconds":<positive integer>,"label":"..."}.
 If no duration is given, reply {"seconds":0}.`;
 
+  if (brainV3AuxEnabled()) {
+    try {
+      const result = await runBrainV3Structured<{ seconds: number; label: string }>(
+        "timer_parse",
+        prompt,
+        BRAIN_V3_TIMER_SCHEMA,
+        { timeoutMs: 9_000, maxOutputTokens: 120, reasoning: "low" }
+      );
+      const seconds = Number(result.value.seconds);
+      if (Number.isInteger(seconds) && seconds > 0 && seconds <= 24 * 3600) {
+        return { seconds, label: String(result.value.label || "").trim().slice(0, 40) };
+      }
+      if (seconds === 0) return null;
+    } catch (error) {
+      console.error("Brain v3 timer parse error:", error);
+    }
+  }
+
   try {
     const res: any = await withTimeout(
       generateContent({
@@ -799,18 +917,20 @@ Also give a short "label" naming the quantity in plain words (e.g. "the natural 
 
 Reply ONLY JSON: {"expr":"<expression>","label":"<short phrase>"}  — or {"expr":null} if it is not a numeric calculation.`;
 
-  try {
-    const res: any = await withTimeout(
-      generateContent({ model: MAIN_MODEL, contents: prompt, config: { thinkingConfig: { thinkingBudget: 0 } } } as any),
-      7000,
-      "Math translate"
-    );
-    const obj = safeParseJsonObject(res.text || "");
+  const renderMathResult = (obj: any): string | null => {
     const expr = obj && typeof obj.expr === "string" ? obj.expr.trim() : "";
     if (!expr || expr.length > 200) return null;
 
-    // Safety: after removing allowed Math.<fn> tokens, only math characters may
-    // remain — no other identifiers, no arbitrary code.
+    // Whitelist the Math surface as well as the surrounding characters. The
+    // old translator replaced any Math.<name> with zero before validation, which
+    // accidentally permitted nondeterministic names such as Math.random().
+    const allowedMath = new Set([
+      "Math.log", "Math.log10", "Math.log2", "Math.sqrt", "Math.cbrt", "Math.pow",
+      "Math.abs", "Math.exp", "Math.sin", "Math.cos", "Math.tan", "Math.round",
+      "Math.floor", "Math.ceil", "Math.PI", "Math.E"
+    ]);
+    const mathNames = expr.match(/Math\.[A-Za-z][A-Za-z0-9]*/g) || [];
+    if (mathNames.some((name) => !allowedMath.has(name))) return null;
     const stripped = expr.replace(/Math\.[A-Za-z][A-Za-z0-9]*/g, "0");
     if (!/^[0-9+\-*/%.()\s,]*$/.test(stripped)) return null;
 
@@ -819,12 +939,34 @@ Reply ONLY JSON: {"expr":"<expression>","label":"<short phrase>"}  — or {"expr
     if (typeof val !== "number" || !Number.isFinite(val)) return null;
 
     const num = formatMathNumber(val);
-    const phrase = Number.isInteger(val) ? num : `about ${num}`; // "about" for rounded decimals
+    const phrase = Number.isInteger(val) ? num : `about ${num}`;
     const label = obj && typeof obj.label === "string" ? obj.label.trim().slice(0, 60) : "";
-    if (label) {
-      return `${label.charAt(0).toUpperCase()}${label.slice(1)} equals ${phrase}.`;
-    }
+    if (label) return `${label.charAt(0).toUpperCase()}${label.slice(1)} equals ${phrase}.`;
     return Number.isInteger(val) ? `That's ${num}.` : `That's about ${num}.`;
+  };
+
+  if (brainV3AuxEnabled()) {
+    try {
+      const result = await runBrainV3Structured<{ expr: string | null; label: string }>(
+        "math_translate",
+        prompt,
+        BRAIN_V3_MATH_SCHEMA,
+        { timeoutMs: 8_000, maxOutputTokens: 180, reasoning: "low" }
+      );
+      const rendered = renderMathResult(result.value);
+      if (rendered || result.value.expr === null) return rendered;
+    } catch (error) {
+      console.error("Brain v3 math translation error:", error);
+    }
+  }
+
+  try {
+    const res: any = await withTimeout(
+      generateContent({ model: MAIN_MODEL, contents: prompt, config: { thinkingConfig: { thinkingBudget: 0 } } } as any),
+      7000,
+      "Math translate"
+    );
+    return renderMathResult(safeParseJsonObject(res.text || ""));
   } catch (error) {
     console.error("Math compute error:", error);
     return null;
@@ -1357,7 +1499,18 @@ export function parsePackageTracking(message: string): { number: string; carrier
 }
 
 // "cancel my alerts" / "stop alerting me about bitcoin" / "remove my price
-// alerts". Returns a filter (kind/query) or {} for "all", or null if not a cancel.
+// alerts". Returns a filter (kind/query) or {} for an explicit unfiltered
+// cancellation, or null if not a cancel.
+export function isExplicitAllAlertCancellation(message: string): boolean {
+  const m = message.toLowerCase().replace(/[’']/g, "'").trim();
+  const command = m.match(/\b(?:cancel|stop|remove|delete|clear|turn\s+off|unsubscribe)\b\s+(.+)$/i);
+  if (!command) return false;
+  const target = command[1].replace(/[.?!]+$/g, "").replace(/\s+/g, " ").trim();
+  const kind = "(?:(?:price|score|sports?|flight|package)\\s+)?";
+  return new RegExp(`^(?:all|every|each)(?:\\s+one)?(?:\\s+of)?(?:\\s+my)?\\s+${kind}(?:alerts?|notifications?)$`, "i").test(target)
+    || new RegExp(`^my\\s+${kind}(?:alerts?|notifications?)$`, "i").test(target);
+}
+
 export function parseAlertCancel(message: string): { kind?: string; query?: string } | null {
   const m = message.toLowerCase().trim();
   if (!/\b(cancel|stop|remove|delete|clear|turn off|unsubscribe)\b/.test(m)) return null;
@@ -2403,6 +2556,8 @@ export async function getStrictWebAnswer(
   opts: {
     allowPrediction?: boolean;
     allowRecommendation?: boolean;
+    /** Set only by an already-selected Brain v3 core request. */
+    brainV3Core?: boolean;
     persona?: UserPersona;
     timeZone?: string;
     voiceMode?: boolean;
@@ -2413,6 +2568,16 @@ export async function getStrictWebAnswer(
   const persona = personaPromptBlock(opts.persona);
   const selectedModel = activeTakiModelInfo();
   const responseStyle = responseStyleForTakiModel(selectedModel.key);
+  // Generic web answers are part of the core brain. Auxiliary v3 promotion is
+  // still accepted for callers that use this tool outside the core planner.
+  // The explicit core flag is paired with the environment readiness check so a
+  // direct utility call cannot accidentally turn v3 on while the rollout is off.
+  const coreV3 = opts.brainV3Core === true && brainV3CoreEnabled();
+  // An explicit false is the planner's compatibility signal after a selected
+  // core request failed. It must win over the auxiliary flag; otherwise an
+  // active deployment with auxiliary surfaces enabled could immediately issue
+  // a second v3 research request while pretending to have fallen back.
+  const v3 = opts.brainV3Core === false ? false : brainV3AuxEnabled() || coreV3;
   const depthDirective = opts.voiceMode ? responseStyle.voiceDirective : responseStyle.textDirective;
   const tz = opts.timeZone && isValidTimeZone(opts.timeZone) ? opts.timeZone : "";
   const tzRule = tz
@@ -2514,23 +2679,39 @@ for current titles, scores, release dates, and streaming availability.
 CURRENT EDITORIAL EVIDENCE:
 ${currentEvidence.evidence}
 `;
-        const directResponse: any = await withTimeout(
-          generateContent({
-            model: MAIN_MODEL,
-            contents: evidencePrompt,
-            config: {
-              providerAttemptTimeoutMs: opts.voiceMode ? 6_500 : 8_500,
-              thinkingConfig: { thinkingBudget: 0 },
-              maxOutputTokens: opts.voiceMode
-                ? responseStyle.voiceMaxOutputTokens
-                : responseStyle.textMaxOutputTokens,
-              ...safetyConfig(opts.persona?.teen)
-            }
-          } as any),
-          opts.voiceMode ? 11_000 : 14_000,
-          "Current recommendation synthesis"
-        );
-        const directAnswer = String(directResponse?.text || "").trim();
+        const directResult = v3
+          ? await runBrainV3Structured<{ answer: string }>(
+              "recommendation_synthesis",
+              evidencePrompt,
+              BRAIN_V3_WEB_ANSWER_SCHEMA,
+              {
+                timeoutMs: opts.voiceMode ? 11_000 : 14_000,
+                maxOutputTokens: opts.voiceMode ? responseStyle.voiceMaxOutputTokens : responseStyle.textMaxOutputTokens,
+                reasoning: opts.voiceMode ? "low" : "medium",
+                providerAttemptTimeoutMs: opts.voiceMode ? 6_500 : 8_500
+              }
+            )
+          : {
+              response: await withTimeout(
+                generateContent({
+                  model: MAIN_MODEL,
+                  contents: evidencePrompt,
+                  config: {
+                    providerAttemptTimeoutMs: opts.voiceMode ? 6_500 : 8_500,
+                    thinkingConfig: { thinkingBudget: 0 },
+                    maxOutputTokens: opts.voiceMode
+                      ? responseStyle.voiceMaxOutputTokens
+                      : responseStyle.textMaxOutputTokens,
+                    ...safetyConfig(opts.persona?.teen)
+                  }
+                } as any),
+                opts.voiceMode ? 11_000 : 14_000,
+                "Current recommendation synthesis"
+              )
+            };
+        const directAnswer = v3
+          ? String((directResult as any).value?.answer || "").trim()
+          : String((directResult as any).response?.text || "").trim();
         if (directAnswer) {
           return { spokenText: directAnswer, action: null, sources: currentEvidence.sources };
         }
@@ -2539,6 +2720,10 @@ ${currentEvidence.evidence}
       // The normal grounded provider path below remains available if a direct
       // editorial source changes markup, goes offline, or synthesis times out.
       console.error("Fast current recommendation error:", error);
+      // A selected core request must surface the failed v3 attempt to the
+      // planner. Otherwise the second provider call below can make a failed
+      // rollout look healthy and defeat the bounded core circuit.
+      if (coreV3) throw error;
     }
   }
 
@@ -2554,14 +2739,15 @@ ${currentEvidence.evidence}
       : allowRecommendation
         ? Math.max(RESEARCH_TIMEOUT_MS, 30_000)
         : Math.max(RESEARCH_TIMEOUT_MS, 24_000);
-    const response: any = await withTimeout(
+    const researchPrompt = allowPrediction
+      ? predictionPrompt
+      : allowRecommendation
+        ? recommendationPrompt
+        : factPrompt;
+    const legacyWebResponse = async () => withTimeout(
       generateContent({
         model: opts.voiceMode ? MAIN_MODEL : RESEARCH_MODEL,
-        contents: allowPrediction
-          ? predictionPrompt
-          : allowRecommendation
-            ? recommendationPrompt
-            : factPrompt,
+        contents: researchPrompt,
         config: {
           tools: [{ googleSearch: {} }],
           forceWebSearch: true,
@@ -2580,8 +2766,41 @@ ${currentEvidence.evidence}
       overallTimeoutMs,
       "Web answer"
     );
-
-    const answer = (response.text || "").trim();
+    let responseResult: any;
+    if (v3) {
+      try {
+        responseResult = await runBrainV3Structured<{ answer: string }>(
+          allowPrediction ? "web_prediction" : allowRecommendation ? "web_recommendation" : "web_fact",
+          researchPrompt,
+          BRAIN_V3_WEB_ANSWER_SCHEMA,
+          {
+            timeoutMs: overallTimeoutMs,
+            maxOutputTokens: opts.voiceMode ? responseStyle.voiceMaxOutputTokens : responseStyle.textMaxOutputTokens,
+            reasoning: opts.voiceMode ? "low" : "medium",
+            tools: [{ googleSearch: {} }],
+            forceWebSearch: true,
+            // High-context search was regularly exhausting the full 20-second
+            // request window for broad recommendations. Medium still returns
+            // several current sources and leaves time to make the editorial pick.
+            webSearchContextSize: "medium",
+            providerAttemptTimeoutMs: attemptTimeoutMs
+          }
+        );
+      } catch (error) {
+        console.error("Brain v3 web answer failed; using compatibility path:", error);
+        // Core traffic is already inside the planner's compatibility boundary.
+        // Let it fall back once there so the v3 circuit and promotion metrics
+        // record the failure instead of counting legacy prose as v3 success.
+        if (coreV3) throw error;
+        responseResult = { response: await legacyWebResponse() };
+      }
+    } else {
+      responseResult = { response: await legacyWebResponse() };
+    }
+    const response: any = (responseResult as any).response;
+    const answer = v3 && (responseResult as any).value
+      ? String((responseResult as any).value?.answer || "").trim()
+      : String(response?.text || "").trim();
     const grounding = getGroundingSourceCount(response);
     const sources = getGroundingSources(response);
     const grounded = grounding.chunks > 0 || grounding.supports > 0 || grounding.webQueries > 0;
@@ -2613,6 +2832,7 @@ ${currentEvidence.evidence}
     return { spokenText: answer, action: null, sources };
   } catch (error) {
     console.error("Strict web error:", error);
+    if (coreV3) throw error;
     return {
       spokenText: allowPrediction
         ? "I couldn't find any predictions or odds for that right now."
@@ -2644,6 +2864,22 @@ Output ONLY the rewritten message, nothing else.
 Character: ${directive}
 
 Message: ${clean}`;
+
+  if (brainV3AuxEnabled()) {
+    try {
+      const result = await runBrainV3Structured<{ text: string }>(
+        "style_confirmation",
+        prompt,
+        BRAIN_V3_STYLE_SCHEMA,
+        { timeoutMs: 7_000, maxOutputTokens: voiceMode ? 180 : 320, reasoning: "low", teen: Boolean(persona?.teen) }
+      );
+      let out = String(result.value.text || "").trim();
+      out = out.replace(/^["'“”]+|["'“”]+$/g, "").split(/\r?\n/)[0].trim();
+      return out || clean;
+    } catch (error) {
+      console.error("Brain v3 style confirmation error:", error);
+    }
+  }
 
   try {
     const r: any = await withTimeout(
@@ -2677,7 +2913,7 @@ export type VerifiedEventResult = {
   sources?: { title: string; url: string }[];
 };
 
-async function researchCurrentEventAnswer(eventQuery: string, userTz: string) {
+async function researchCurrentEventAnswer(eventQuery: string, userTz: string, useBrainV3Core = false) {
   const localNow = nowInTimeZone(userTz);
   const prompt = `
 You are a current-information research assistant for an iPhone personal assistant.
@@ -2700,9 +2936,31 @@ Rules:
   user's local time, e.g. "today at 1:00 PM your time".
 - Pick ONE specific event. NEVER ask the user to choose.
 - Do not mention completed/past events as the answer to "next."
-- If you genuinely cannot find any matching upcoming event, say you cannot verify it.
-- Keep the answer concise.
+  - If you genuinely cannot find any matching upcoming event, say you cannot verify it.
+  - Keep the answer concise.
 `;
+  if (useBrainV3Core && brainV3CoreEnabled()) {
+    try {
+      const result = await runBrainV3Structured<{ answer: string }>(
+        "event_research",
+        prompt,
+        BRAIN_V3_WEB_ANSWER_SCHEMA,
+        {
+          timeoutMs: RESEARCH_TIMEOUT_MS,
+          maxOutputTokens: 1_200,
+          reasoning: "medium",
+          temperature: 0,
+          tools: [{ googleSearch: {} }],
+          forceWebSearch: true,
+          webSearchContextSize: activeTakiModelInfo().key === "taki_2_1_reasoning" ? "high" : "medium"
+        }
+      );
+      return { text: String(result.value.answer || "").trim(), sources: getGroundingSources(result.response) };
+    } catch (error) {
+      console.error("Brain v3 current event research failed:", error);
+      if (useBrainV3Core && brainV3CoreEnabled()) throw error;
+    }
+  }
   try {
     const response: any = await withTimeout(
       generateContent({
@@ -2728,7 +2986,7 @@ Rules:
 // Like researchCurrentEventAnswer, but asks for a LIST of the next N events
 // (for "add the next 3 games"). The single-event prompt above forces one event,
 // so multi needs its own list-oriented research pass.
-async function researchUpcomingEventsAnswer(eventQuery: string, count: number, userTz: string) {
+async function researchUpcomingEventsAnswer(eventQuery: string, count: number, userTz: string, useBrainV3Core = false) {
   const localNow = nowInTimeZone(userTz);
   const prompt = `
 You are a current-information research assistant for an iPhone personal assistant.
@@ -2746,8 +3004,30 @@ Rules:
 - For EACH event give: a short title (e.g. "Braves vs. Mets"), the date, the start time, and the
   venue/city — with the date and time CONVERTED TO THE USER'S LOCAL TIMEZONE (${userTz}).
 - Number them 1., 2., 3., … up to ${count}. If you can verify fewer, list as many as you can.
-- Do not include past/completed events. Keep each line concise.
+  - Do not include past/completed events. Keep each line concise.
 `;
+  if (useBrainV3Core && brainV3CoreEnabled()) {
+    try {
+      const result = await runBrainV3Structured<{ answer: string }>(
+        "upcoming_events_research",
+        prompt,
+        BRAIN_V3_WEB_ANSWER_SCHEMA,
+        {
+          timeoutMs: LIST_RESEARCH_TIMEOUT_MS,
+          maxOutputTokens: 1_800,
+          reasoning: "medium",
+          temperature: 0,
+          tools: [{ googleSearch: {} }],
+          forceWebSearch: true,
+          webSearchContextSize: activeTakiModelInfo().key === "taki_2_1_reasoning" ? "high" : "medium"
+        }
+      );
+      return { text: String(result.value.answer || "").trim(), sources: getGroundingSources(result.response) };
+    } catch (error) {
+      console.error("Brain v3 upcoming events research failed:", error);
+      if (useBrainV3Core && brainV3CoreEnabled()) throw error;
+    }
+  }
   try {
     const response: any = await withTimeout(
       generateContent({
@@ -2785,7 +3065,8 @@ const EVENT_TIME_RULES = `
 async function extractFutureEventFromResearch(
   eventQuery: string,
   researchText: string,
-  fallbackTz: string
+  fallbackTz: string,
+  useBrainV3Core = false
 ): Promise<VerifiedEventResult> {
   const localNow = nowInTimeZone(fallbackTz);
   const todayLocal = ymdInTimeZone(new Date(), fallbackTz);
@@ -2822,6 +3103,47 @@ ${EVENT_TIME_RULES}
 - found = false ONLY if there is genuinely no date, no start time, or the event already finished.
 - Do not invent a time the research answer does not provide.
 `;
+
+  if (useBrainV3Core && brainV3CoreEnabled()) {
+    try {
+      const result = await runBrainV3Structured<{
+        found: boolean;
+        title: string;
+        localDate: string;
+        localTime: string;
+        location: string;
+        notes: string;
+        reason: string;
+      }>("future_event_extract", prompt, BRAIN_V3_EVENT_SCHEMA, {
+        timeoutMs: 10_000,
+        maxOutputTokens: 700,
+        reasoning: "low",
+        temperature: 0
+      });
+      const parsed = result.value;
+      if (!parsed.found) return { found: false, spokenText: researchText, reason: parsed.reason || "Could not extract an exact future date and time." };
+      const times = isoFromLocalParts(parsed.localDate, parsed.localTime, fallbackTz, fallbackTz);
+      if (!times) throw new Error("Brain v3 future event had an invalid local time");
+      const startMs = Date.parse(times.startDate);
+      const FINISHED_GRACE_MS = 3.5 * 60 * 60 * 1000;
+      if (startMs < Date.now() - FINISHED_GRACE_MS) {
+        return { found: false, spokenText: researchText, reason: "The soonest event found has already passed; could not confirm the next upcoming one." };
+      }
+      return {
+        found: true,
+        title: String(parsed.title || "Event").slice(0, 240),
+        startDate: times.startDate,
+        endDate: times.endDate,
+        location: String(parsed.location || "").slice(0, 500),
+        notes: String(parsed.notes || "").slice(0, 2_000),
+        spokenText: researchText,
+        reason: ""
+      };
+    } catch (error) {
+      console.error("Brain v3 future event extraction failed:", error);
+      if (useBrainV3Core && brainV3CoreEnabled()) throw error;
+    }
+  }
 
   try {
     const response: any = await withTimeout(
@@ -2870,7 +3192,11 @@ ${EVENT_TIME_RULES}
   }
 }
 
-export async function findVerifiedFutureEvent(eventQuery: string, fallbackTz: string = TIME_ZONE): Promise<VerifiedEventResult> {
+export async function findVerifiedFutureEvent(
+  eventQuery: string,
+  fallbackTz: string = TIME_ZONE,
+  opts: { brainV3Core?: boolean } = {}
+): Promise<VerifiedEventResult> {
   // MLB's schedule feed is the authoritative source for Braves games. Use it
   // before general web research so “add the next Braves game” is deterministic
   // even when a search model returns stale or incomplete results.
@@ -2881,11 +3207,12 @@ export async function findVerifiedFutureEvent(eventQuery: string, fallbackTz: st
   // One (slow, accurate) grounded research pass, then up to two cheap extraction
   // passes over that same text. Re-researching with the accurate model would
   // risk the overall request budget, and a single grounded pass is reliable.
-  const research = await researchCurrentEventAnswer(eventQuery, fallbackTz);
+  const useBrainV3Core = opts.brainV3Core === true;
+  const research = await researchCurrentEventAnswer(eventQuery, fallbackTz, useBrainV3Core);
   if (!research.text || !research.sources.length) return { found: false, reason: "No linkable current information found.", sources: research.sources };
   let last: VerifiedEventResult = { found: false };
   for (let attempt = 0; attempt < 2; attempt++) {
-    const result = await extractFutureEventFromResearch(eventQuery, research.text, fallbackTz);
+    const result = await extractFutureEventFromResearch(eventQuery, research.text, fallbackTz, useBrainV3Core);
     if (result.found) return { ...result, sources: research.sources };
     last = { ...result, sources: research.sources };
   }
@@ -2937,7 +3264,8 @@ async function extractFutureEventsFromResearch(
   eventQuery: string,
   researchText: string,
   count: number,
-  fallbackTz: string
+  fallbackTz: string,
+  useBrainV3Core = false
 ): Promise<VerifiedEventResult[]> {
   const localNow = nowInTimeZone(fallbackTz);
   const todayLocal = ymdInTimeZone(new Date(), fallbackTz);
@@ -2963,6 +3291,43 @@ Rules:
 ${EVENT_TIME_RULES}
 - Up to ${count} events; fewer is fine. Never invent dates/times.
 `;
+
+  if (useBrainV3Core && brainV3CoreEnabled()) {
+    try {
+      const result = await runBrainV3Structured<{
+        events: Array<{ title: string; localDate: string; localTime: string; location: string; notes: string }>
+      }>("future_events_extract", prompt, BRAIN_V3_EVENTS_SCHEMA, {
+        timeoutMs: 12_000,
+        maxOutputTokens: 1_200,
+        reasoning: "low",
+        temperature: 0
+      });
+      const out: VerifiedEventResult[] = [];
+      let previousMs = -Infinity;
+      for (const ev of (Array.isArray(result.value.events) ? result.value.events : []).slice(0, count)) {
+        const times = isoFromLocalParts(ev?.localDate, ev?.localTime, fallbackTz, fallbackTz);
+        if (!times) continue;
+        const startMs = Date.parse(times.startDate);
+        if (startMs < Date.now() - 3600_000) continue;
+        if (startMs <= previousMs) return [];
+        const title = String(ev?.title || "").trim();
+        if (!title) continue;
+        out.push({
+          found: true,
+          title: title.slice(0, 240),
+          startDate: times.startDate,
+          endDate: times.endDate,
+          location: String(ev?.location || "").slice(0, 500),
+          notes: String(ev?.notes || "").slice(0, 2_000)
+        });
+        previousMs = startMs;
+      }
+      return out;
+    } catch (error) {
+      console.error("Brain v3 multi-event extraction failed:", error);
+      if (useBrainV3Core && brainV3CoreEnabled()) throw error;
+    }
+  }
 
   try {
     const response: any = await withTimeout(
@@ -3005,7 +3370,12 @@ ${EVENT_TIME_RULES}
 
 // Look up the next `count` upcoming events for a query (e.g. "Atlanta Braves
 // games"). Returns [] if nothing verifiable.
-export async function findVerifiedFutureEvents(eventQuery: string, count: number, fallbackTz: string = TIME_ZONE): Promise<VerifiedEventResult[]> {
+export async function findVerifiedFutureEvents(
+  eventQuery: string,
+  count: number,
+  fallbackTz: string = TIME_ZONE,
+  opts: { brainV3Core?: boolean } = {}
+): Promise<VerifiedEventResult[]> {
   const n = Math.max(1, Math.min(count, 6));
   if (/\b(?:atlanta\s+)?braves\b/i.test(eventQuery)) {
     const braves = await findBravesFutureEvents(n, fallbackTz);
@@ -3014,10 +3384,11 @@ export async function findVerifiedFutureEvents(eventQuery: string, count: number
   // One (slow) grounded research pass, then up to two cheap extraction passes
   // that REUSE that text — so a single extraction hiccup doesn't cost another
   // 14s of web research and blow the request budget.
-  const research = await researchUpcomingEventsAnswer(eventQuery, n, fallbackTz);
+  const useBrainV3Core = opts.brainV3Core === true;
+  const research = await researchUpcomingEventsAnswer(eventQuery, n, fallbackTz, useBrainV3Core);
   if (!research.text || !research.sources.length) return [];
   // Single extraction pass — the list research already used most of the budget.
-  const events = await extractFutureEventsFromResearch(eventQuery, research.text, n, fallbackTz);
+  const events = await extractFutureEventsFromResearch(eventQuery, research.text, n, fallbackTz, useBrainV3Core);
   return events.map((event) => ({ ...event, sources: research.sources }));
 }
 
@@ -3430,7 +3801,8 @@ export async function answerAboutImage(
   mimeType: string,
   question: string,
   persona?: UserPersona,
-  timeZone?: string
+  timeZone?: string,
+  voiceMode = false
 ): Promise<string> {
   const q = (question || "").trim() || "What is in this image?";
   const tz = timeZone && isValidTimeZone(timeZone) ? timeZone : "";
@@ -3444,6 +3816,21 @@ ${tz ? `The user's local time is ${nowInTimeZone(tz)}.\n` : ""}Question: "${q}"
 - Answer accurately and lead with the answer.
 - If you genuinely can't tell what something is, say so honestly rather than guessing.
 - Plain text only — no markdown. Match the personality AND its intensity above (plain at low intensity, loud at high).`;
+
+  if (brainV3AuxEnabled()) {
+    try {
+      const { runBrainV3MultimodalAnswer } = await import("./brainV3.js");
+      return await runBrainV3MultimodalAnswer(
+        [{ inlineData: { mimeType: mimeType || "image/jpeg", data: base64 } }],
+        q,
+        { persona, timeZone, voiceMode }
+      );
+    } catch (error) {
+      // Keep the existing multimodal path as a reversible compatibility
+      // fallback during auxiliary rollout and on provider/input failures.
+      console.error("Brain v3 vision answer failed; using compatibility path:", error);
+    }
+  }
 
   try {
     const response: any = await withTimeout(
@@ -3504,11 +3891,13 @@ export async function answerAboutAttachments(
   attachments: TakiAttachment[],
   question: string,
   persona?: UserPersona,
-  timeZone?: string
+  timeZone?: string,
+  voiceMode = false
 ): Promise<{ text: string; sources: { title: string; url: string }[] }> {
   const q = question.trim() || "Summarize the attached sources.";
   const selectedModel = activeTakiModelInfo();
   const responseStyle = responseStyleForTakiModel(selectedModel.key);
+  const responseDirective = voiceMode ? responseStyle.voiceDirective : responseStyle.textDirective;
   const parts: any[] = [];
   const sources: { title: string; url: string }[] = [];
   let needsURLContext = false;
@@ -3556,12 +3945,28 @@ export async function answerAboutAttachments(
 You are Taki AI answering from the attachments and sources supplied in this request.
 ${tz ? `The user's local time is ${nowInTimeZone(tz)}.\n` : ""}Question: "${q}"
 
-- Response depth for ${selectedModel.name}: ${responseStyle.textDirective}
+- Response depth for ${selectedModel.name}: ${responseDirective}
 - Lead with the answer and distinguish source facts from your inference.
 - Never guess about content you cannot access. State the exact limitation.
 - You can inspect supported inputs and export plain-text .txt files through the device action. You cannot generate or return images, videos, audio, or other media.
-- Plain text only. Do not claim that an attachment or generated file was created.
+- Plain text only. Do not claim that an attachment or generated file was created.${voiceMode ? " Keep it to complete short spoken sentences with no markdown or URLs." : ""}
 - Match the configured personality without sacrificing accuracy.` });
+
+  if (brainV3AuxEnabled()) {
+    try {
+      const { runBrainV3MultimodalAnswer } = await import("./brainV3.js");
+      const text = await runBrainV3MultimodalAnswer(
+        parts.slice(0, -1),
+        q,
+        { persona, timeZone, voiceMode, useUrlContext: needsURLContext }
+      );
+      return { text, sources };
+    } catch (error) {
+      // Reuse the established attachment adapter if the gated v3 path cannot
+      // handle a provider-specific input (for example a public video URL).
+      console.error("Brain v3 attachment answer failed; using compatibility path:", error);
+    }
+  }
 
   const response: any = await withTimeout(
     generateContent({
@@ -3569,7 +3974,7 @@ ${tz ? `The user's local time is ${nowInTimeZone(tz)}.\n` : ""}Question: "${q}"
       contents: parts,
       config: {
         ...(needsURLContext ? { tools: [{ urlContext: {} }] } : {}),
-        maxOutputTokens: responseStyle.textMaxOutputTokens,
+        maxOutputTokens: voiceMode ? responseStyle.voiceMaxOutputTokens : responseStyle.textMaxOutputTokens,
         ...safetyConfig(persona?.teen)
       }
     } as any),

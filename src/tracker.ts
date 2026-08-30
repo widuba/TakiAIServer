@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { generateContent, ACTIVE_AI_PROVIDER, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, TIME_ZONE } from "./ai.js";
+import { generateContent, ACTIVE_AI_PROVIDER, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, TIME_ZONE, brainV3AuxEnabled } from "./ai.js";
+import {
+  BRAIN_V3_FLIGHT_TRACKER_SCHEMA,
+  BRAIN_V3_PRODUCT_TRACKER_SCHEMA,
+  BRAIN_V3_SPORTS_TRACKER_SCHEMA,
+  runBrainV3Structured
+} from "./brainV3Specialists.js";
 import { parse as parseHtml } from "node-html-parser";
 import { fetchWithTimeout, readResponseJsonLimited, readResponseBodyLimited, safeParseJsonObject, withTimeout } from "./util.js";
 import { storeDelete, storeGet, storeSet } from "./store.js";
@@ -522,8 +528,44 @@ async function fetchSportsScore(query: string, timeZone: string = TIME_ZONE): Pr
 Find the score of the game involving "${query}" that is IN PROGRESS RIGHT NOW, or SCHEDULED FOR LATER TODAY (${nowLocal.split(" at ")[0]}).
 CRITICAL: Use ONLY a game from today or one currently live. NEVER report a game from a previous day, even if the same two teams played then. If the only game between these teams happened on an earlier date, respond with exactly: null.
 Respond with ONLY compact JSON (no markdown, no code fences):
-{"title":"<Away> vs <Home>","line1":"<awayAbbr> <awayScore> – <homeAbbr> <homeScore>","line2":"<who is leading, or 'Final' / 'Tied'>","status":"<period and clock like 'Q4 2:15', 'Top 5th', 'Final', or the scheduled start time if it hasn't started>","trend":"flat"}
+{"eventDate":"YYYY-MM-DD","title":"<Away> vs <Home>","line1":"<awayAbbr> <awayScore> – <homeAbbr> <homeScore>","line2":"<who is leading, or 'Final' / 'Tied'>","status":"<period and clock like 'Q4 2:15', 'Top 5th', 'Final', or the scheduled start time if it hasn't started>","trend":"flat"}
 If it hasn't started yet, set line1 to the matchup abbreviations with no scores and status to the start time. If you can't find a game today, respond with exactly: null`;
+  if (brainV3AuxEnabled()) {
+    try {
+      const result = await runBrainV3Structured<{
+        found: boolean;
+        eventDate: string;
+        title: string;
+        line1: string;
+        line2: string;
+        status: string;
+      }>("sports_tracker", prompt, BRAIN_V3_SPORTS_TRACKER_SCHEMA, {
+        timeoutMs: TRACKER_TIMEOUT_MS,
+        maxOutputTokens: 320,
+        reasoning: "low",
+        tools: [{ googleSearch: {} }],
+        forceWebSearch: true,
+        webSearchContextSize: "medium"
+      });
+      const obj = result.value;
+      const dateKey = sportsDateKey(timeZone);
+      const expectedDate = `${dateKey.slice(0, 4)}-${dateKey.slice(4, 6)}-${dateKey.slice(6)}`;
+      const sources = groundingSources(result.response);
+      if (obj.found && obj.eventDate === expectedDate && obj.line1.trim() && obj.status.trim() && sources.length) {
+        return {
+          title: String(obj.title || query).slice(0, 40),
+          symbol: "sportscourt.fill",
+          line1: String(obj.line1).slice(0, 24),
+          line2: String(obj.line2 || "").slice(0, 30),
+          trend: "flat",
+          status: String(obj.status).slice(0, 20),
+          sources
+        };
+      }
+    } catch (error) {
+      console.error("Brain v3 sports tracker error:", error);
+    }
+  }
   try {
     const res: any = await withTimeout(
       generateContent({ model: TRACKER_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }], thinkingConfig: { thinkingBudget: 0 } } } as any),
@@ -639,6 +681,42 @@ Find the current NEW retail price in USD for every product in this exact compari
 Use the manufacturer's official US store when available. Otherwise use a major authorized US retailer. Preserve the user's product order. For an underspecified product family, use the current base model and its starting price; do not silently substitute a different product. If you cannot verify every requested product, respond with exactly: null.
 Respond with ONLY compact JSON (no markdown, no code fences):
 {"title":"<short comparison title, max 30 chars>","line1":"<prices only in order, separated by ·, e.g. '$999 · $1,599 · $599'>","line2":"<short product labels in the same order, separated by ·, e.g. 'Air · Pro · mini'>","status":"<short source context, e.g. 'Apple US starting prices'>"}`;
+  if (brainV3AuxEnabled()) {
+    try {
+      const result = await runBrainV3Structured<{
+        found: boolean;
+        title: string;
+        line1: string;
+        line2: string;
+        status: string;
+      }>("product_tracker", prompt, BRAIN_V3_PRODUCT_TRACKER_SCHEMA, {
+        timeoutMs: RESEARCH_TIMEOUT_MS,
+        maxOutputTokens: 360,
+        reasoning: "medium",
+        tools: [{ googleSearch: {} }],
+        forceWebSearch: true,
+        webSearchContextSize: "medium"
+      });
+      const obj = result.value;
+      const line1 = String(obj.line1 || "").trim();
+      const line2 = String(obj.line2 || "").trim();
+      const priceCount = line1.match(/(?:\$|USD\s*)[\d,.]+/gi)?.length || 0;
+      const sources = groundingSources(result.response);
+      if (obj.found && line1 && line2 && priceCount >= expectedPrices && sources.length) {
+        return {
+          title: String(obj.title || "Product prices").slice(0, 30),
+          symbol: "tag.fill",
+          line1: line1.slice(0, 48),
+          line2: line2.slice(0, 44),
+          trend: "flat",
+          status: String(obj.status || "Current retail prices").slice(0, 36),
+          sources
+        };
+      }
+    } catch (error) {
+      console.error("Brain v3 product tracker error:", error);
+    }
+  }
   try {
     const res: any = await withTimeout(
       generateContent({ model: RESEARCH_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }] } } as any),
@@ -784,6 +862,7 @@ async function fetchFlightStatus(query: string, timeZone: string = TIME_ZONE): P
 Report the CURRENT status of airline flight "${flight}" for today (or its most recent/next occurrence if it operates daily).
 Respond with ONLY compact JSON (no markdown, no code fences):
 {
+ "found":true,
  "title":"<flight code · route, e.g. 'UA328 · DEN→HNL'>",
  "dep":"<departure as 'SCHEDULED|note': the scheduled clock time, a pipe, then a SHORT note — 'on time', or 'exp 6:25p' if delayed/estimated, or 'departed 6:05p' if it already left. e.g. '6:00p|on time' or '6:00p|exp 6:25p'>",
  "arr":"<arrival as 'SCHEDULED|note', same rule with 'arrived 9:50p'/'landed 9:50p' for the past. e.g. '9:45p|on time' or '9:45p|exp 10:10p'>",
@@ -793,6 +872,45 @@ Respond with ONLY compact JSON (no markdown, no code fences):
  "trend":"<'up' if on time or landed on time, 'down' if delayed/cancelled, else 'flat'>"
 }
 Use the user's local timezone (${timeZone}). Always include the '|note' part. If you cannot identify this flight, respond with exactly: null`;
+  if (brainV3AuxEnabled()) {
+    try {
+      const result = await runBrainV3Structured<{
+        found: boolean;
+        title: string;
+        dep: string;
+        arr: string;
+        depColor: "green" | "yellow" | "red" | "";
+        arrColor: "green" | "yellow" | "red" | "";
+        status: string;
+        trend: "up" | "down" | "flat";
+      }>("flight_tracker", prompt, BRAIN_V3_FLIGHT_TRACKER_SCHEMA, {
+        timeoutMs: TRACKER_TIMEOUT_MS,
+        maxOutputTokens: 440,
+        reasoning: "low",
+        tools: [{ googleSearch: {} }],
+        forceWebSearch: true,
+        webSearchContextSize: "medium"
+      });
+      const obj = result.value;
+      const normalizedTitle = String(obj.title || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      const sources = groundingSources(result.response);
+      if (obj.found && normalizedTitle.includes(flight) && obj.dep.trim() && obj.arr.trim() && obj.status.trim() && sources.length) {
+        return {
+          title: String(obj.title).slice(0, 30),
+          symbol: "airplane",
+          line1: String(obj.dep).slice(0, 30),
+          line2: String(obj.arr).slice(0, 30),
+          trend: obj.trend,
+          status: String(obj.status).slice(0, 44),
+          depColor: obj.depColor || "green",
+          arrColor: obj.arrColor || "green",
+          sources
+        };
+      }
+    } catch (error) {
+      console.error("Brain v3 flight tracker error:", error);
+    }
+  }
   try {
     const res: any = await withTimeout(
       generateContent({ model: TRACKER_MODEL, contents: prompt, config: { tools: [{ googleSearch: {} }], thinkingConfig: { thinkingBudget: 0 } } } as any),

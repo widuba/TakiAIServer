@@ -14,9 +14,28 @@ const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM"; // "
 export const STT_MODEL = "scribe_v2";
 export const TTS_MODEL = "eleven_flash_v2_5";
 export const PIRATE_MARSHAL_VOICE_ID = "PPzYpIqttlTYA83688JI";
+export const DEVICE_TRANSCRIPT_MIN_CONFIDENCE = 0.82;
 
 export function isVoiceConfigured(): boolean {
   return !!ELEVEN_KEY;
+}
+
+// Device speech is the fastest path, but a low-confidence transcript should
+// not replace the recording when cloud STT is available. Keep clients from
+// older builds working: a missing confidence value, a transcript-only request,
+// or an unavailable cloud provider still uses the device text.
+export function shouldUseDeviceTranscript(
+  transcript: unknown,
+  confidence: unknown,
+  audioAvailable: boolean,
+  cloudTranscriptionAvailable: boolean
+): boolean {
+  const text = String(transcript || "").trim();
+  if (!text) return false;
+  if (!audioAvailable || !cloudTranscriptionAvailable) return true;
+  if (confidence === undefined || confidence === null || String(confidence).trim() === "") return true;
+  const value = Number(confidence);
+  return Number.isFinite(value) && value >= 0 && value <= 1 && value >= DEVICE_TRANSCRIPT_MIN_CONFIDENCE;
 }
 
 let voiceListCache: { expiresAt: number; voices: { id: string; name: string }[] } | null = null;

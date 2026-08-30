@@ -161,6 +161,100 @@ export function validateAction(action: AssistantAction | null): string | null {
     return "Should I turn the flashlight on or off?";
   }
 
+  if (action.type === "live_activity") {
+    const kind = String(action.liveActivityKind || "").trim().toLowerCase();
+    const trackKind = String(action.trackKind || "").trim().toLowerCase();
+    if (kind === "countdown" || trackKind === "countdown") {
+      return "Taki's countdown and clock features have been removed.";
+    }
+    if (trackKind) {
+      if (!new Set(["finance", "product", "sports", "flight", "package"]).has(trackKind)) return "What should I track?";
+      if (!action.trackQuery?.trim()) return "What should I track?";
+    } else if (kind !== "commute") {
+      return "What should I track or use for the live commute?";
+    }
+  }
+
+  if (action.type === "day_plan") {
+    if (!Array.isArray(action.planItems) || !action.planItems.length) return "I couldn't build that day plan.";
+    if (action.planItems.some((item) => !item || !item.title?.trim() || !item.startDate?.trim() || !Number.isFinite(Date.parse(item.startDate)))) {
+      return "I couldn't build that day plan with reliable times.";
+    }
+  }
+
+  if (action.type === "service_handoff") {
+    const service = String(action.service || "").trim().toLowerCase();
+    const kind = String(action.serviceKind || "").trim().toLowerCase();
+    const services = new Set(["uber", "lyft", "doordash", "ubereats", "grubhub", "opentable", "resy", "instacart", "yelp"]);
+    const kinds = new Set(["ride", "food", "reservation", "grocery"]);
+    if (!services.has(service) || !kinds.has(kind)) return "Which supported service should I open?";
+    const expectedKind = new Set(["uber", "lyft"]).has(service) ? "ride"
+      : new Set(["doordash", "ubereats", "grubhub"]).has(service) ? "food"
+        : service === "instacart" ? "grocery" : "reservation";
+    if (kind !== expectedKind) return "I need to confirm which service you want to use.";
+  }
+
+  if (action.type === "list_action") {
+    const op = String(action.listOp || "").trim();
+    if (!new Set(["add", "remove", "show", "create", "clear", "showAll"]).has(op)) return "What should I do with the list?";
+    if ((op === "add" || op === "remove") && !action.listItem?.trim()) return op === "add" ? "What should I add to the list?" : "What should I remove from the list?";
+  }
+
+  if (action.type === "expense_action") {
+    const op = String(action.expenseOp || "").trim();
+    if (!new Set(["log", "query"]).has(op)) return "Should I log an expense or total your spending?";
+    if (op === "log" && (!Number.isFinite(action.expenseAmount) || Number(action.expenseAmount) <= 0)) return "How much did you spend?";
+    if (op === "query" && action.expensePeriod && !new Set(["day", "week", "month", "year", "all"]).has(action.expensePeriod)) return "Which spending period do you mean?";
+  }
+
+  if (action.type === "habit_action") {
+    const op = String(action.habitOp || "").trim();
+    if (!new Set(["log", "check", "streak", "list"]).has(op)) return "What should I do with that habit?";
+    if (op !== "list" && !action.habitName?.trim()) return "Which habit do you mean?";
+  }
+
+  if (action.type === "automation_create") {
+    if (!new Set(["arrive", "leave"]).has(String(action.automationTrigger || "").trim().toLowerCase())) return "Should that automation run when you arrive or leave?";
+    if (!action.automationPlace?.trim()) return "Where should that automation run?";
+    if (!action.automationAction?.trim()) return "What should I do when you get there?";
+  }
+
+  if (action.type === "scheduled_message") {
+    if (!String(action.recipientName || action.contactQuery || action.recipientPhone || "").trim()) return "Who should I schedule that text for?";
+    if (!action.body?.trim()) return "What should the scheduled text say?";
+    if (!action.dueDate || !Number.isFinite(Date.parse(action.dueDate))) return "When should I schedule that text?";
+  }
+
+  if (action.type === "cooking_mode" || action.type === "cooking_schedule") {
+    const recipe = action.recipe;
+    if (!recipe?.title?.trim() || !Array.isArray(recipe.ingredients) || !recipe.ingredients.length || !Array.isArray(recipe.steps) || !recipe.steps.length) {
+      return "I couldn't prepare that recipe reliably.";
+    }
+    if (action.type === "cooking_schedule" && (!action.dueDate || !Number.isFinite(Date.parse(action.dueDate)))) return "When should I schedule that cooking reminder?";
+  }
+
+  if (action.type === "alert_create") {
+    const kind = String(action.alertKind || "").trim().toLowerCase();
+    if (!new Set(["price", "score"]).has(kind) || !action.alertQuery?.trim()) return "What should I watch for in the alert?";
+    if (kind === "price") {
+      if (!Number.isFinite(action.alertTarget) || Number(action.alertTarget) <= 0) return "What price should trigger the alert?";
+      if (!new Set(["above", "below"]).has(String(action.alertDirection || "").trim().toLowerCase())) return "Should the alert trigger above or below that price?";
+    } else if (!new Set(["final", "any"]).has(String(action.alertTrigger || "").trim().toLowerCase())) {
+      return "When should the score alert trigger?";
+    }
+  }
+
+  if (action.type === "recurring_reminder") {
+    const kind = String(action.recurKind || "").trim().toLowerCase();
+    if (!action.title?.trim()) return "What should I remind you about?";
+    if (!new Set(["daily", "weekly", "interval"]).has(kind)) return "How often should I remind you?";
+    if (kind === "interval" && (!Number.isFinite(action.recurIntervalMinutes) || Number(action.recurIntervalMinutes) < 1)) return "How often should I remind you?";
+    if (kind === "weekly" && (!Array.isArray(action.recurWeekdays) || !action.recurWeekdays.length)) return "Which days should I remind you?";
+    if (kind !== "interval" && (!Number.isInteger(action.recurHour) || Number(action.recurHour) < 0 || Number(action.recurHour) > 23 || !Number.isInteger(action.recurMinute) || Number(action.recurMinute) < 0 || Number(action.recurMinute) > 59)) return "What time should I remind you?";
+  }
+
+  if (action.type === "personal_search" && !action.personalSearchQuery?.trim()) return "What should I search your connected sources for?";
+
   if (action.type === "memory_save") {
     const operation = action.memoryOperation || "save";
     if (!new Set(["save", "forget", "clear"]).has(operation)) return "I couldn't understand that memory request.";
@@ -170,6 +264,7 @@ export function validateAction(action: AssistantAction | null): string | null {
   }
 
   if (action.type === "share_content") {
+    if (!new Set(["calendar", "calendar_list", "text"]).has(String(action.shareKind || ""))) return "What would you like me to share?";
     if (action.shareKind === "calendar" || action.shareKind === "calendar_list") return null;
     if (!action.shareText?.trim()) return "What would you like me to share?";
   }

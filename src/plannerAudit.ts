@@ -5,6 +5,7 @@ import type {
   PlannerIntent,
   PlannerModelOutput
 } from "./types.js";
+import { isExplicitAllAlertCancellation } from "./tools.js";
 
 const EXECUTABLE_MODEL_INTENTS = new Set<PlannerIntent>([
   "compose_message",
@@ -31,11 +32,29 @@ const EXECUTABLE_MODEL_INTENTS = new Set<PlannerIntent>([
   "music_control",
   "home_control",
   "photos_show",
+  "personal_search",
+  "share_content",
   "clipboard_copy",
   "file_export",
   "flashlight_control",
   "device_status",
-  "calendar_forward"
+  "calendar_forward",
+  "live_activity",
+  "day_plan",
+  "service_handoff",
+  "list_action",
+  "expense_action",
+  "habit_action",
+  "automation_create",
+  "scheduled_message",
+  "cooking_mode",
+  "cooking_schedule",
+  "alert_create",
+  "alert_cancel",
+  "recurring_reminder",
+  "memory_save",
+  "action_history",
+  "undo_last"
 ]);
 
 export type PlannerAuditIssue = {
@@ -45,7 +64,7 @@ export type PlannerAuditIssue = {
 };
 
 function clean(value: unknown): string {
-  return String(value || "")
+  return expandCommonContractions(value)
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
@@ -54,34 +73,142 @@ function clean(value: unknown): string {
     .trim();
 }
 
-function evidenceText(state: ConversationState): string {
-  return clean([
+const SHORT_NON_ENTITY_WORDS = new Set([
+  "a", "an", "am", "as", "at", "be", "by", "do", "go", "he", "if", "in", "is", "it",
+  "me", "my", "no", "of", "on", "or", "so", "to", "up", "us", "we"
+]);
+
+function groundingToken(value: string): string {
+  // `clean` intentionally keeps periods for email addresses and decimal
+  // values. For phrase grounding, a terminal period is punctuation rather than
+  // part of the entity ("late." should match "late").
+  return value.replace(/^\.+|\.+$/g, "");
+}
+
+function userCorrectionEvidence(value: string): string {
+  return value
+    .split(/\r?\n/)
+    .filter((line) => /^\s*user\s+clarified\s*:/i.test(line))
+    .join("\n");
+}
+
+function evidenceSegments(state: ConversationState): string[] {
+  const transcript = Array.isArray(state.transcript) ? state.transcript : [];
+  return [
     state.message,
-    state.fullTranscriptText,
+    // Only user turns are grounding evidence. Assistant text can be a
+    // hallucinated suggestion and must never make an invented recipient or
+    // destination executable on the next turn.
+    ...transcript.filter((turn) => turn.role === "user").map((turn) => turn.text),
+    // The correction itself is user-authored; the earlier misunderstood answer
+    // is intentionally excluded from executable grounding.
+    userCorrectionEvidence(state.correctionsText),
     state.priorContact?.name,
     state.priorContact?.phone,
     state.priorContact?.email,
     state.priorEvent?.title,
+    state.priorEvent?.startDate,
+    state.priorEvent?.endDate,
     state.priorEvent?.location,
     state.priorPlace?.label,
     state.priorPlace?.query,
     state.priorPlace?.address,
-    state.userProfile?.about
-  ].filter(Boolean).join("\n"));
+    state.userProfile?.about,
+    // Model-derived memory is not grounding evidence. It can help the planner
+    // maintain continuity, but a hallucinated prior topic must never become an
+    // executable entity after a vague follow-up such as "yes".
+  ].filter(Boolean).map((value) => clean(value));
+}
+
+function normalizedEvidence(state: ConversationState): string {
+  return evidenceSegments(state).join("\n");
+}
+
+function evidenceText(state: ConversationState): string {
+  return normalizedEvidence(state);
+}
+
+function expandCommonContractions(value: unknown): string {
+  return String(value || "")
+    .replace(/\bI'll\b/gi, "I will")
+    .replace(/\bI'd\b/gi, "I would")
+    .replace(/\bI'm\b/gi, "I am")
+    .replace(/\bI've\b/gi, "I have")
+    .replace(/\bcan't\b/gi, "cannot")
+    .replace(/\bwon't\b/gi, "will not")
+    .replace(/\bdon't\b/gi, "do not")
+    .replace(/\bdoesn't\b/gi, "does not")
+    .replace(/\bisn't\b/gi, "is not")
+    .replace(/\baren't\b/gi, "are not")
+    .replace(/\bthat's\b/gi, "that is")
+    .replace(/\bit's\b/gi, "it is");
+}
+
+function bodyEvidenceSegments(state: ConversationState): string[] {
+  return evidenceSegments(state).map((segment) => clean(expandCommonContractions(segment)));
+}
+
+function isBodyGrounded(value: unknown, state: ConversationState): boolean {
+  const wanted = clean(expandCommonContractions(value));
+  if (!wanted) return false;
+  const tokens = wanted.split(" ").map(groundingToken).filter((token) => token.length >= 3 || (token.length >= 2 && !SHORT_NON_ENTITY_WORDS.has(token)));
+  if (!tokens.length) return false;
+  return bodyEvidenceSegments(state).some((segment) => {
+    const segmentTokens = new Set(segment.split(" ").map(groundingToken).filter(Boolean));
+    const overlap = tokens.filter((token) => segmentTokens.has(token)).length;
+    // Exact wording is preferred, but allow a light contraction/punctuation
+    // rewrite as long as the body still shares most of its meaningful words
+    // with one user-authored turn. A one-word body ("Thanks") must match.
+    return overlap === tokens.length || (tokens.length >= 2 && overlap >= Math.max(2, Math.ceil(tokens.length * 0.6)));
+  });
 }
 
 function isGrounded(value: unknown, state: ConversationState): boolean {
   const wanted = clean(value);
   if (!wanted) return true;
   const evidence = evidenceText(state);
+  const segments = evidenceSegments(state);
+
+  // Phone numbers are often formatted differently by the model and the
+  // speech recognizer. Compare their digits as a contiguous value rather than
+  // requiring punctuation or spaces to survive normalization.
+  const wantedDigits = wanted.replace(/\D/g, "");
+  if (wantedDigits.length >= 7) {
+    return segments.some((segment) => segment.replace(/\D/g, "").includes(wantedDigits));
+  }
 
   // Allow harmless formatting differences while still requiring the meaningful
   // words to have appeared as complete tokens. Substring matching made an
   // invented recipient such as "Ann" appear grounded by "announcement".
-  const tokens = wanted.split(" ").filter((token) => token.length >= 3);
+  const tokens = wanted.split(" ").map(groundingToken).filter((token) => token.length >= 3 || (token.length >= 2 && !SHORT_NON_ENTITY_WORDS.has(token)));
   if (!tokens.length) return false;
-  const evidenceTokens = new Set(evidence.split(" ").filter(Boolean));
+  const evidenceTokens = new Set(evidence.split(" ").map(groundingToken).filter(Boolean));
+  // For a multi-word entity, require the normalized words to occur together in
+  // the same order. Otherwise a proposal such as "Chris Mom" could be built
+  // by combining two unrelated names from different turns.
+  if (tokens.length > 1) {
+    const phrase = tokens.join(" ");
+    return segments.some((segment) => {
+      if (segment.includes(phrase)) return true;
+      const segmentTokens = new Set(segment.split(" ").map(groundingToken).filter(Boolean));
+      return tokens.every((token) => segmentTokens.has(token));
+    });
+  }
   return tokens.every((token) => evidenceTokens.has(token));
+}
+
+function hasTemporalEvidence(state: ConversationState): boolean {
+  const evidence = normalizedEvidence(state);
+  return /\b(?:today|tomorrow|tonight|yesterday|this\s+(?:morning|afternoon|evening|week|month|year)|next\s+(?:week|month|year)|monday|tuesday|wednesday|thursday|friday|saturday|sunday|noon|midnight|\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)|\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?|\b20\d{2}\b)\b/i.test(evidence);
+}
+
+function hasExplicitCalendarTimeEvidence(state: ConversationState): boolean {
+  const evidence = normalizedEvidence(state);
+  const hasNaturalTime = /\b(?:noon|midnight|all[- ]day)\b|\b(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)\b|\bat\s+\d{1,2}(?::\d{2})?(?:\b|\s)/i.test(evidence);
+  const savedEventTimes = [state.priorEvent?.startDate, state.priorEvent?.endDate]
+    .filter(Boolean)
+    .some((value) => /^20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}/i.test(String(value)));
+  return hasNaturalTime || savedEventTimes;
 }
 
 function missingActionDetail(plan: PlannerModelOutput): { question: string; reason: string } | null {
@@ -108,7 +235,7 @@ function missingActionDetail(plan: PlannerModelOutput): { question: string; reas
       return action.title ? null : { question: "What should I remind you about?", reason: "reminder title was missing" };
     case "reminder_update":
       if (!action.reminderQuery) return { question: "Which reminder should I update?", reason: "reminder target was missing" };
-      if (action.reminderCompleted === null && !action.dueDate && !action.title && !action.notes) return { question: "What should I change about that reminder?", reason: "reminder change was missing" };
+      if (action.reminderCompleted == null && !action.dueDate && !action.title && !action.notes) return { question: "What should I change about that reminder?", reason: "reminder change was missing" };
       return null;
     case "reminder_delete":
       return action.reminderQuery ? null : { question: "Which reminder should I delete?", reason: "reminder target was missing" };
@@ -141,6 +268,55 @@ function missingActionDetail(plan: PlannerModelOutput): { question: string; reas
       return action.body ? null : { question: "What text should I put in the file?", reason: "file text was missing" };
     case "flashlight_control":
       return action.deviceAction === "on" || action.deviceAction === "off" ? null : { question: "Should I turn the flashlight on or off?", reason: "flashlight state was missing" };
+    case "live_activity":
+      return action.trackKind
+        ? action.trackQuery ? null : { question: "What should I track?", reason: "live tracker query was missing" }
+        : action.liveActivityKind === "commute" ? null : { question: "What should I track or use for the live commute?", reason: "live activity target was missing" };
+    case "day_plan":
+      return Array.isArray(action.planItems) && action.planItems.length ? null : { question: "I couldn't build that day plan.", reason: "day plan items were missing" };
+    case "service_handoff":
+      return action.service && action.serviceKind ? null : { question: "Which supported service should I open?", reason: "service handoff details were missing" };
+    case "list_action":
+      if (!action.listOp) return { question: "What should I do with the list?", reason: "list operation was missing" };
+      if ((action.listOp === "add" || action.listOp === "remove") && !action.listItem) return { question: action.listOp === "add" ? "What should I add to the list?" : "What should I remove from the list?", reason: "list item was missing" };
+      return null;
+    case "expense_action":
+      if (!action.expenseOp) return { question: "Should I log an expense or total your spending?", reason: "expense operation was missing" };
+      if (action.expenseOp === "log" && (!Number.isFinite(action.expenseAmount) || Number(action.expenseAmount) <= 0)) return { question: "How much did you spend?", reason: "expense amount was missing" };
+      return null;
+    case "habit_action":
+      if (!action.habitOp) return { question: "What should I do with that habit?", reason: "habit operation was missing" };
+      return action.habitOp === "list" || !!action.habitName ? null : { question: "Which habit do you mean?", reason: "habit name was missing" };
+    case "automation_create":
+      if (!action.automationPlace || !action.automationAction) return { question: "Where should that automation run, and what should it do?", reason: "automation details were missing" };
+      return null;
+    case "scheduled_message":
+      if (!(action.recipientName || action.contactQuery || action.recipientPhone)) return { question: "Who should I schedule that text for?", reason: "scheduled message recipient was missing" };
+      if (!action.body) return { question: "What should the scheduled text say?", reason: "scheduled message body was missing" };
+      if (!action.dueDate) return { question: "When should I schedule that text?", reason: "scheduled message time was missing" };
+      return null;
+    case "cooking_mode":
+      return action.recipe?.title && action.recipe.steps?.length ? null : { question: "I couldn't prepare that recipe reliably.", reason: "recipe was missing" };
+    case "cooking_schedule":
+      if (!action.recipe?.title || !action.recipe.steps?.length) return { question: "I couldn't prepare that recipe reliably.", reason: "recipe was missing" };
+      return action.dueDate ? null : { question: "When should I schedule that cooking reminder?", reason: "cooking reminder time was missing" };
+    case "alert_create":
+      if (!action.alertKind || !action.alertQuery) return { question: "What should I watch for in the alert?", reason: "alert details were missing" };
+      return action.alertKind === "price" && (!Number.isFinite(action.alertTarget) || !action.alertDirection)
+        ? { question: "What price and direction should trigger the alert?", reason: "price alert target was missing" }
+        : null;
+    case "recurring_reminder":
+      return action.title && action.recurKind ? null : { question: "What should I remind you about, and how often?", reason: "recurring reminder details were missing" };
+    case "personal_search":
+      return action.personalSearchQuery ? null : { question: "What should I search your connected sources for?", reason: "personal search query was missing" };
+    case "share_content":
+      return action.shareKind === "calendar" || action.shareKind === "calendar_list" || !!action.shareText
+        ? null : { question: "What would you like me to share?", reason: "share content was missing" };
+    case "alert_cancel":
+    case "memory_save":
+    case "action_history":
+    case "undo_last":
+      return null;
     default:
       return null;
   }
@@ -214,9 +390,51 @@ export function auditPlannerOutput(plan: PlannerModelOutput, state: Conversation
   }
   const missing = missingActionDetail(plan);
   if (missing) return makeIssue(state, plan, missing.reason, missing.question);
-  const recipient = a.recipientName || a.contactQuery || plan.contact?.name;
-  if (recipient && !isGrounded(recipient, state)) {
+  if (plan.intent === "alert_cancel" && !a.alertKind && !a.alertQuery && !isExplicitAllAlertCancellation(state.message)) {
+    return makeIssue(state, plan, "alert cancellation scope was ambiguous", "Which alert should I cancel?");
+  }
+  const recipients = [a.recipientName, a.contactQuery, a.recipientPhone, a.emailAddress, plan.contact?.name, plan.contact?.phone, plan.contact?.email]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  if (recipients.some((recipient) => !isGrounded(recipient, state))) {
     return makeIssue(state, plan, "recipient was not grounded in user context", "Who do you mean?");
+  }
+
+  // The stricter body/date grounding is part of Brain v2's staged contract.
+  // Keep legacy planner behavior unchanged until v2 is deliberately enabled
+  // for a canary or full rollout.
+  const strictBrain = plan.brainVersion === "v2" || plan.brainVersion === "v3";
+  if (strictBrain && (plan.intent === "compose_message" || plan.intent === "compose_email") && a.body && !plan.researchQuery && !isBodyGrounded(a.body, state)) {
+    return makeIssue(
+      state,
+      plan,
+      "message body was not grounded in user context",
+      plan.intent === "compose_email" ? "What should the email say?" : "What should the message say?"
+    );
+  }
+
+  if (strictBrain && plan.intent === "calendar_create") {
+    if (a.title && !isGrounded(a.title, state)) {
+      return makeIssue(state, plan, "calendar title was not grounded in user context", "What should I call the calendar event?");
+    }
+    if (!hasTemporalEvidence(state)) {
+      return makeIssue(state, plan, "calendar date/time was missing", "What date and time should I use?");
+    }
+    if (!hasExplicitCalendarTimeEvidence(state)) {
+      return makeIssue(state, plan, "calendar time was missing", "What time should I use for that event?");
+    }
+  }
+  if (strictBrain && plan.intent === "reminder_create" && a.title && !isGrounded(a.title, state)) {
+    return makeIssue(state, plan, "reminder title was not grounded in user context", "What should I remind you about?");
+  }
+  if (strictBrain && plan.intent === "reminder_create" && a.dueDate && !hasTemporalEvidence(state)) {
+    return makeIssue(state, plan, "reminder date/time was not grounded", "When should I remind you?");
+  }
+  if (strictBrain && plan.intent === "reminder_update" && a.dueDate && !hasTemporalEvidence(state)) {
+    return makeIssue(state, plan, "reminder date/time was not grounded", "When should I reschedule that reminder?");
+  }
+  if (strictBrain && plan.intent === "calendar_update" && (a.startDate || a.endDate) && !hasTemporalEvidence(state)) {
+    return makeIssue(state, plan, "calendar date/time was not grounded", "What date and time should I use for that event?");
   }
 
   const checks: { value: unknown; question: string; reason: string }[] = [];
@@ -243,6 +461,57 @@ export function auditPlannerOutput(plan: PlannerModelOutput, state: Conversation
   }
   if (plan.intent === "home_control" && a.homeTarget) {
     checks.push({ value: a.homeTarget, question: "Which room or device do you mean?", reason: "home target was not grounded" });
+  }
+  if (plan.intent === "personal_search") {
+    checks.push({ value: a.personalSearchQuery, question: "What should I search your connected sources for?", reason: "personal search query was not grounded" });
+  }
+  if (plan.intent === "share_content" && a.shareKind !== "calendar" && a.shareKind !== "calendar_list") {
+    checks.push({ value: a.shareText, question: "What would you like me to share?", reason: "share content was not grounded" });
+  }
+  if (plan.intent === "live_activity") {
+    if (a.trackQuery) checks.push({ value: a.trackQuery, question: "What should I track?", reason: "live tracker query was not grounded" });
+    if (a.calendarQuery || a.title) checks.push({ value: a.calendarQuery || a.title, question: "Which event should I use for the live commute?", reason: "live activity event was not grounded" });
+  }
+  if (plan.intent === "day_plan") {
+    // A day plan is generated content, but the model must not smuggle an
+    // unrelated destination or recipient into the proposed schedule. The
+    // structural validator checks the times; this audit keeps the plan from
+    // becoming a covert messaging or external-service action.
+    if (a.planItems?.some((item) => /(?:text|email|call|send|book|order|pay)\b/i.test(`${item.type} ${item.title}`))) {
+      return makeIssue(state, plan, "day plan contained an unrelated external action", "What should I include in the day plan?");
+    }
+  }
+  if (plan.intent === "service_handoff") {
+    checks.push({ value: a.serviceQuery, question: "Which place or item should I use?", reason: "service query was not grounded" });
+    checks.push({ value: a.serviceDestination, question: "Where should the ride go?", reason: "service destination was not grounded" });
+  }
+  if (plan.intent === "list_action" && (a.listOp === "add" || a.listOp === "remove")) {
+    checks.push({ value: a.listItem, question: a.listOp === "add" ? "What should I add to the list?" : "What should I remove from the list?", reason: "list item was not grounded" });
+  }
+  if (plan.intent === "expense_action") {
+    checks.push({ value: a.expenseCategory, question: "Which spending category do you mean?", reason: "expense category was not grounded" });
+    if (a.expenseAmount != null) checks.push({ value: String(a.expenseAmount), question: "How much did you spend?", reason: "expense amount was not grounded" });
+  }
+  if (plan.intent === "habit_action" && a.habitName) {
+    checks.push({ value: a.habitName, question: "Which habit do you mean?", reason: "habit name was not grounded" });
+  }
+  if (plan.intent === "automation_create") {
+    checks.push({ value: a.automationPlace, question: "Where should that automation run?", reason: "automation place was not grounded" });
+    checks.push({ value: a.automationAction, question: "What should the automation do?", reason: "automation action was not grounded" });
+  }
+  if (plan.intent === "scheduled_message") {
+    checks.push({ value: a.body, question: "What should the scheduled text say?", reason: "scheduled message body was not grounded" });
+    if (a.dueDate && !hasTemporalEvidence(state)) return makeIssue(state, plan, "scheduled message time was not grounded", "When should I schedule that text?");
+  }
+  if (plan.intent === "recurring_reminder" && a.title) {
+    checks.push({ value: a.title, question: "What should I remind you about?", reason: "recurring reminder title was not grounded" });
+  }
+  if (plan.intent === "alert_create") {
+    checks.push({ value: a.alertQuery, question: "What should I watch for in the alert?", reason: "alert query was not grounded" });
+    if (a.alertTarget != null) checks.push({ value: String(a.alertTarget), question: "What price should trigger the alert?", reason: "alert target was not grounded" });
+  }
+  if (plan.intent === "memory_save" && a.memoryOperation !== "clear") {
+    checks.push({ value: a.memoryFact, question: "What would you like me to remember?", reason: "memory fact was not grounded" });
   }
 
   for (const check of checks) {

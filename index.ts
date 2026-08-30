@@ -4,9 +4,10 @@ import Stripe from "stripe";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-import { PORT, ACTIVE_AI_PROVIDER, MAIN_MODEL, PLANNER_MODEL, RESEARCH_MODEL, ServiceError, VOICE_UNAVAILABLE_SPOKEN, normalizeTakiModel, withTakiModel } from "./src/ai.js";
+import { PORT, ACTIVE_AI_PROVIDER, MAIN_MODEL, PLANNER_MODEL, RESEARCH_MODEL, BRAIN_V3_MODEL, ServiceError, VOICE_UNAVAILABLE_SPOKEN, brainV3AuxEnabled, normalizeTakiModel, withTakiModel } from "./src/ai.js";
 import { brainV2Percent, brainV2RolloutStats, normalizeBrainRolloutMode } from "./src/brainV2.js";
-import type { DeviceLocation, DeviceWeather } from "./src/types.js";
+import { brainV3CanaryPercent, brainV3PromotionReady, brainV3RolloutStats, normalizeBrainV3RolloutMode } from "./src/brainV3.js";
+import type { DeviceLocation, DeviceWeather, SpeechMetadata } from "./src/types.js";
 import { buildConversationState } from "./src/context.js";
 import { planAssistantResponse } from "./src/planner.js";
 import { finalizeResponse } from "./src/validators.js";
@@ -35,7 +36,7 @@ import { recordAssoc, associationsFor, isBanned, isTestRestricted, setTestRestri
 import { queueContextualSafetyReview } from "./src/safetyReview.js";
 import { noteUser, noteUserStrict, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, noteInteraction, noteChannelCost, noteSession, noteEngagementPreferences, noteBillingEvent, userForIdentity, identitiesForIp, allUsers, deleteUser, type UserRecord } from "./src/users.js";
 import { TIERS } from "./src/credits.js";
-import { billableAudioDurationMs, transcribe, synthesize, splitTextForProgressiveSpeech, listVoices, isVoiceConfigured, PIRATE_MARSHAL_VOICE_ID, speechCharacterCount, shouldAskForVoiceRepeat, VOICE_REPEAT_PROMPT, normalizeSpeechKeyterms } from "./src/voice.js";
+import { billableAudioDurationMs, transcribe, synthesize, splitTextForProgressiveSpeech, listVoices, isVoiceConfigured, PIRATE_MARSHAL_VOICE_ID, speechCharacterCount, shouldAskForVoiceRepeat, shouldUseDeviceTranscript, VOICE_REPEAT_PROMPT, normalizeSpeechKeyterms } from "./src/voice.js";
 import { extractDurableMemories } from "./src/userMemory.js";
 import { createChatTitle } from "./src/chatTitle.js";
 import { engagementSummary, isEngagementEmailConfigured, recordEngagementOpen, recordEngagementSession, recommendedEngagement, sendPersonalizedEngagement, shouldSendAutomatic, type EngagementChannel } from "./src/engagement.js";
@@ -49,6 +50,11 @@ import { isProductKnowledgeQuestion, productAnswerFor } from "./src/productKnowl
 import { readSyncedChats, syncChats } from "./src/chatSync.js";
 import { TurnReplayCache } from "./src/turnReplay.js";
 import { commitSignupSlot, MAX_ACCOUNTS_PER_IP, releaseSignupSlot, reserveSignupSlot } from "./src/registration.js";
+
+// Health/version evidence for the staged Brain v3 build. Keep this distinct
+// from the rollout flag so a deployed artifact can be identified even while
+// all customer traffic remains on the compatibility path.
+const SERVER_VERSION = "2026-08-29-brain-v3-staged-v1";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
 // Render. (The purchase-simulating grant endpoint was removed when real
@@ -505,7 +511,7 @@ app.get("/health", async (_req, res) => {
     ok: true,
     app: "Taki AI server",
     mode: "planner-first-modular-v3",
-    version: "2026-07-31-lights-anchor-v36",
+    version: SERVER_VERSION,
     durableStorage,
     aiProvider: ACTIVE_AI_PROVIDER,
     models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL },
@@ -516,6 +522,17 @@ app.get("/health", async (_req, res) => {
       // field before changing the Render environment for a staged rollout.
       liveUserImpact: normalizeBrainRolloutMode() === "legacy" ? "none" : "scoped",
       stats: brainV2RolloutStats()
+    },
+    brainV3: {
+      version: normalizeBrainV3RolloutMode(),
+      promotionReady: brainV3PromotionReady(),
+      canaryPercent: brainV3CanaryPercent(),
+      model: BRAIN_V3_MODEL,
+      auxEnabled: brainV3AuxEnabled(),
+      // Shadow calls are detached and discard their plans, so they do not
+      // change a user's answer, action, or billing result.
+      liveUserImpact: ["disabled", "shadow"].includes(normalizeBrainV3RolloutMode()) ? "none" : "scoped",
+      stats: brainV3RolloutStats()
     },
     // Live Activity background updates require APNs config (APNS_KEY_P8 or
     // APNS_KEY_PATH + KEY_ID + TEAM_ID). Surfaced here so a missing key on the
@@ -1084,7 +1101,7 @@ app.post("/api/vision", async (req, res) => {
   if (block) { res.status(402).json(usageBlockedPayload(block)); return; }
   try {
     const takiModel = normalizeTakiModel(req.body?.profile?.model);
-    const measured = await measureUsage(() => withTakiModel(takiModel, () => withTimeout(answerAboutImage(image, mime, question, userProfile, timeZone), 28000, "Vision")));
+    const measured = await measureUsage(() => withTakiModel(takiModel, () => withTimeout(answerAboutImage(image, mime, question, userProfile, timeZone, voiceMode), 45000, "Vision")));
     const spokenText = measured.value;
     const speechUsd = voiceMode ? ttsCostUsd(speechCharacterCount(spokenText || "")) : 0;
     const ownerCostUsd = totalUsageUsd(measured.usage) + speechUsd;
@@ -1149,7 +1166,7 @@ app.post("/api/attachments", async (req, res) => {
 
   try {
     const takiModel = normalizeTakiModel(req.body?.profile?.model);
-    const measured = await measureUsage(() => withTakiModel(takiModel, () => answerAboutAttachments(attachments, question, userProfile, timeZone)));
+    const measured = await measureUsage(() => withTakiModel(takiModel, () => answerAboutAttachments(attachments, question, userProfile, timeZone, voiceMode)));
     const answer = measured.value;
     const speechUsd = voiceMode ? ttsCostUsd(speechCharacterCount(answer.text)) : 0;
     const ownerCostUsd = totalUsageUsd(measured.usage) + speechUsd;
@@ -3733,6 +3750,13 @@ app.post("/api/voice", async (req, res) => {
   const audioBase64 = typeof req.body?.audioBase64 === "string" ? req.body.audioBase64 : "";
   if (audioBase64.length > 8_000_000) { res.status(413).json({ error: "voice recording too large" }); return; }
   const deviceTranscript = typeof req.body?.transcript === "string" ? req.body.transcript.trim().slice(0, 4000) : "";
+  const useDeviceTranscript = shouldUseDeviceTranscript(
+    deviceTranscript,
+    req.body?.transcriptConfidence,
+    !!audioBase64,
+    isVoiceConfigured()
+  );
+  const trustedDeviceTranscript = useDeviceTranscript ? deviceTranscript : "";
   const prefersDeviceSpeech = req.body?.deviceSpeech === true;
   const progressiveVoice = req.body?.progressiveVoice === true;
   let voiceStreamStarted = false;
@@ -3760,7 +3784,7 @@ app.post("/api/voice", async (req, res) => {
   // CarPlay supplies Apple's transcription and can speak the reply locally, so
   // it does not need to wait for either ElevenLabs request. Other voice clients
   // retain the selected cloud voice and the cloud transcription fallback.
-  if (!isVoiceConfigured() && (!deviceTranscript || !prefersDeviceSpeech)) {
+  if (!isVoiceConfigured() && (!trustedDeviceTranscript || !prefersDeviceSpeech)) {
     res.status(503).json({ error: "voice not configured (set ELEVENLABS_API_KEY)" }); return;
   }
   const speechHints = normalizeSpeechKeyterms([
@@ -3803,14 +3827,14 @@ app.post("/api/voice", async (req, res) => {
     prefersDeviceSpeech ? "device-speech" : "cloud-speech"
   );
   void captureRequestDeviceInfo(req, userProfile.name).catch((error) => console.error("device info capture:", error));
-  if (!audioBase64 && !deviceTranscript) { res.status(400).json({ error: "audioBase64 or transcript required" }); return; }
+  if (!audioBase64 && !trustedDeviceTranscript) { res.status(400).json({ error: "audioBase64 or transcript required" }); return; }
 
   try {
     // Prefer Apple's transcription when the phone supplied a confident one. This
     // removes an entire sequential cloud STT request from normal voice turns;
     // audio remains the fallback for unsupported devices or uncertain results.
-    const usedCloudTranscription = !deviceTranscript;
-    const transcript = deviceTranscript || await transcribe(audioBase64, mime, speechHints);
+    const usedCloudTranscription = !trustedDeviceTranscript;
+    const transcript = trustedDeviceTranscript || await transcribe(audioBase64, mime, speechHints);
     if (!transcript) {
       res.json({ transcript: "", spokenText: VOICE_REPEAT_PROMPT, action: null, actions: null, empty: true, needsRepeat: true });
       return;
@@ -3833,7 +3857,15 @@ app.post("/api/voice", async (req, res) => {
     }
     startVoiceStream();
     writeVoiceEvent({ type: "transcript", transcript });
-    const state = buildConversationState(transcript, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, true, deviceId, deviceWeather);
+    const speechMetadata: SpeechMetadata = {
+      transcriptionConfidence: trustedDeviceTranscript
+        ? (Number.isFinite(Number(req.body?.transcriptConfidence))
+            ? Math.max(0, Math.min(1, Number(req.body.transcriptConfidence)))
+            : null)
+        : null,
+      transcriptionSource: trustedDeviceTranscript ? "device" : "cloud"
+    };
+    const state = buildConversationState(transcript, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, true, deviceId, deviceWeather, speechMetadata);
     let audio = "";
     let progressiveText = "";
     let progressiveAudioStarted = false;
@@ -3905,7 +3937,7 @@ app.post("/api/voice", async (req, res) => {
     finishVoiceResponse({
       ...result,
       transcript,
-      transcriptionSource: deviceTranscript ? "device" : "cloud",
+      transcriptionSource: trustedDeviceTranscript ? "device" : "cloud",
       audioBase64: audio,
       mime: "audio/mpeg",
       ...(progressiveAudioStarted ? { progressiveAudioStarted: true } : {}),
@@ -3922,7 +3954,7 @@ app.post("/api/voice", async (req, res) => {
         try { audio = await synthesize(error.spoken, voiceId, voiceVariability); } catch { /* text-only fallback */ }
       }
       finishVoiceResponse({
-        transcript: deviceTranscript || "",
+        transcript: trustedDeviceTranscript || "",
         spokenText: error.spoken,
         action: null,
         actions: null,

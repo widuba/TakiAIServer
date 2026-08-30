@@ -66,8 +66,7 @@ function inputPart(part: any): any | null {
     return {
       type: "input_file",
       filename: fileNameForMime(mime),
-      file_data: dataURL,
-      ...(mime === "application/pdf" ? { detail: "low" } : {})
+      file_data: dataURL
     };
   }
 
@@ -75,7 +74,7 @@ function inputPart(part: any): any | null {
   const uri = String(file?.fileUri || file?.file_uri || "").trim();
   if (uri) {
     if (/\.pdf(?:$|[?#])/i.test(uri)) {
-      return { type: "input_file", file_url: uri, detail: "low" };
+      return { type: "input_file", file_url: uri };
     }
     // Gemini accepts public video URLs as file data. OpenAI's normal file input
     // does not, so route these requests to the compatibility fallback.
@@ -138,7 +137,20 @@ export function buildOpenAIRequest(args: any, selectedModel: string, stream = fa
 
   const maxOutput = Number(config?.maxOutputTokens ?? config?.max_output_tokens);
   if (Number.isFinite(maxOutput) && maxOutput > 0) request.max_output_tokens = Math.floor(maxOutput);
-  if (config?.responseMimeType === "application/json" || config?.response_mime_type === "application/json") {
+  const responseJsonSchema = config?.responseJsonSchema || config?.response_json_schema;
+  if (responseJsonSchema && typeof responseJsonSchema === "object") {
+    const schemaName = String(config?.responseJsonSchemaName || config?.response_json_schema_name || "taki_structured_response")
+      .replace(/[^a-zA-Z0-9_-]/g, "_")
+      .slice(0, 64) || "taki_structured_response";
+    request.text = {
+      format: {
+        type: "json_schema",
+        name: schemaName,
+        strict: true,
+        schema: responseJsonSchema
+      }
+    };
+  } else if (config?.responseMimeType === "application/json" || config?.response_mime_type === "application/json") {
     request.text = { format: { type: "json_object" } };
   }
   if (requestsWebSearch(config)) {
@@ -146,7 +158,10 @@ export function buildOpenAIRequest(args: any, selectedModel: string, stream = fa
     const searchContextSize = requestedContext === "low" || requestedContext === "high"
       ? requestedContext
       : "medium";
-    request.tools = [{ type: "web_search", search_context_size: searchContextSize }];
+    // Responses' current hosted web-search tool is web_search_preview. Keep
+    // the internal Gemini-shaped googleSearch input at this adapter boundary;
+    // callers should not need provider-specific tool names.
+    request.tools = [{ type: "web_search_preview", search_context_size: searchContextSize }];
     // Responses defaults tool_choice to "auto", which can skip a search even
     // when Taki has already classified the request as time-sensitive. Current
     // facts and recommendations need a real search, not model-memory roulette.

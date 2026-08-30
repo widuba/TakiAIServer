@@ -1,4 +1,5 @@
-import { generateContent, MAIN_MODEL } from "./ai.js";
+import { brainV3AuxEnabled, generateContent, MAIN_MODEL } from "./ai.js";
+import { runBrainV3Structured } from "./brainV3Specialists.js";
 import { withTimeout } from "./util.js";
 import { fetchPublicUrl, readPublicResponseText, validatePublicHttpUrl } from "./urlSafety.js";
 import { GUARDRAILS } from "./persona.js";
@@ -22,6 +23,30 @@ export interface Recipe {
   ingredients: string[];
   steps: RecipeStep[];
 }
+
+export const RECIPE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    title: { type: "string" },
+    servings: { type: "string" },
+    totalTime: { type: "string" },
+    ingredients: { type: "array", items: { type: "string" } },
+    steps: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          instruction: { type: "string" },
+          timerMin: { type: ["integer", "null"] }
+        },
+        required: ["instruction", "timerMin"]
+      }
+    }
+  },
+  required: ["title", "servings", "totalTime", "ingredients", "steps"]
+} as const;
 
 // Fires only on a clear "guide me through cooking X" intent. NOT a generic "how
 // much sugar in a banana" question (that's a normal answer), and NOT "make me a
@@ -67,25 +92,33 @@ The user wants to cook. Their request: "${message}"
 Produce a clear, accurate, home-cook recipe for ${dish}.
 
 Return ONLY compact JSON, no markdown, no commentary:
-{"title":"<dish name, title case>","servings":"<e.g. 4 servings>","totalTime":"<e.g. 35 min>","ingredients":["<qty + item>", ...],"steps":[{"instruction":"<one clear action, present tense>","timerMin":<minutes ONLY for a hands-off wait like simmer/bake/rest, else omit>}]}
+{"title":"<dish name, title case>","servings":"<e.g. 4 servings>","totalTime":"<e.g. 35 min>","ingredients":["<qty + item>", ...],"steps":[{"instruction":"<one clear action, present tense>","timerMin":<minutes ONLY for a hands-off wait like simmer/bake/rest, otherwise null>}]}
 Rules:
 - 5 to 14 steps, each ONE actionable instruction (≤ 30 words), in order.
-- Include "timerMin" ONLY when the step is a genuine hands-off wait (bake 20 min, simmer 10 min, rest 5 min). Never put a timer on active prep ("chop the onion").
+- Always include timerMin. Use an integer ONLY when the step is a genuine hands-off wait (bake 20 min, simmer 10 min, rest 5 min); otherwise use null. Never put a timer on active prep ("chop the onion").
 - Ingredients: real quantities, ≤ 20 items.
-- Be accurate and safe (proper cook temps for meat). If the request is not actually food, return {"title":""}.`;
+  - Be accurate and safe (proper cook temps for meat). If the request is not actually food, return {"title":""}.`;
   try {
-    const res: any = await withTimeout(
-      generateContent({
+    const v3 = brainV3AuxEnabled();
+    let resolved: any;
+    if (v3) {
+      resolved = (await runBrainV3Structured<any>("recipe", prompt, RECIPE_SCHEMA, {
+        timeoutMs: 22_000,
+        maxOutputTokens: 2_400,
+        reasoning: "low",
+        temperature: 0.4,
+        thinkingConfig: { thinkingBudget: 0 }
+      })).value;
+    } else {
+      const res: any = await withTimeout(generateContent({
         model: MAIN_MODEL,
         contents: prompt,
         config: { temperature: 0.4, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 } }
-      } as any),
-      22000,
-      "Recipe"
-    );
-    const obj = JSON.parse((res.text || "{}").trim());
-    if (!obj || !obj.title || !Array.isArray(obj.steps)) return null;
-    const steps: RecipeStep[] = obj.steps
+      } as any), 22_000, "Recipe");
+      resolved = JSON.parse((res.text || "{}").trim());
+    }
+    if (!resolved || !resolved.title || !Array.isArray(resolved.steps)) return null;
+    const steps: RecipeStep[] = resolved.steps
       .filter((s: any) => s && typeof s.instruction === "string" && s.instruction.trim())
       .map((s: any) => {
         const step: RecipeStep = { instruction: String(s.instruction).trim().slice(0, 240) };
@@ -95,13 +128,13 @@ Rules:
       })
       .slice(0, 16);
     if (steps.length < 2) return null;
-    const ingredients: string[] = Array.isArray(obj.ingredients)
-      ? obj.ingredients.filter((x: any) => typeof x === "string" && x.trim()).map((x: any) => String(x).trim().slice(0, 120)).slice(0, 20)
+    const ingredients: string[] = Array.isArray(resolved.ingredients)
+      ? resolved.ingredients.filter((x: any) => typeof x === "string" && x.trim()).map((x: any) => String(x).trim().slice(0, 120)).slice(0, 20)
       : [];
     return {
-      title: String(obj.title).slice(0, 80),
-      servings: String(obj.servings || "").slice(0, 30),
-      totalTime: String(obj.totalTime || "").slice(0, 30),
+      title: String(resolved.title).slice(0, 80),
+      servings: String(resolved.servings || "").slice(0, 30),
+      totalTime: String(resolved.totalTime || "").slice(0, 30),
       ingredients,
       steps
     };
@@ -246,11 +279,26 @@ PAGE (${url}):
 """${focusRecipeText(text)}"""
 
 Return ONLY compact JSON:
-{"title":"<dish name>","servings":"<e.g. 4 servings>","totalTime":"<e.g. 35 min>","ingredients":["<qty + item>", ...],"steps":[{"instruction":"<one clear action>","timerMin":<minutes ONLY for a hands-off wait, else omit>}]}
+{"title":"<dish name>","servings":"<e.g. 4 servings>","totalTime":"<e.g. 35 min>","ingredients":["<qty + item>", ...],"steps":[{"instruction":"<one clear action>","timerMin":<minutes ONLY for a hands-off wait, otherwise null>}]}
 If the page has no real recipe, return {"title":""}.`;
   try {
+    const v3 = brainV3AuxEnabled();
+    if (v3) {
+      const result = await runBrainV3Structured<any>("recipe_extract", prompt, RECIPE_SCHEMA, {
+        timeoutMs: 22_000,
+        maxOutputTokens: 2_400,
+        reasoning: "low",
+        temperature: 0.2,
+        thinkingConfig: { thinkingBudget: 0 }
+      });
+      return recipeFromObject(result.value);
+    }
     const res: any = await withTimeout(
-      generateContent({ model: MAIN_MODEL, contents: prompt, config: { temperature: 0.2, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 } } } as any),
+      generateContent({
+        model: MAIN_MODEL,
+        contents: prompt,
+        config: { temperature: 0.2, responseMimeType: "application/json", thinkingConfig: { thinkingBudget: 0 } }
+      } as any),
       22000, "Recipe extract"
     );
     return recipeFromObject(JSON.parse((res.text || "{}").trim()));

@@ -1,8 +1,16 @@
-import { generateContent, MAIN_MODEL } from "./ai.js";
+import { brainV3AuxEnabled, generateContent, MAIN_MODEL } from "./ai.js";
+import { runBrainV3Structured } from "./brainV3Specialists.js";
 import { withTimeout } from "./util.js";
 import { fetchPublicUrl, readPublicResponseText, validatePublicHttpUrl } from "./urlSafety.js";
 import { GUARDRAILS, personaPromptBlock } from "./persona.js";
 import type { ConversationState } from "./types.js";
+
+export const URL_SUMMARY_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: { summary: { type: "string" } },
+  required: ["summary"]
+} as const;
 
 /* ============================================================================
  * URL summarization. "summarize this: <link>" (or just a bare link) → Taki reads
@@ -67,10 +75,22 @@ ${extra && extra.length > 3 ? `\nThe user also said: "${extra}" — address that
 PAGE (${url}):
 ${text}`;
   try {
-    const r: any = await withTimeout(
-      generateContent({ model: MAIN_MODEL, contents: prompt, config: { thinkingConfig: { thinkingBudget: 0 } } } as any),
-      20000, "URL summary"
-    );
+    const v3 = brainV3AuxEnabled();
+    if (v3) {
+      const result = await runBrainV3Structured<{ summary: string }>(
+        "url_summary",
+        `${prompt}\n\nReturn the final summary inside this JSON object only: {"summary":"..."}. Do not add any other keys.`,
+        URL_SUMMARY_SCHEMA,
+        { timeoutMs: 20_000, maxOutputTokens: 1_800, reasoning: "low", temperature: 0 }
+      );
+      const out = String(result.value.summary || "").trim();
+      return out || "I read the page but couldn't summarize it — try again.";
+    }
+    const r: any = await withTimeout(generateContent({
+      model: MAIN_MODEL,
+      contents: prompt,
+      config: { thinkingConfig: { thinkingBudget: 0 } }
+    } as any), 20_000, "URL summary");
     const out = String(r?.text || "").trim();
     return out || "I read the page but couldn't summarize it — try again.";
   } catch (error) {

@@ -67,6 +67,7 @@ import {
   parsePriceAlert,
   parseScoreAlert,
   parseAlertCancel,
+  isExplicitAllAlertCancellation,
   looksLikeFlightQuestion,
   parsePackageTracking,
   parseForgetMemoryCommand,
@@ -111,7 +112,9 @@ import {
   styleVectorToPromptHints
 } from "./messageStyle.js";
 import type { MessageAnalysis, MessageStyleVector } from "./messageStyle.js";
+import { restyleMessageBody } from "./messageStyleRewrite.js";
 import { runBrainV2Planner, runBrainV2Shadow, shouldShadowBrainV2, shouldUseBrainV2 } from "./brainV2.js";
+import { brainV3CanAttempt, noteBrainV3Failure, noteBrainV3Success, runBrainV3Plan, runBrainV3Shadow, shouldShadowBrainV3, shouldUseBrainV3 } from "./brainV3.js";
 import { runUnmetered } from "./metering.js";
 import {
   addDaysToYmd,
@@ -283,6 +286,73 @@ async function brainV2FreeformPlan(
     // planner still has the typed provider fallback and final action audit.
     if (!(error instanceof ServiceError)) console.warn("Brain v2 free-form fallback:", error);
     return null;
+  }
+}
+
+/**
+ * Brain v3 is an opt-in replacement for the model-owned path. Deterministic
+ * device features remain ahead of this helper so an active v3 can improve
+ * understanding without changing the native capability contract.
+ */
+async function brainV3FreeformPlan(
+  state: ConversationState,
+  onStableVoiceText?: (text: string) => void | Promise<void>
+): Promise<AssistantPlan | null> {
+  if (!shouldUseBrainV3(state) || !brainV3CanAttempt()) return null;
+  try {
+    const plan = await runBrainV3Plan(state, onStableVoiceText);
+    noteBrainV3Success();
+    return plan;
+  } catch (error) {
+    noteBrainV3Failure(error);
+    // Canary failures are compatibility failures, not user-facing refusals.
+    // Let the existing path answer the same turn and keep the v3 gate reversible.
+    console.error("Brain v3 failed; using the compatibility planner:", error);
+    return null;
+  }
+}
+
+/**
+ * Current-fact routes already made a deterministic decision that live evidence
+ * is required. A v3 answer without linkable sources is therefore not a valid
+ * result for those routes, even if its prose looks plausible. Open the bounded
+ * v3 circuit on that contract failure so the compatibility fallback does not
+ * immediately issue another v3 attempt in the same turn.
+ */
+async function brainV3GroundedFreeformPlan(
+  state: ConversationState,
+  onStableVoiceText?: (text: string) => void | Promise<void>
+): Promise<AssistantPlan | null> {
+  const plan = await brainV3FreeformPlan(state, onStableVoiceText);
+  if (!plan) return null;
+  if (Array.isArray(plan.sources) && plan.sources.length > 0) return plan;
+  noteBrainV3Failure(new Error("brain_v3_missing_grounding"));
+  return null;
+}
+
+// Dedicated tools called by the compatibility planner can still participate in
+// a selected v3 request. The circuit check matters here: after a v3 failure the
+// same turn must not immediately issue a second v3 specialist request before
+// falling back to the established implementation.
+function brainV3CoreToolSelected(state: ConversationState): boolean {
+  return shouldUseBrainV3(state) && brainV3CanAttempt();
+}
+
+async function runBrainV3CoreWithCompatibility<T>(
+  coreSelected: boolean,
+  coreCall: () => Promise<T>,
+  compatibilityCall: () => Promise<T>
+): Promise<T> {
+  try {
+    return await coreCall();
+  } catch (error) {
+    if (!coreSelected) throw error;
+    // Deterministic routes such as Share and multi-event Calendar do not pass
+    // through brainV3FreeformPlan first. Preserve their one-request fallback,
+    // while making the failed core attempt visible to the same circuit and
+    // rollout metrics used by the model-driven path.
+    noteBrainV3Failure(error);
+    return compatibilityCall();
   }
 }
 
@@ -1111,49 +1181,6 @@ function hasStyle(v: MessageStyleVector): boolean {
   return STYLE_KEYS.some((k) => Math.abs(v[k]) >= 0.5);
 }
 
-// Rewriting style INSIDE the big planning prompt gets under-applied (the model
-// stays conservative at temp 0.1 with many competing instructions). So we do a
-// focused second pass that ONLY restyles the body, at higher temperature, with
-// concrete directions. This is what makes a single strong correction land hard.
-// Falls back to the original body on any error/garbage so it can never break a
-// message.
-async function restyleMessageBody(body: string, vector: MessageStyleVector, recipientName: string, teen?: boolean): Promise<string> {
-  const hints = styleVectorToPromptHints(vector);
-  if (!hints) return body;
-
-  const prompt = `Rewrite this text message so it sounds exactly like how the sender naturally texts ${recipientName || "this person"}.
-
-KEEP the meaning and any names/facts identical. Change ONLY tone, wording, punctuation, capitalization, slang, and emojis.
-
-Match this style — commit to it fully (if it says "very", go all the way):
-${hints}
-
-Output ONLY the rewritten message — no quotes, no labels, no explanation, one short text.
-
-Message: ${body}`;
-
-  try {
-    const result: any = await withTimeout(
-      generateContent({
-        model: MAIN_MODEL,
-        contents: prompt,
-        config: { temperature: 0.8, ...safetyConfig(teen) } as any
-      } as any),
-      7000,
-      "Restyle"
-    );
-    let out = String(result?.text || "").trim();
-    // Strip wrapping quotes / a leading "Rewritten:" the model sometimes adds.
-    out = out.replace(/^rewritten\s*:?\s*/i, "").trim();
-    out = out.replace(/^["'“”]+|["'“”]+$/g, "").trim();
-    out = out.split(/\r?\n/)[0].trim();
-    if (!out || out.length > 320) return body; // guard against runaways
-    return out;
-  } catch {
-    return body;
-  }
-}
-
 /* ---- Research-backed message bodies ------------------------------------- */
 
 // Look up the info the user wants to send, and return it as a ready-to-send
@@ -1161,12 +1188,13 @@ Message: ${body}`;
 // it to the calendar). Returns empty body if nothing could be found.
 async function researchMessageBody(
   query: string,
-  timeZone: string
+  timeZone: string,
+  brainV3Core = false
 ): Promise<{ body: string; event: EventMemory | null; sources: AssistantPlan["sources"] }> {
   const looksEvent = /\b(game|games|match|matches|fixture|launch|race|fight|bout|concert|show|tournament|final|finals|premiere|kickoff|series|grand prix)\b/i.test(query);
 
   if (looksEvent) {
-    const v = await findVerifiedFutureEvent(query, timeZone);
+    const v = await findVerifiedFutureEvent(query, timeZone, { brainV3Core });
     if (v.found && v.startDate) {
       const event: EventMemory = {
         title: cleanCalendarEventTitle(v.title || "Event"),
@@ -1185,7 +1213,7 @@ async function researchMessageBody(
   }
 
   // Non-event fact (weather, price, score, etc.) — use a concise grounded answer.
-  const res = await getStrictWebAnswer(query, { timeZone });
+  const res = await getStrictWebAnswer(query, { timeZone, brainV3Core });
   return { body: (res.spokenText || "").trim(), event: null, sources: res.sources || [] };
 }
 
@@ -1249,7 +1277,12 @@ export async function planShareRequest(state: ConversationState): Promise<Assist
     .trim();
   if (!query) return answerPlan("What would you like me to share?", { lastIntent: "share_content" });
 
-  const researched = await researchMessageBody(query, state.timeZone);
+  const coreSelected = brainV3CoreToolSelected(state);
+  const researched = await runBrainV3CoreWithCompatibility(
+    coreSelected,
+    () => researchMessageBody(query, state.timeZone, coreSelected),
+    () => researchMessageBody(query, state.timeZone, false)
+  );
   if (!researched.body) {
     return answerPlan("I couldn't verify anything reliable to share yet.", { lastIntent: "share_content" });
   }
@@ -1349,6 +1382,14 @@ export async function planAssistantResponse(
     return answerPlan(productAnswer, { lastIntent: "answer_only" });
   }
 
+  // v3 shadowing is detached from the live response path. Its provider work is
+  // unmetered for the user, and its result is never used by this request.
+  if (shouldShadowBrainV3(state)) {
+    void runUnmetered(() => runBrainV3Shadow(state)).then((shadow) => {
+      if (shadow.ok === false) console.warn("Brain v3 shadow evaluation failed:", shadow.error);
+    }).catch((error) => console.warn("Brain v3 shadow evaluation error:", error));
+  }
+
   // Writing assistance, transformations of text already supplied in the turn,
   // and personal support are answers—not phone actions or public web lookups.
   // Routing them directly also prevents words such as “text,” “Saturday,” or
@@ -1358,6 +1399,8 @@ export async function planAssistantResponse(
     || looksLikeInlineTransformationRequest(state.message)
     || looksLikeEmotionalSupportRequest(state.message)
   ) {
+    const brainV3Plan = await brainV3FreeformPlan(state, onStableVoiceText);
+    if (brainV3Plan) return brainV3Plan;
     const brainPlan = await brainV2FreeformPlan(state, onStableVoiceText);
     if (brainPlan) return brainPlan;
     const supportGuidance = emotionalSupportGuidanceFor(state.message);
@@ -1843,7 +1886,7 @@ export async function planAssistantResponse(
   // "Plan my day" -> propose a full schedule (alarms + calendar blocks). The
   // device shows it and only creates everything after the user confirms.
   if (looksLikePlanDay(state.message)) {
-    const plan = await generateDayPlan(state.message, nowInTimeZone(state.timeZone), state.timeZone);
+    const plan = await generateDayPlan(state.message, nowInTimeZone(state.timeZone), state.timeZone, state.nowIso);
     if (plan && plan.items.length) {
       const action = blankAction("day_plan");
       action.planItems = plan.items;
@@ -1868,6 +1911,9 @@ export async function planAssistantResponse(
   {
     const cancel = parseAlertCancel(state.message);
     if (cancel) {
+      if (!cancel.kind && !cancel.query && !isExplicitAllAlertCancellation(state.message)) {
+        return answerPlan("Which alert should I cancel?", { lastIntent: "alert_cancel" });
+      }
       const action = blankAction("alert_cancel");
       action.alertKind = cancel.kind || null;
       action.alertQuery = cancel.query || null;
@@ -1985,7 +2031,14 @@ export async function planAssistantResponse(
         return answerPlan(`${snap.title} — ${snap.status}.${dep}${arr}`.trim(), { lastIntent: "web_search" }, snap.sources);
       }
     }
-    const res = await getStrictWebAnswer(state.message, { persona: state.userProfile, timeZone: state.timeZone, voiceMode: state.voiceMode });
+    const brainV3Plan = await brainV3FreeformPlan(state, onStableVoiceText);
+    if (brainV3Plan) return brainV3Plan;
+    const res = await getStrictWebAnswer(state.message, {
+      persona: state.userProfile,
+      timeZone: state.timeZone,
+      voiceMode: state.voiceMode,
+      brainV3Core: brainV3CoreToolSelected(state)
+    });
     return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
   }
 
@@ -2139,7 +2192,15 @@ export async function planAssistantResponse(
   // analysts). Route them straight to a grounded prediction answer so they are
   // never refused as "unverifiable."
   if (looksLikePredictionQuestion(state.message)) {
-    const res = await getStrictWebAnswer(state.message, { allowPrediction: true, persona: state.userProfile, timeZone: state.timeZone, voiceMode: state.voiceMode });
+    const brainV3Plan = await brainV3GroundedFreeformPlan(state, onStableVoiceText);
+    if (brainV3Plan) return brainV3Plan;
+    const res = await getStrictWebAnswer(state.message, {
+      allowPrediction: true,
+      persona: state.userProfile,
+      timeZone: state.timeZone,
+      voiceMode: state.voiceMode,
+      brainV3Core: brainV3CoreToolSelected(state)
+    });
     return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
   }
 
@@ -2169,17 +2230,27 @@ export async function planAssistantResponse(
   // deliberately precedes generic live-fact routing so recommendation intent
   // wins if a sentence also contains words such as "current" or "release."
   if (!isActionCommand && looksLikeCurrentRecommendationQuestion(state.message)) {
+    const brainV3Plan = await brainV3GroundedFreeformPlan(state, onStableVoiceText);
+    if (brainV3Plan) return brainV3Plan;
     const res = await getStrictWebAnswer(state.message, {
       allowRecommendation: true,
       persona: state.userProfile,
       timeZone: state.timeZone,
-      voiceMode: state.voiceMode
+      voiceMode: state.voiceMode,
+      brainV3Core: brainV3CoreToolSelected(state)
     });
     return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
   }
 
   if (!isActionCommand && (looksLikeFreshFactQuestion(state.message) || looksLikeLiveInfoQuestion(state.message))) {
-    const res = await getStrictWebAnswer(state.message, { persona: state.userProfile, timeZone: state.timeZone, voiceMode: state.voiceMode });
+    const brainV3Plan = await brainV3GroundedFreeformPlan(state, onStableVoiceText);
+    if (brainV3Plan) return brainV3Plan;
+    const res = await getStrictWebAnswer(state.message, {
+      persona: state.userProfile,
+      timeZone: state.timeZone,
+      voiceMode: state.voiceMode,
+      brainV3Core: brainV3CoreToolSelected(state)
+    });
     return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
   }
 
@@ -2196,7 +2267,12 @@ export async function planAssistantResponse(
 
     // "Add the next N games" -> look up N events and add them all at once.
     if (count > 1) {
-      const verifiedList = await findVerifiedFutureEvents(query, count, state.timeZone);
+      const coreSelected = brainV3CoreToolSelected(state);
+      const verifiedList = await runBrainV3CoreWithCompatibility(
+        coreSelected,
+        () => findVerifiedFutureEvents(query, count, state.timeZone, { brainV3Core: coreSelected }),
+        () => findVerifiedFutureEvents(query, count, state.timeZone, { brainV3Core: false })
+      );
       if (verifiedList.length > 1) {
         const events: EventMemory[] = verifiedList.map((v) => ({
           title: cleanCalendarEventTitle(v.title || "Event"),
@@ -2230,7 +2306,11 @@ export async function planAssistantResponse(
       return answerPlan("I couldn't find those events to add to your calendar yet.", { lastIntent: "event_lookup" });
     }
 
-    const verified = await findVerifiedFutureEvent(query, state.timeZone);
+    const brainV3Plan = await brainV3GroundedFreeformPlan(state, onStableVoiceText);
+    if (brainV3Plan) return brainV3Plan;
+    const verified = await findVerifiedFutureEvent(query, state.timeZone, {
+      brainV3Core: brainV3CoreToolSelected(state)
+    });
     if (verified.found) {
       const event: EventMemory = {
         title: cleanCalendarEventTitle(verified.title || "Event"),
@@ -2256,6 +2336,11 @@ export async function planAssistantResponse(
   // researched result can feed the requested device action.
   const explicitWebSearchNeedsAction = /\b(?:text|message|email|call|add|put|schedule|save|create|remind|directions|navigate)\b/i.test(state.message);
   if (looksLikeExplicitWebSearchRequest(state.message) && !explicitWebSearchNeedsAction) {
+    // Explicit web requests are only successful when v3 carries linkable
+    // grounding through the final plan. A plausible provider paragraph without
+    // sources must open the bounded v3 circuit and use the compatibility path.
+    const brainV3Plan = await brainV3GroundedFreeformPlan(state, onStableVoiceText);
+    if (brainV3Plan) return brainV3Plan;
     const brainPlan = await brainV2FreeformPlan(state, onStableVoiceText);
     if (brainPlan) return brainPlan;
     const answer = await getGeneralAnswer(state, onStableVoiceText);
@@ -2271,10 +2356,20 @@ export async function planAssistantResponse(
   // of paying for a planner request first. This measured about twice as fast in
   // the live voice path while capability-shaped questions still keep planning.
   if (looksLikePlainVoiceKnowledgeQuestion(state)) {
+    const brainV3Plan = await brainV3FreeformPlan(state, onStableVoiceText);
+    if (brainV3Plan) return brainV3Plan;
     const brainPlan = await brainV2FreeformPlan(state, onStableVoiceText);
     if (brainPlan) return brainPlan;
     const ga = await getGeneralAnswer(state, onStableVoiceText);
     return answerPlan(ga.text, { lastIntent: "answer_only" }, ga.sources);
+  }
+
+  // The v3 replacement owns the remaining model-driven path when explicitly
+  // enabled. If it fails, brainV3FreeformPlan returns null and this exact turn
+  // continues through the existing compatibility planner below.
+  if (shouldUseBrainV3(state)) {
+    const brainV3Plan = await brainV3FreeformPlan(state, onStableVoiceText);
+    if (brainV3Plan) return brainV3Plan;
   }
 
   let plan: PlannerModelOutput;
@@ -2296,23 +2391,27 @@ export async function planAssistantResponse(
       plan = await runPlannerModel(state);
     }
   } catch (error) {
-    // Preserve typed vendor failures all the way to the HTTP route. Converting
-    // one into answerPlan makes outage copy look like Taki's answer to the
-    // user's question instead of transport state.
-    if (error instanceof ServiceError) throw error;
-    if (shouldUseBrainV2(state)) {
-      // A malformed/partial v2 response is a brain failure, not a user error.
-      // Keep the existing action-capable planner as a bounded compatibility
-      // fallback so a canary can never turn a working command into a plain
-      // conversational answer.
+    const brainV2Enabled = shouldUseBrainV2(state);
+    if (brainV2Enabled) {
+      // A malformed/partial v2 response or a v2-only timeout is a brain
+      // failure, not a user error. Keep the existing action-capable planner as
+      // a bounded compatibility fallback so a canary can never turn a working
+      // command into a plain conversational answer. If both planners fail with
+      // a typed provider outage, preserve that error for the HTTP layer instead
+      // of converting transport state into misleading answer text.
       try {
         plan = await runPlannerModel(state);
       } catch (legacyError) {
         console.error("Brain v2 and legacy planner failed:", legacyError);
+        if (legacyError instanceof ServiceError) throw legacyError;
         const ga = await getGeneralAnswer(state, onStableVoiceText);
         return answerPlan(ga.text, {}, ga.sources);
       }
     } else {
+      // Preserve typed vendor failures all the way to the HTTP route. Converting
+      // one into answerPlan makes outage copy look like Taki's answer to the
+      // user's question instead of transport state.
+      if (error instanceof ServiceError) throw error;
       console.error("Planner failed, using general answer:", error);
       const ga = await getGeneralAnswer(state, onStableVoiceText);
       return answerPlan(ga.text, {}, ga.sources);
@@ -2420,13 +2519,20 @@ export async function planAssistantResponse(
         allowRecommendation: looksLikeCurrentRecommendationQuestion(state.message),
         persona: state.userProfile,
         timeZone: state.timeZone,
-        voiceMode: state.voiceMode
+        voiceMode: state.voiceMode,
+        // If this compatibility switch is reached after a selected v3 route
+        // returned no plan, let the research utility use the same v3 grounded
+        // boundary while its own circuit is healthy. It remains false for
+        // legacy/v2 traffic and after a v3 failure has opened the circuit.
+        brainV3Core: brainV3CoreToolSelected(state)
       });
       return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
     }
 
     case "event_lookup": {
-      const verified = await findVerifiedFutureEvent(plan.webQuery || state.message, state.timeZone);
+      const verified = await findVerifiedFutureEvent(plan.webQuery || state.message, state.timeZone, {
+        brainV3Core: brainV3CoreToolSelected(state)
+      });
       if (!verified.found) {
         return answerPlan(verified.spokenText || verified.reason || "I could not verify that event right now.", {
           lastIntent: "event_lookup"

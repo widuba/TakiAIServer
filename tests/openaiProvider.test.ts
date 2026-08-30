@@ -8,6 +8,9 @@ import {
   OpenAIHTTPError,
   UnsupportedOpenAIInputError
 } from "../src/openaiProvider.js";
+import { prepareGeminiRequest } from "../src/ai.js";
+import { buildConversationState } from "../src/context.js";
+import { runBrainV3Plan } from "../src/brainV3.js";
 
 test("Gemini-shaped text, JSON, search, reasoning, and limits map to Responses", () => {
   const request = buildOpenAIRequest({
@@ -27,7 +30,133 @@ test("Gemini-shaped text, JSON, search, reasoning, and limits map to Responses",
   assert.equal(request.reasoning.effort, "none");
   assert.equal(request.max_output_tokens, 240);
   assert.deepEqual(request.text, { format: { type: "json_object" } });
-  assert.deepEqual(request.tools, [{ type: "web_search", search_context_size: "medium" }]);
+  assert.deepEqual(request.tools, [{ type: "web_search_preview", search_context_size: "medium" }]);
+});
+
+test("Brain v3 JSON stages use strict Responses Structured Outputs", () => {
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    properties: { decision: { type: "string" } },
+    required: ["decision"]
+  };
+  const request = buildOpenAIRequest({
+    contents: "Classify this turn.",
+    config: {
+      modelRole: "brain_v3",
+      responseMimeType: "application/json",
+      responseJsonSchema: schema,
+      responseJsonSchemaName: "taki_brain_v3_policy"
+    }
+  }, "gpt-5.5");
+
+  assert.deepEqual(request.text, {
+    format: {
+      type: "json_schema",
+      name: "taki_brain_v3_policy",
+      strict: true,
+      schema
+    }
+  });
+});
+
+test("Brain v3 runs end to end through the Responses adapter contract", async () => {
+  const requestBodies: any[] = [];
+  const requestHeaders: HeadersInit[] = [];
+  const understanding = {
+    intent: "answer_only",
+    answerMode: "direct",
+    speechAct: "question",
+    tone: "neutral",
+    sarcasm: "unlikely",
+    language: "en",
+    disfluencyDetected: true,
+    repeatedFragments: ["can"],
+    fillerWords: [],
+    confidence: 0.98,
+    needsClarification: false,
+    clarifyingQuestion: null,
+    missing: [],
+    webQuery: null,
+    researchQuery: null,
+    wantsCalendar: false,
+    event: null,
+    action: null,
+    contact: null,
+    place: null
+  };
+  const policy = {
+    decision: "allow",
+    riskCategory: "none",
+    confidence: 0.99,
+    reason: "ordinary educational question",
+    safeAlternative: ""
+  };
+  const responses: Record<string, unknown> = {
+    taki_brain_v3_understanding: understanding,
+    taki_brain_v3_policy: policy,
+    taki_brain_v3_answer: { answer: "Leaves change color as chlorophyll breaks down and other pigments become visible." }
+  };
+  const fetchImpl = async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body || "{}"));
+    requestBodies.push(body);
+    requestHeaders.push(init?.headers || {});
+    const name = String(body?.text?.format?.name || "");
+    const output = responses[name];
+    assert.ok(output, `unexpected structured stage: ${name}`);
+    return new Response(JSON.stringify({
+      id: `resp_${requestBodies.length}`,
+      model: body.model,
+      output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify(output), annotations: [] }] }],
+      usage: { input_tokens: 12, output_tokens: 18, total_tokens: 30 }
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  const generateThroughResponses = (args: any) => generateOpenAIContent(
+    args,
+    "gpt-5.4-mini",
+    "staging-contract-test-key",
+    fetchImpl as typeof fetch
+  );
+
+  const result = await runBrainV3Plan(
+    buildConversationState("C c can you explain why leaves change color?", "", undefined, "America/New_York", undefined, undefined, false, "adapter-contract"),
+    undefined,
+    { generateContent: generateThroughResponses }
+  );
+
+  assert.match(result.spokenText, /leaves change color|chlorophyll/i);
+  assert.equal(result.action, null);
+  assert.deepEqual(
+    requestBodies.map((body) => body.text?.format?.name),
+    ["taki_brain_v3_understanding", "taki_brain_v3_policy", "taki_brain_v3_answer"]
+  );
+  for (const body of requestBodies) {
+    assert.equal(body.store, false);
+    assert.equal(body.text.format.type, "json_schema");
+    assert.equal(body.text.format.strict, true);
+    assert.equal(body.stream, false);
+  }
+  assert.equal(requestHeaders.length, 3);
+  assert.match(String((requestHeaders[0] as any).Authorization || (requestHeaders[0] as any).authorization || ""), /Bearer staging-contract-test-key/);
+});
+
+test("Brain v3 adapter metadata never leaks into Gemini config", () => {
+  const request = prepareGeminiRequest({
+    model: "gemini-3.1-pro-preview",
+    contents: "Classify this turn.",
+    config: {
+      modelRole: "brain_v3",
+      responseJsonSchemaName: "taki_brain_v3_policy",
+      openAIReasoningEffort: "low",
+      responseMimeType: "application/json",
+      responseJsonSchema: { type: "object" }
+    }
+  }, "gemini-3.1-pro-preview");
+  assert.equal(request.config.modelRole, undefined);
+  assert.equal(request.config.responseJsonSchemaName, undefined);
+  assert.equal(request.config.openAIReasoningEffort, undefined);
+  assert.equal(request.config.responseMimeType, "application/json");
+  assert.deepEqual(request.config.responseJsonSchema, { type: "object" });
 });
 
 test("time-sensitive requests can require higher-context Responses web search", () => {
@@ -40,7 +169,7 @@ test("time-sensitive requests can require higher-context Responses web search", 
     }
   }, "gpt-5.4-mini");
 
-  assert.deepEqual(request.tools, [{ type: "web_search", search_context_size: "high" }]);
+  assert.deepEqual(request.tools, [{ type: "web_search_preview", search_context_size: "high" }]);
   assert.equal(request.tool_choice, "required");
 });
 
@@ -57,7 +186,7 @@ test("image and document inputs map to multimodal Responses content", () => {
   assert.equal(content[0].image_url, "data:image/png;base64,aW1hZ2U=");
   assert.equal(content[1].type, "input_file");
   assert.equal(content[1].filename, "attachment.pdf");
-  assert.equal(content[1].detail, "low");
+  assert.equal(content[1].detail, undefined);
   assert.equal(content[2].text, "Explain both.");
 
   assert.throws(

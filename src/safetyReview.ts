@@ -1,4 +1,5 @@
-import { FAST_MODEL, generateContent } from "./ai.js";
+import { FAST_MODEL, brainV3AuxEnabled, generateContent } from "./ai.js";
+import { runBrainV3Structured } from "./brainV3Specialists.js";
 import { withTimeout } from "./util.js";
 import {
   getSafetyAccount,
@@ -13,6 +14,16 @@ export type SafetyDecision = { flag: boolean; category: SafetyCategory | null; c
 const ALLOWED_CATEGORIES = new Set<SafetyCategory>([
   "csae", "weapons", "drugs", "violence", "self_harm", "malware", "prompt_extraction"
 ]);
+export const SAFETY_REVIEW_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    flag: { type: "boolean" },
+    category: { type: ["string", "null"], enum: ["csae", "weapons", "drugs", "violence", "self_harm", "malware", "prompt_extraction", null] },
+    confidence: { type: "number" }
+  },
+  required: ["flag", "category", "confidence"]
+} as const;
 const MAX_PENDING_REVIEWS = 500;
 const MAX_PENDING_PER_ACCOUNT = 24;
 let pendingReviews = 0;
@@ -35,16 +46,28 @@ export async function classifySafetyIntent(message: string): Promise<SafetyDecis
   if (!text) return { flag: false, category: null, confidence: 0 };
   const prompt = safetyReviewPrompt(text);
   try {
+    const v3 = brainV3AuxEnabled();
+    if (v3) {
+      const result = await runBrainV3Structured<any>("safety_review", prompt, SAFETY_REVIEW_SCHEMA, {
+        timeoutMs: 8_000,
+        maxOutputTokens: 100,
+        reasoning: "none",
+        temperature: 0,
+        openAIReasoningEffort: "none",
+        thinkingConfig: { thinkingBudget: 0 }
+      });
+      return parseSafetyDecision(JSON.stringify(result.value));
+    }
     const response = await withTimeout(generateContent({
-        model: FAST_MODEL,
-        contents: prompt,
-        config: {
-          temperature: 0,
-          maxOutputTokens: 100,
-          openAIReasoningEffort: "none",
-          thinkingConfig: { thinkingBudget: 0 }
-        }
-      } as any), 8_000, "Safety review");
+      model: FAST_MODEL,
+      contents: prompt,
+      config: {
+        temperature: 0,
+        maxOutputTokens: 100,
+        openAIReasoningEffort: "none",
+        thinkingConfig: { thinkingBudget: 0 }
+      }
+    } as any), 8_000, "Safety review");
     return parseSafetyDecision(String(response?.text || ""));
   } catch (error) {
     // Safety-review infrastructure must fail open for account enforcement. The

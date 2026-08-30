@@ -362,6 +362,14 @@ export type TranscriptTurn = {
   text: string;
 };
 
+// Speech metadata is advisory input to the understanding layer. It is never
+// treated as proof of an entity or an instruction, and it is intentionally
+// bounded at the request boundary.
+export type SpeechMetadata = {
+  transcriptionConfidence: number | null;
+  transcriptionSource: "device" | "cloud" | "unknown";
+};
+
 export type ConversationState = {
   message: string;
   transcript: TranscriptTurn[];
@@ -398,6 +406,10 @@ export type ConversationState = {
   // True when this turn came in over voice (STT→brain→TTS). Generation is kept
   // extra-brief so replies are cheap to synthesize and fast to hear aloud.
   voiceMode?: boolean;
+  // Confidence/source from the native or cloud speech recognizer. The AI may
+  // use low confidence to preserve alternatives and ask a targeted question;
+  // it must never use confidence to fabricate a missing entity.
+  speechMetadata?: SpeechMetadata;
 
   // The 8-digit device identity (empty for older unmetered builds). Scopes the
   // per-device durable state the planner reads/writes — e.g. custom home
@@ -449,6 +461,22 @@ export type PlannerIntent =
   | "flashlight_control"
   | "device_status"
   | "calendar_forward"
+  | "live_activity"
+  | "day_plan"
+  | "service_handoff"
+  | "list_action"
+  | "expense_action"
+  | "habit_action"
+  | "automation_create"
+  | "scheduled_message"
+  | "cooking_mode"
+  | "cooking_schedule"
+  | "alert_create"
+  | "alert_cancel"
+  | "recurring_reminder"
+  | "memory_save"
+  | "action_history"
+  | "undo_last"
   | "clarify";
 
 // Raw structured output from the planner model. Everything is best-effort and
@@ -469,14 +497,14 @@ export type PlannerModelOutput = {
   action: Partial<AssistantAction> | null;
   contact: ContactMemory | null;
   place: PlaceMemory | null;
-  // Internal fields used by the versioned Brain v2 rollout. They are never
+  // Internal fields used by the versioned brain rollouts. They are never
   // written to the device response; keeping them optional preserves the v1
-  // planner contract while allowing the new brain to carry answer/readiness
+  // planner contract while allowing staged brains to carry answer/readiness
   // metadata through the existing validator pipeline.
   answerMode?: "direct" | "research" | "clarify" | "refuse";
   answerReady?: boolean;
   normalizedMessage?: string;
-  brainVersion?: "v2";
+  brainVersion?: "v2" | "v3";
   brainSignals?: Record<string, unknown>;
 };
 

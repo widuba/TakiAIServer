@@ -1,9 +1,36 @@
-import { generateContent, PLANNER_MODEL, safetyConfig } from "./ai.js";
+import {
+  PLANNER_MODEL,
+  brainV3AuxEnabled,
+  generateContent,
+  safetyConfig
+} from "./ai.js";
+import { runBrainV3Structured } from "./brainV3Specialists.js";
 import { extractJsonObject, withTimeout } from "./util.js";
 
 export type LearnedMemory = { text: string; category: string };
 
 const CATEGORIES = new Set(["Personal", "Work", "Family", "Preferences", "Health", "Goals", "Home"]);
+
+export const DURABLE_MEMORY_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    add: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          text: { type: "string" },
+          category: { type: "string", enum: ["Personal", "Work", "Family", "Preferences", "Health", "Goals", "Home"] }
+        },
+        required: ["text", "category"]
+      }
+    },
+    remove: { type: "array", items: { type: "string" } }
+  },
+  required: ["add", "remove"]
+} as const;
 
 export async function extractDurableMemories(
   message: string,
@@ -37,20 +64,33 @@ Rules:
 - Categories must be one of: Personal, Work, Family, Preferences, Health, Goals, Home.
 - Avoid duplicates or paraphrases of existing facts.
 - If the new message explicitly corrects or contradicts an existing fact, put the exact old fact text in remove and add the corrected fact.
-- If nothing qualifies, return empty arrays.`;
+  - If nothing qualifies, return empty arrays.`;
 
   try {
-    const result: any = await withTimeout(generateContent({
-      model: PLANNER_MODEL,
-      contents: prompt,
-      config: {
+    const v3 = brainV3AuxEnabled();
+    let parsed: any;
+    if (v3) {
+      parsed = (await runBrainV3Structured<any>("memory", prompt, DURABLE_MEMORY_SCHEMA, {
+        timeoutMs: 9_000,
+        maxOutputTokens: 900,
+        reasoning: "low",
         temperature: 0,
-        responseMimeType: "application/json",
         thinkingConfig: { thinkingBudget: 0 },
         ...safetyConfig(teen)
-      }
-    } as any), 9000, "Memory extraction");
-    const parsed = extractJsonObject(result?.text || "{}");
+      })).value;
+    } else {
+      const result: any = await withTimeout(generateContent({
+        model: PLANNER_MODEL,
+        contents: prompt,
+        config: {
+          temperature: 0,
+          responseMimeType: "application/json",
+          thinkingConfig: { thinkingBudget: 0 },
+          ...safetyConfig(teen)
+        }
+      } as any), 9_000, "Memory extraction");
+      parsed = extractJsonObject(result?.text || "{}");
+    }
     const add = (Array.isArray(parsed.add) ? parsed.add : [])
       .map((item: any) => ({
         text: String(item?.text || "").trim().slice(0, 180),

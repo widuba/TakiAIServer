@@ -34,9 +34,9 @@ export const CAPABILITIES: Capability[] = [
   },
   {
     id: "device",
-    summary: "open supported apps, control alarms, timers, stopwatches, Apple Music, HomeKit devices, and the iPhone flashlight, report battery status, and identify a song by listening; explicit calls, drafts, Maps requests, basic checks, undo, and activity queries also route on-device without waiting for an AI provider",
-    examples: "open Spotify, alarm at 7, play jazz, turn on the flashlight, check my battery, what song is this",
-    questionPatterns: [/\b(open apps?|alarms?|timers?|stopwatches?|music|songs?|shazam|homekit|lights?|locks?|thermostat|flashlight|torch|battery|charging)\b/i]
+    summary: "open supported apps, control Apple Music, HomeKit devices, and the iPhone flashlight, report battery status, and identify a song by listening; explicit calls, drafts, Maps requests, basic checks, undo, and activity queries also route on-device without waiting for an AI provider",
+    examples: "open Spotify, play jazz, turn on the flashlight, check my battery, what song is this",
+    questionPatterns: [/\b(open apps?|music|songs?|shazam|homekit|lights?|locks?|thermostat|flashlight|torch|battery|charging)\b/i]
   },
   {
     id: "health",
@@ -64,7 +64,7 @@ export const CAPABILITIES: Capability[] = [
   },
   {
     id: "live-information",
-    summary: "look up current information and track supported sports, product prices, markets, flights, countdowns, and alerts",
+    summary: "look up current information and track supported sports, product prices, markets, flights, and alerts",
     examples: "latest score, compare MacBook prices, AAPL price, track my flight, alert me when Bitcoin reaches a price",
     questionPatterns: [/\b(current|latest|news|scores?|stocks?|crypto|prices?|flights?|track|alerts?|live activit)\w*\b/i]
   },
@@ -94,7 +94,7 @@ function isGenericCapabilityQuestion(message: string): boolean {
 export function capabilityAnswerFor(message: string): string | null {
   if (!isGenericCapabilityQuestion(message)) return null;
   if (/^(what (?:all )?can you do|what are your capabilities|what can taki do|show me what you can do)/i.test(message.trim())) {
-    return "I can handle communication, calendars and reminders, maps and weather, HealthKit, photos, music and HomeKit, alarms and timers, lists and routines, live information and tracking, cooking, supported service handoffs, safe undo for the most recent event, reminder, or contact I created, and a private verified history of recent phone and CarPlay actions.";
+    return "I can handle communication, calendars and reminders, maps and weather, HealthKit, photos, music and HomeKit, lists and routines, live information and tracking, cooking, supported service handoffs, safe undo for the most recent event, reminder, or contact I created, and a private verified history of recent phone and CarPlay actions.";
   }
 
   const matches = CAPABILITIES.filter((cap) => cap.questionPatterns.some((pattern) => pattern.test(message)));

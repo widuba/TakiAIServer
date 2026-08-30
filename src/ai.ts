@@ -195,6 +195,12 @@ export function fallbackModelCandidates(primary: string): string[] {
 export function modelForRequest(args: any): string {
   const selected = modelSelectionStorage.getStore();
   if (!selected) return String(args?.model || MAIN_MODEL);
+  // Brain v3 has its own model role and structured-output contract. Do not
+  // silently replace it with the legacy planner model just because its output
+  // is JSON; the role is what makes the replacement independently tunable.
+  if (args?.config?.modelRole === "brain_v3") {
+    return String(args?.model || MAIN_MODEL);
+  }
   // Model choice controls answer depth, latency, and the usual token price. It
   // must never remove capabilities: every tier uses the dependable structured
   // planner for actions/extraction, including web-researched calendar events.
@@ -204,7 +210,7 @@ export function modelForRequest(args: any): string {
   return takiModelInfo(selected).providerModel;
 }
 
-function prepareGeminiRequest(args: any, selectedModel: string): any {
+export function prepareGeminiRequest(args: any, selectedModel: string): any {
   let config = { ...(args?.config || {}) };
   // Provider-adapter-only controls must not leak into Gemini's config schema.
   const {
@@ -212,6 +218,11 @@ function prepareGeminiRequest(args: any, selectedModel: string): any {
     force_web_search: _forceWebSearchSnake,
     webSearchContextSize: _webSearchContextSize,
     web_search_context_size: _webSearchContextSizeSnake,
+    modelRole: _modelRole,
+    responseJsonSchemaName: _responseJsonSchemaName,
+    response_json_schema_name: _responseJsonSchemaNameSnake,
+    openAIReasoningEffort: _openAIReasoningEffort,
+    openai_reasoning_effort: _openAIReasoningEffortSnake,
     ...providerSafeConfig
   } = config;
   config = providerSafeConfig;
@@ -437,6 +448,65 @@ export const PLANNER_MODEL = ACTIVE_AI_PROVIDER === "openai"
 export const MAIN_MODEL = ACTIVE_AI_PROVIDER === "openai"
   ? openAIModelForTaki("taki_2_1")
   : currentModel(process.env.GEMINI_MODEL, "gemini-3.6-flash");
+// Brain v3 is deliberately separate from the legacy planner and answer roles.
+// It can be tuned in staging without changing customer-facing model selection.
+export const BRAIN_V3_MODEL = ACTIVE_AI_PROVIDER === "openai"
+  ? currentModel(process.env.OPENAI_BRAIN_V3_MODEL, openAIModelForTaki("taki_2_1_reasoning"))
+  : currentModel(process.env.GEMINI_BRAIN_V3_MODEL, "gemini-3.1-pro-preview");
+
+/**
+ * Core v3 is selected per request by the planner. This process-level helper
+ * only answers whether the deployed environment permits a selected request to
+ * use the core pipeline; it deliberately does not include device bucketing.
+ * The planner still calls shouldUseBrainV3(state) before passing brainV3Core.
+ *
+ * Shadow is the one exception to the readiness requirement: its detached,
+ * discarded run must exercise the same strict research path as a promoted
+ * request so staging evidence is meaningful. The planner never passes
+ * brainV3Core for customer traffic while mode is shadow.
+ */
+export function brainV3CoreEnabled(env: ModelEnvironment = process.env): boolean {
+  const ready = /^(?:1|true|yes)$/i.test(String(env.TAKI_BRAIN_V3_READY || "").trim());
+  const coreMode = String(env.TAKI_BRAIN_V3_MODE || "disabled").trim().toLowerCase();
+  if (coreMode === "shadow") return true;
+  return ready && (coreMode === "active" || coreMode === "canary" || coreMode === "v3");
+}
+
+/**
+ * Auxiliary model surfaces (memory, recipes, day plans, summaries, titles, and
+ * contextual review) have their own
+ * promotion gate. They must not silently change just because the main brain
+ * is in shadow or a partial canary. Enable this only after the core v3 ramp is
+ * fully active and its provider-backed evaluation has passed.
+ */
+export function brainV3AuxEnabled(env: ModelEnvironment = process.env): boolean {
+  const coreMode = String(env.TAKI_BRAIN_V3_MODE || "disabled").trim().toLowerCase();
+  const auxMode = String(env.TAKI_BRAIN_V3_AUX_MODE || "disabled").trim().toLowerCase();
+  return brainV3CoreEnabled(env)
+    && (coreMode === "active" || coreMode === "v3")
+    && (auxMode === "active" || auxMode === "v3");
+}
+
+/** Build the one versioned strict-JSON request shape shared by v3 auxiliaries. */
+export function brainV3StructuredRequest(
+  name: string,
+  contents: unknown,
+  schema: Record<string, unknown>,
+  options: Record<string, unknown> = {}
+): any {
+  const safeName = String(name || "surface").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 48) || "surface";
+  return {
+    model: BRAIN_V3_MODEL,
+    contents,
+    config: {
+      ...options,
+      modelRole: "brain_v3",
+      responseMimeType: "application/json",
+      responseJsonSchema: schema,
+      responseJsonSchemaName: `taki_brain_v3_${safeName}`
+    }
+  };
+}
 export const RESEARCH_MODEL = ACTIVE_AI_PROVIDER === "openai"
   ? openAIModelForTaki("taki_2_1_reasoning")
   : currentModel(process.env.GEMINI_RESEARCH_MODEL, "gemini-3.1-pro-preview");
