@@ -1,6 +1,7 @@
 import {
   ACTIVE_AI_PROVIDER,
   BRAIN_V3_MODEL,
+  BRAIN_V3_MODELS,
   MAIN_MODEL,
   ServiceError,
   activeTakiModelInfo,
@@ -340,7 +341,7 @@ function requestedBrainV3RolloutMode(env: Record<string, string | undefined>): B
 }
 
 export function brainV3PromotionStatus(env: Record<string, string | undefined> = process.env) {
-  return brainV3PromotionGateStatus(env, ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL);
+  return brainV3PromotionGateStatus(env, ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL, Date.now(), BRAIN_V3_MODELS);
 }
 
 export function brainV3PromotionReady(env: Record<string, string | undefined> = process.env): boolean {

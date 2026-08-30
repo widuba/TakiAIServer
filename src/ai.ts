@@ -460,6 +460,14 @@ export const MAIN_MODEL = ACTIVE_AI_PROVIDER === "openai"
 export const BRAIN_V3_MODEL = ACTIVE_AI_PROVIDER === "openai"
   ? currentModel(process.env.OPENAI_BRAIN_V3_MODEL, openAIModelForTaki("taki_2_1_reasoning"))
   : currentModel(process.env.GEMINI_BRAIN_V3_MODEL, "gemini-3.1-pro-preview");
+// Promotion evidence must cover every provider model that the v3 pipeline can
+// actually use: the dedicated understanding/specialist model plus each
+// customer-facing answer tier. Keeping this set explicit prevents a valid
+// token for one tier from silently authorizing an untested tier.
+export const BRAIN_V3_MODELS = Array.from(new Set([
+  BRAIN_V3_MODEL,
+  ...TAKI_MODELS.map((entry) => entry.providerModel)
+]));
 
 /**
  * Core v3 is selected per request by the planner. This process-level helper
@@ -475,7 +483,7 @@ export const BRAIN_V3_MODEL = ACTIVE_AI_PROVIDER === "openai"
 export function brainV3CoreEnabled(env: ModelEnvironment = process.env): boolean {
   const coreMode = String(env.TAKI_BRAIN_V3_MODE || "disabled").trim().toLowerCase();
   if (coreMode === "shadow") return true;
-  return brainV3PromotionGateStatus(env, ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL).ready
+  return brainV3PromotionGateStatus(env, ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL, Date.now(), BRAIN_V3_MODELS).ready
     && (coreMode === "active" || coreMode === "canary" || coreMode === "v3");
 }
 

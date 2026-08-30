@@ -1094,7 +1094,7 @@ async function main(): Promise<number> {
     process.env.OPENAI_BASE_URL = "https://api.openai.com/v1";
   }
 
-  const [{ ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL, brainV3AuxEnabled, brainV3CoreEnabled, generateContent, generateContentStream }, { buildConversationState }, { brainV3GenericRefusal, normalizeBrainV3RolloutMode, runBrainV3Plan, shouldShadowBrainV3, shouldUseBrainV3 }] = await Promise.all([
+  const [{ ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL, BRAIN_V3_MODELS, TAKI_MODELS, brainV3AuxEnabled, brainV3CoreEnabled, generateContent, generateContentStream, withTakiModel }, { buildConversationState }, { brainV3GenericRefusal, normalizeBrainV3RolloutMode, runBrainV3Plan, shouldShadowBrainV3, shouldUseBrainV3 }] = await Promise.all([
     import("../src/ai.js"),
     import("../src/context.js"),
     import("../src/brainV3.js")
@@ -1161,48 +1161,56 @@ async function main(): Promise<number> {
 
   const failures: Array<{ id: string; reasons: string[] }> = [];
   const latencies: number[] = [];
-  for (const item of CASES) {
-    const started = Date.now();
-    const observed: Partial<BrainV3StageSnapshots> = {};
-    const deps = {
-      ...baseDeps,
-      observeStage: (stage: BrainV3StageName, snapshot: BrainV3StageSnapshots[BrainV3StageName]) => {
-        observed[stage] = snapshot as never;
+  // The final answer honors the selected customer tier, so each core case must
+  // pass under every tier. Understanding and policy still use BRAIN_V3_MODEL;
+  // this loop additionally verifies every answer model before promotion.
+  for (const tier of TAKI_MODELS) {
+    for (const item of CASES) {
+      const started = Date.now();
+      const observed: Partial<BrainV3StageSnapshots> = {};
+      const deps = {
+        ...baseDeps,
+        observeStage: (stage: BrainV3StageName, snapshot: BrainV3StageSnapshots[BrainV3StageName]) => {
+          observed[stage] = snapshot as never;
+        }
+      };
+      let plan: AssistantPlan | null = null;
+      const reasons: string[] = [];
+      try {
+        plan = await withTakiModel(tier.key, () => runBrainV3Plan(stateFor(buildConversationState, item), undefined, deps));
+        reasons.push(...item.expect(plan));
+        reasons.push(...stageContract(observed, item.requiresUnderstanding !== false));
+        if (item.expectStages) reasons.push(...item.expectStages(observed));
+      } catch (error) {
+        const kind = String((error as any)?.kind || "provider_or_pipeline_error").replace(/[^a-z0-9_\-]/gi, "_").slice(0, 80);
+        reasons.push(kind || "provider_or_pipeline_error");
       }
-    };
-    let plan: AssistantPlan | null = null;
-    const reasons: string[] = [];
-    try {
-      plan = await runBrainV3Plan(stateFor(buildConversationState, item), undefined, deps);
-      reasons.push(...item.expect(plan));
-      reasons.push(...stageContract(observed, item.requiresUnderstanding !== false));
-      if (item.expectStages) reasons.push(...item.expectStages(observed));
-    } catch (error) {
-      const kind = String((error as any)?.kind || "provider_or_pipeline_error").replace(/[^a-z0-9_\-]/gi, "_").slice(0, 80);
-      reasons.push(kind || "provider_or_pipeline_error");
+      const latencyMs = Date.now() - started;
+      latencies.push(latencyMs);
+      const maxLatencyMs = item.maxLatencyMs || 45_000;
+      if (latencyMs > maxLatencyMs) reasons.push(`latency_over_${maxLatencyMs}ms`);
+      const caseId = `${tier.key}:${item.id}`;
+      if (reasons.length) failures.push({ id: caseId, reasons });
+      console.log(JSON.stringify({
+        type: "case",
+        id: item.id,
+        tier: tier.key,
+        ok: reasons.length === 0,
+        reasons,
+        latencyMs,
+        action: plan?.action?.type || null,
+        sourceCount: Array.isArray(plan?.sources) ? plan.sources.length : 0,
+        textLength: String(plan?.spokenText || "").length
+      }));
     }
-    const latencyMs = Date.now() - started;
-    latencies.push(latencyMs);
-    const maxLatencyMs = item.maxLatencyMs || 45_000;
-    if (latencyMs > maxLatencyMs) reasons.push(`latency_over_${maxLatencyMs}ms`);
-    if (reasons.length) failures.push({ id: item.id, reasons });
-    console.log(JSON.stringify({
-      type: "case",
-      id: item.id,
-      ok: reasons.length === 0,
-      reasons,
-      latencyMs,
-      action: plan?.action?.type || null,
-      sourceCount: Array.isArray(plan?.sources) ? plan.sources.length : 0,
-      textLength: String(plan?.spokenText || "").length
-    }));
   }
 
   const auxiliarySummary = auxiliary
     ? await runAuxiliaryProviderGate(generateContent, "America/New_York")
     : { total: 0, failures: [] as Array<{ id: string; reasons: string[] }>, latencies: [] as number[] };
   const allFailures = [...failures, ...auxiliarySummary.failures];
-  const totalCases = CASES.length + auxiliarySummary.total;
+  const coreCaseTotal = CASES.length * TAKI_MODELS.length;
+  const totalCases = coreCaseTotal + auxiliarySummary.total;
 
   const sorted = [...latencies, ...auxiliarySummary.latencies].sort((a, b) => a - b);
   const p95 = sorted.length ? sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)] : 0;
@@ -1231,7 +1239,8 @@ async function main(): Promise<number> {
       releaseId,
       provider: ACTIVE_AI_PROVIDER,
       model: BRAIN_V3_MODEL,
-      core: { passed: true as const, total: CASES.length, failed: 0 as const },
+      core: { passed: true as const, total: coreCaseTotal, failed: 0 as const },
+      models: [...BRAIN_V3_MODELS],
       auxiliary: { passed: true as const, total: auxiliarySummary.total, failed: 0 as const },
       realWeb: { passed: true as const },
       deterministic: {

@@ -4,6 +4,8 @@ import test from "node:test";
 import { promisify } from "node:util";
 import {
   BRAIN_V3_PROMOTION_EVIDENCE_TTL_MS,
+  BRAIN_V3_PROMOTION_EVIDENCE_VERSION,
+  BRAIN_V3_PROMOTION_MIN_CORE_CASES,
   brainV3PromotionGateStatus,
   brainV3WorktreeClean,
   encodeBrainV3PromotionEvidence,
@@ -13,15 +15,17 @@ import {
 const RELEASE_ID = "0123456789abcdef0123456789abcdef01234567";
 const PROVIDER = "openai";
 const MODEL = "gpt-5.5";
+const MODELS = [MODEL, "gpt-5.4-mini", "gpt-5.6-luna"];
 
 function evidence(now = Date.now()): BrainV3PromotionEvidence {
   return {
     format: "taki-brain-v3-promotion",
-    version: 1,
+    version: BRAIN_V3_PROMOTION_EVIDENCE_VERSION,
     releaseId: RELEASE_ID,
     provider: PROVIDER,
     model: MODEL,
-    core: { passed: true, total: 39, failed: 0 },
+    models: MODELS,
+    core: { passed: true, total: BRAIN_V3_PROMOTION_MIN_CORE_CASES, failed: 0 },
     auxiliary: { passed: true, total: 18, failed: 0 },
     realWeb: { passed: true },
     deterministic: {
@@ -131,7 +135,7 @@ test("Brain v3 cannot promote from a readiness flag alone", () => {
 });
 
 test("Brain v3 accepts only complete, current, release-bound promotion evidence", () => {
-  const status = brainV3PromotionGateStatus(environment(), PROVIDER, MODEL);
+  const status = brainV3PromotionGateStatus(environment(), PROVIDER, MODEL, Date.now(), MODELS);
   assert.deepEqual(status, {
     ready: true,
     reason: "ready",
@@ -147,6 +151,17 @@ test("Brain v3 promotion evidence rejects release, provider, model, and expiry d
   assert.equal(brainV3PromotionGateStatus(environment({ TAKI_BRAIN_V3_PROMOTION_EVIDENCE: encodeBrainV3PromotionEvidence({ ...evidence(now), model: "gpt-5.4-mini" }) }), PROVIDER, MODEL, now).reason, "model_mismatch");
   const expired = evidence(now - BRAIN_V3_PROMOTION_EVIDENCE_TTL_MS - 10_000);
   assert.equal(brainV3PromotionGateStatus(environment({ TAKI_BRAIN_V3_PROMOTION_EVIDENCE: encodeBrainV3PromotionEvidence(expired) }), PROVIDER, MODEL, now).reason, "evidence_expired");
+});
+
+test("Brain v3 promotion evidence rejects an untested response model set", () => {
+  const status = brainV3PromotionGateStatus(environment({
+    TAKI_BRAIN_V3_PROMOTION_EVIDENCE: encodeBrainV3PromotionEvidence({
+      ...evidence(),
+      models: [MODEL, "gpt-5.4-mini"]
+    })
+  }), PROVIDER, MODEL, Date.now(), MODELS);
+  assert.equal(status.ready, false);
+  assert.equal(status.reason, "models_mismatch");
 });
 
 test("Brain v3 promotion evidence rejects an incomplete gate", () => {

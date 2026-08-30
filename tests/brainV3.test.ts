@@ -20,10 +20,10 @@ import {
   shouldShadowBrainV3,
   shouldUseBrainV3
 } from "../src/brainV3.js";
-import { ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL } from "../src/ai.js";
+import { ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL, BRAIN_V3_MODELS } from "../src/ai.js";
 import { buildConversationState } from "../src/context.js";
 import { resetBrainV3SpecialistCircuit } from "../src/brainV3Specialists.js";
-import { BRAIN_V3_PROMOTION_EVIDENCE_TTL_MS, encodeBrainV3PromotionEvidence } from "../src/brainV3Promotion.js";
+import { BRAIN_V3_PROMOTION_EVIDENCE_TTL_MS, BRAIN_V3_PROMOTION_EVIDENCE_VERSION, BRAIN_V3_PROMOTION_MIN_CORE_CASES, encodeBrainV3PromotionEvidence } from "../src/brainV3Promotion.js";
 import { blankAction } from "../src/types.js";
 
 function state(message: string, voice = false, userProfile?: Record<string, unknown>, styleProfiles?: any[]) {
@@ -114,11 +114,12 @@ const PROMOTION_ENV = {
   TAKI_BRAIN_V3_RELEASE_ID: PROMOTION_RELEASE_ID,
   TAKI_BRAIN_V3_PROMOTION_EVIDENCE: encodeBrainV3PromotionEvidence({
     format: "taki-brain-v3-promotion",
-    version: 1,
+    version: BRAIN_V3_PROMOTION_EVIDENCE_VERSION,
     releaseId: PROMOTION_RELEASE_ID,
     provider: ACTIVE_AI_PROVIDER,
     model: BRAIN_V3_MODEL,
-    core: { passed: true, total: 39, failed: 0 },
+    models: BRAIN_V3_MODELS,
+    core: { passed: true, total: BRAIN_V3_PROMOTION_MIN_CORE_CASES, failed: 0 },
     auxiliary: { passed: true, total: 18, failed: 0 },
     realWeb: { passed: true },
     deterministic: { passed: true, typecheckPassed: true, testCount: 350, failed: 0, cancelled: 0, skipped: 0 },

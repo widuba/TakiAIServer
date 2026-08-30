@@ -9,9 +9,11 @@
  */
 
 export const BRAIN_V3_PROMOTION_EVIDENCE_FORMAT = "taki-brain-v3-promotion" as const;
-export const BRAIN_V3_PROMOTION_EVIDENCE_VERSION = 1 as const;
+export const BRAIN_V3_PROMOTION_EVIDENCE_VERSION = 2 as const;
 export const BRAIN_V3_PROMOTION_EVIDENCE_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
-export const BRAIN_V3_PROMOTION_MIN_CORE_CASES = 39;
+// The provider corpus is required for all three customer-facing response
+// tiers. The dedicated understanding model is exercised by each run as well.
+export const BRAIN_V3_PROMOTION_MIN_CORE_CASES = 39 * 3;
 export const BRAIN_V3_PROMOTION_MIN_AUXILIARY_CASES = 18;
 export const BRAIN_V3_PROMOTION_MIN_DETERMINISTIC_TESTS = 300;
 
@@ -21,6 +23,7 @@ export type BrainV3PromotionEvidence = {
   releaseId: string;
   provider: "openai" | "gemini";
   model: string;
+  models: string[];
   core: { passed: true; total: number; failed: 0 };
   auxiliary: { passed: true; total: number; failed: 0 };
   realWeb: { passed: true };
@@ -50,6 +53,7 @@ export type BrainV3PromotionGateStatus = {
     | "release_mismatch"
     | "provider_mismatch"
     | "model_mismatch"
+    | "models_mismatch"
     | "core_gate_missing"
     | "auxiliary_gate_missing"
     | "real_web_gate_missing"
@@ -91,6 +95,13 @@ function passedSuite(value: unknown, minimumCases: number): boolean {
     && suite.failed === 0;
 }
 
+function normalizedModelList(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 32) return null;
+  const models = value.map((model) => typeof model === "string" ? model.trim() : "");
+  if (models.some((model) => !model || model.length > 256)) return null;
+  return new Set(models).size === models.length ? models : null;
+}
+
 function decodeEvidence(value: string): Record<string, unknown> | null {
   if (!value || value.length > 16_384 || !/^[A-Za-z0-9_-]+$/.test(value)) return null;
   try {
@@ -108,7 +119,8 @@ export function brainV3PromotionGateStatus(
   env: PromotionEnvironment = process.env,
   expectedProvider?: string,
   expectedModel?: string,
-  now = Date.now()
+  now = Date.now(),
+  expectedModels?: readonly string[]
 ): BrainV3PromotionGateStatus {
   const releaseId = String(env.TAKI_BRAIN_V3_RELEASE_ID || "").trim() || null;
   const token = String(env.TAKI_BRAIN_V3_PROMOTION_EVIDENCE || "").trim();
@@ -131,6 +143,14 @@ export function brainV3PromotionGateStatus(
   if (evidence.releaseId !== releaseId) return base("release_mismatch", evidence);
   if (expectedProvider && evidence.provider !== expectedProvider) return base("provider_mismatch", evidence);
   if (expectedModel && evidence.model !== expectedModel) return base("model_mismatch", evidence);
+  const evidenceModels = normalizedModelList(evidence.models);
+  const requiredModels = expectedModels ? normalizedModelList([...expectedModels]) : null;
+  if (!evidenceModels || !evidenceModels.includes(String(evidence.model || ""))) return base("models_mismatch", evidence);
+  if (expectedModels && (!requiredModels
+    || evidenceModels.length !== requiredModels.length
+    || evidenceModels.some((model) => !requiredModels.includes(model)))) {
+    return base("models_mismatch", evidence);
+  }
   if (!passedSuite(evidence.core, BRAIN_V3_PROMOTION_MIN_CORE_CASES)) return base("core_gate_missing", evidence);
   if (!passedSuite(evidence.auxiliary, BRAIN_V3_PROMOTION_MIN_AUXILIARY_CASES)) return base("auxiliary_gate_missing", evidence);
   if (asRecord(evidence.realWeb)?.passed !== true) return base("real_web_gate_missing", evidence);

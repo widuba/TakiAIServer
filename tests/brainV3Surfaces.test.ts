@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL, brainV3AuxEnabled, brainV3CoreEnabled, brainV3StructuredRequest } from "../src/ai.js";
+import { ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL, BRAIN_V3_MODELS, brainV3AuxEnabled, brainV3CoreEnabled, brainV3StructuredRequest } from "../src/ai.js";
 import {
   BRAIN_V3_ALARM_SCHEMA,
   BRAIN_V3_EVENT_MATCH_SCHEMA,
@@ -27,7 +27,7 @@ import { DURABLE_MEMORY_SCHEMA } from "../src/userMemory.js";
 import { URL_SUMMARY_SCHEMA } from "../src/websummary.js";
 import { NEUTRAL_VECTOR } from "../src/messageStyle.js";
 import { restyleMessageBody, rewritePreservesMessageContent } from "../src/messageStyleRewrite.js";
-import { BRAIN_V3_PROMOTION_EVIDENCE_TTL_MS, encodeBrainV3PromotionEvidence } from "../src/brainV3Promotion.js";
+import { BRAIN_V3_PROMOTION_EVIDENCE_TTL_MS, BRAIN_V3_PROMOTION_EVIDENCE_VERSION, BRAIN_V3_PROMOTION_MIN_CORE_CASES, encodeBrainV3PromotionEvidence } from "../src/brainV3Promotion.js";
 
 const PROMOTION_RELEASE_ID = "0123456789abcdef0123456789abcdef01234567";
 const PROMOTION_ENV = {
@@ -35,11 +35,12 @@ const PROMOTION_ENV = {
   TAKI_BRAIN_V3_RELEASE_ID: PROMOTION_RELEASE_ID,
   TAKI_BRAIN_V3_PROMOTION_EVIDENCE: encodeBrainV3PromotionEvidence({
     format: "taki-brain-v3-promotion",
-    version: 1,
+    version: BRAIN_V3_PROMOTION_EVIDENCE_VERSION,
     releaseId: PROMOTION_RELEASE_ID,
     provider: ACTIVE_AI_PROVIDER,
     model: BRAIN_V3_MODEL,
-    core: { passed: true, total: 39, failed: 0 },
+    models: BRAIN_V3_MODELS,
+    core: { passed: true, total: BRAIN_V3_PROMOTION_MIN_CORE_CASES, failed: 0 },
     auxiliary: { passed: true, total: 18, failed: 0 },
     realWeb: { passed: true },
     deterministic: { passed: true, typecheckPassed: true, testCount: 350, failed: 0, cancelled: 0, skipped: 0 },
