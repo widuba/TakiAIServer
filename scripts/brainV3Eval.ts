@@ -83,6 +83,19 @@ async function runDeterministicPromotionGate(): Promise<DeterministicGateSummary
   for (const key of ["OPENAI_API_KEY", "OPENAI_ORG_ID", "OPENAI_PROJECT_ID", "OPENAI_BASE_URL"]) {
     delete testEnv[key];
   }
+  // Keep these sentinels defined so dotenv cannot refill a local rollout flag
+  // or provider credential while the child process is booting.
+  testEnv.TAKI_BRAIN_V3_MODE = "disabled";
+  testEnv.TAKI_BRAIN_V3_AUX_MODE = "disabled";
+  testEnv.TAKI_BRAIN_V3_READY = "";
+  testEnv.TAKI_BRAIN_V3_PERCENT = "0";
+  testEnv.TAKI_BRAIN_V3_SHADOW_PERCENT = "0";
+  testEnv.TAKI_BRAIN_V3_PROMOTION_EVIDENCE = "";
+  testEnv.TAKI_BRAIN_V3_RELEASE_ID = "";
+  testEnv.OPENAI_API_KEY = "";
+  testEnv.OPENAI_ORG_ID = "";
+  testEnv.OPENAI_PROJECT_ID = "";
+  testEnv.OPENAI_BASE_URL = "https://api.openai.com/v1";
   testEnv.AI_PROVIDER = "gemini";
   testEnv.OPENAI_API_KEY = "";
   testEnv.GEMINI_API_KEY = "test";
