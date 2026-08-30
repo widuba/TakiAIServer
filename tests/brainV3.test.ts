@@ -308,9 +308,13 @@ test("Brain v3 distinguishes personal lookup requests from generic definitions",
 
   for (const [message, type] of [
     ["What is an event?", "calendar_search"],
+    ["What are events?", "calendar_search"],
     ["What is a reminder?", "reminder_search"],
+    ["What are reminders?", "reminder_search"],
     ["What is a contact?", "contact_search"],
     ["What is a phone?", "device_status"],
+    ["What is storage?", "device_status"],
+    ["How much is a battery?", "device_status"],
     ["What is health?", "health_query"],
     ["What did I do to deserve this?", "action_history"]
   ] as const) {
@@ -329,6 +333,8 @@ test("Brain v3 distinguishes personal lookup requests from generic definitions",
   assert.equal(health.action?.type, "health_query");
   const device = await runModelAction("What's my battery level?", "device_status");
   assert.equal(device.action?.type, "device_status");
+  const battery = await runModelAction("How much battery do I have?", "device_status");
+  assert.equal(battery.action?.type, "device_status");
   const history = await runModelAction("What did you just do?", "action_history");
   assert.equal(history.action?.type, "action_history");
 });

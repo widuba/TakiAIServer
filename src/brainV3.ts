@@ -1456,7 +1456,7 @@ function hasExplicitActionFrame(text: string): boolean {
 }
 
 function isBareDefinitionQuestion(value: string, subject: string): boolean {
-  return new RegExp(`^(?:what(?:'s| is)|define|meaning of)\\s+(?:a|an)\\s+${subject}\\s*[?.!]*$`, "i").test(value.trim());
+  return new RegExp(`^(?:what(?:'s| is)|what are|define|meaning of)\\s+(?:(?:a|an|the)\\s+)?${subject}\\s*[?.!]*$`, "i").test(value.trim());
 }
 
 function modelActionHasUserCue(actionType: string, text: string): boolean {
@@ -1483,10 +1483,12 @@ function modelActionHasUserCue(actionType: string, text: string): boolean {
       case "photos_search": return /\b(?:photo|photos|picture|pictures|album)\b/.test(value) && /\b(?:show|find|search|look|recent|latest|from)\b/.test(value);
       case "action_history": return /\b(?:recent activity|recent actions?|action history|last action|what did you just do|what have you done on (?:my\s+)?(?:iphone|phone|device)|did that work)\b/.test(value)
         || /^what did i (?:do|change|ask)\s+(?:recently|just now|today|on (?:my\s+)?(?:iphone|phone|device))\s*[?.!]*$/i.test(value);
-      case "device_status": return !isBareDefinitionQuestion(value, "(?:phone|device|iphone|battery|storage)")
-        && /\b(?:phone|device|iphone|battery|storage)\b/.test(value)
-        && /\b(?:status|level|percentage|percent|charged|charging|power|signal|storage|battery|charge)\b/.test(value)
-        || /\b(?:how much|how many|do i have)\b.{0,40}\b(?:battery|charge|storage)\b/.test(value);
+      case "device_status": {
+        const deviceTopic = /\b(?:phone|device|iphone|battery|storage)\b/.test(value);
+        const statusFrame = /\b(?:status|level|percentage|percent|charged|charging|power|signal|storage|online|offline|connected|disconnected|wifi|wi-fi)\b/.test(value)
+          || /\b(?:how much|how many)\s+(?:(?:battery|charge|storage)\b|(?:of\s+)?(?:my\s+)?(?:battery|charge|storage)\b)|\bdo i have\b.{0,40}\b(?:battery|charge|storage)\b/.test(value);
+        return !isBareDefinitionQuestion(value, "(?:phone|device|iphone|battery|storage)") && deviceTopic && statusFrame;
+      }
       default: return false;
     }
   }
