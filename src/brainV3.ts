@@ -710,9 +710,10 @@ function extractPreservedTerms(value: string): string[] {
   }))].slice(0, 32);
 }
 
-const SINCERE_RESOLUTION_CUE = /\b(?:fix(?:ed|ing)?|resolv(?:ed|ing)?|solv(?:ed|ing)?|clear(?:ed)?|over|pass(?:ed|ing)?|work(?:s|ing)?|successful|successfully|complet(?:ed|ing)|done)\b/iu;
-const ACTIVE_FAILURE_CUE = /\b(?:broke|broken|crash(?:ed|es|ing)?|failed|not working|doesn['’]?t work|won['’]?t work|still down|keeps failing)\b/iu;
+const SINCERE_RESOLUTION_CUE = /\b(?:fix(?:ed|ing)?|resolv(?:ed|ing)?|solv(?:ed|ing)?|clear(?:ed)?|over|pass(?:ed|ing)?|work(?:s|ing)?|successful|successfully|complet(?:ed|ing)|done|gone|restor(?:ed|ing)?)\b/iu;
+const ACTIVE_FAILURE_CUE = /\b(?:still|keeps?|continues?)\s+(?:failing|fail(?:ed)?|breaking|broke|broken|crash(?:ed|es|ing)?|not working|doesn['’]?t work|does not work|won['’]?t work|will not work|down)\b|\b(?:doesn['’]?t|does not|won['’]?t|will not)\s+work\b|\b(?:broke|broken|crash(?:ed|es|ing)?|failed|failure|error|errors|problem|problems|bug|bugs|issue|issues|outage|outages)\b.{0,24}\bagain\b|\b(?:not|never|isn['’]?t|is not|wasn['’]?t|was not|hasn['’]?t|has not)\s+(?:fix(?:ed|ing)?|resolv(?:ed|ing)?|solv(?:ed|ing)?|work(?:s|ing)?|clear(?:ed)?|done)\b/iu;
 const SINCERE_CLARIFICATION_CUE = /\b(?:thanks|thank you)\b.{0,24}\b(?:explain(?:ed|ing)?|clarif(?:ied|ying)|walk(?:ed|ing)?\s+me\s+through)\b/iu;
+const EXPLICIT_FRUSTRATION_CUE = /\b(?:frustrated|frustrating|annoyed|annoying|irritated|irritating|fed up|sick of|tired of)\b/iu;
 
 function hasSincereResolutionCue(text: string): boolean {
   return SINCERE_RESOLUTION_CUE.test(text) || SINCERE_CLARIFICATION_CUE.test(text);
@@ -857,8 +858,9 @@ function detectTone(value: string): BrainV3Tone {
     || /\b(?:help|need|call|come|get|send|fix|stop|answer|respond)\b.{0,40}\bright now\b/.test(text)
   ) return "urgent";
   if (angryCue.test(text) || /!{2,}/u.test(text)) return "angry";
+  if (EXPLICIT_FRUSTRATION_CUE.test(text)) return "frustrated";
   const recurringFailureCue = /(?:^|[^\p{L}\p{N}])(?:another|yet another)\s+(?:error|errors|problem|problems|failure|failures|crash|crashes)(?![\p{L}\p{N}])/iu;
-  const activeFrustration = (frustratedCue.test(text) || recurringFailureCue.test(text))
+  const activeFrustration = (frustratedCue.test(text) || ACTIVE_FAILURE_CUE.test(text) || recurringFailureCue.test(text))
     && (!hasSincereResolutionCue(text) || ACTIVE_FAILURE_CUE.test(text));
   if (activeFrustration) return "frustrated";
   if (sadCue.test(text)) return "sad";
