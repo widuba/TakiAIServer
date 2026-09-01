@@ -44,6 +44,7 @@ import { backfillApplePromotionalSubscribers, enrollApplePromotionalSubscriber, 
 import { performFullReset, previewFullReset, type FullResetPreview } from "./src/fullReset.js";
 import { bypassResetGeneration, hasCurrentResetGeneration, RESET_EPOCH_HEADER } from "./src/resetGeneration.js";
 import { isKnownIdentity, markWebAuthenticated, issueDeviceCredential, verifyDeviceCredential, issueWebSession, verifyWebSession, revokeWebAuthentication } from "./src/identity.js";
+import { adminAccountIdFor } from "./src/adminIdentity.js";
 import { bypassDeviceAuth } from "./src/deviceAuth.js";
 import { googleWebClientId, isGoogleWebAuthConfigured, verifyGoogleIdToken } from "./src/webauth.js";
 import { isProductKnowledgeQuestion, productAnswerFor } from "./src/productKnowledge.js";
@@ -3012,10 +3013,12 @@ async function buildAdminAccount(requestedIdentity: string) {
       takiName: record.device?.takiName || "",
       lastSeenAt: record.device?.lastSeenAt || record.lastSeenAt
     }));
+  const accountId = adminAccountIdFor(identity, devices.map((device) => device.id));
   const engagement = await engagementSummary(user);
   const displayName = user.apple?.name || user.device?.takiName || devices.map((device) => ownerNameFromDeviceName(device.name)).find(Boolean) || "Taki user";
   const common = {
     identity,
+    accountId,
     displayName,
     email: user.apple?.email || "",
     tier: credit.tier,
@@ -3134,11 +3137,13 @@ function buildAdminListRow(identity: string, records: UserRecord[], safetyByIden
     : user.firstSeenAt && Date.now() - user.firstSeenAt < 7 * 86400_000 ? "new"
     : "standard";
   const devices = records.filter((record) => !record.identity.startsWith("apple:"));
+  const accountId = adminAccountIdFor(identity, devices.map((record) => record.identity));
   const displayName = user.apple?.name || user.device?.takiName
     || devices.map((record) => ownerNameFromDeviceName(record.device?.name || "")).find(Boolean)
     || "Taki user";
   return {
     identity,
+    accountId,
     displayName,
     email: user.apple?.email || "",
     tier: user.tier || "free",
