@@ -219,7 +219,7 @@ test("14. expiration removes the entitlement and Voice Credits but preserves pai
   assert.equal(expired.tier, "free");
   assert.equal(expired.subscriptionStatus, "expired");
   assert.equal(expired.voiceCredits, 0);
-  assert.equal(expired.balance, 650);
+  assert.equal(expired.balance, 900);
 });
 
 test("15. refund claws back subscription AI Credits but preserves purchased top-ups", async () => {
@@ -231,7 +231,7 @@ test("15. refund claws back subscription AI Credits but preserves purchased top-
   assert.equal(revoked.tier, "free");
   assert.equal(revoked.subscriptionStatus, "revoked");
   assert.equal(revoked.voiceCredits, 0);
-  assert.equal(revoked.balance, 275);
+  assert.equal(revoked.balance, 525);
 });
 
 test("16. legacy Plus Voice accounts migrate to Premium without losing AI Credits or top-ups", async () => {

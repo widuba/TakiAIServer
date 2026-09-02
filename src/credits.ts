@@ -17,7 +17,9 @@ export { CREDIT_USD } from "./metering.js";
 /* ---- CONFIG (tune these) ------------------------------------------------- */
 
 export const GRANT_EXPIRY_DAYS = 90;      // credits expire 90 days after purchase
-export const FREE_STARTER_CREDITS = 250;  // free accounts get this recurring allotment, refreshed each month (device-ID capped)
+export const FREE_STARTER_CREDITS = 500;  // free accounts get this recurring allotment, refreshed each month (device-ID capped)
+const LEGACY_FREE_CYCLE_CREDITS = 250;
+const FREE_CREDITS_POLICY_VERSION = 2;
 const NON_EXPIRING_GRANT_DATE = Date.UTC(9999, 11, 31);
 
 export type Tier = "free" | "plus" | "plus_voice" | "pro";
@@ -165,6 +167,9 @@ export interface CreditAccount {
   // UTC month ("YYYY-MM") of the free tier's last recurring allotment, so the
   // 500 free credits + free-voice count refresh once per month, not every load.
   freeCycleKey?: string;
+  // Policy version applied to the current free cycle. This lets the server
+  // upgrade an already-active legacy 250-credit cycle exactly once.
+  freeCycleGrantVersion?: number;
   // Billing-period keys already granted (StoreKit), so a renewal grants once.
   processedTx?: string[];
   // Consumable StoreKit transactions are permanent and must only grant once.
@@ -352,6 +357,9 @@ function normalizeAccount(acct: CreditAccount, deviceId: string): CreditAccount 
   acct.updatedAt = Number.isFinite(Number(acct.updatedAt)) ? Math.max(0, Number(acct.updatedAt)) : 0;
   acct.schemaVersion = Number.isFinite(Number(acct.schemaVersion)) ? Math.max(0, Math.floor(Number(acct.schemaVersion))) : 0;
   acct.starterGiven = acct.starterGiven === true;
+  acct.freeCycleGrantVersion = Number.isFinite(Number(acct.freeCycleGrantVersion))
+    ? Math.max(0, Math.floor(Number(acct.freeCycleGrantVersion)))
+    : undefined;
   acct.hasPurchasedCredits = acct.hasPurchasedCredits === true;
   acct.subscriptionStatus ||= acct.tier === "free" ? "none" : "active";
   return acct;
@@ -634,11 +642,27 @@ function ensureStarter(acct: CreditAccount): boolean {
 function ensureFreeCycle(acct: CreditAccount, now = Date.now()): boolean {
   if (acct.tier !== "free") return ensureStarter(acct);
   const month = utcMonthKey(now);
-  if (acct.starterGiven && acct.freeCycleKey === month) return false;
+  if (acct.starterGiven && acct.freeCycleKey === month) {
+    if (acct.freeCycleGrantVersion === FREE_CREDITS_POLICY_VERSION) return false;
+    // Older accounts may already have spent some or all of their 250-credit
+    // cycle. The consumed portion is no longer present in `grants`, so treat a
+    // missing/partial legacy grant as the old 250-credit entitlement and add
+    // only the 250-credit upgrade. Accounts that already carry a 500+ grant
+    // are marked migrated without being over-granted.
+    const existingFreeGrantAmount = acct.grants
+      .filter((grant) => grant.source === "free_starter" || grant.source === "free_monthly")
+      .reduce((sum, grant) => sum + Math.max(0, grant.amount), 0);
+    const priorCycleEntitlement = Math.max(LEGACY_FREE_CYCLE_CREDITS, existingFreeGrantAmount);
+    const upgrade = Math.max(0, FREE_STARTER_CREDITS - priorCycleEntitlement);
+    if (upgrade > 0) addGrant(acct, "free_monthly", upgrade);
+    acct.freeCycleGrantVersion = FREE_CREDITS_POLICY_VERSION;
+    return true;
+  }
   acct.grants = acct.grants.filter((g) => g.source !== "free_starter" && g.source !== "free_monthly");
   if (FREE_STARTER_CREDITS > 0) addGrant(acct, "free_monthly", FREE_STARTER_CREDITS);
   acct.voiceCount = 0;
   acct.freeCycleKey = month;
+  acct.freeCycleGrantVersion = FREE_CREDITS_POLICY_VERSION;
   acct.starterGiven = true;
   return true;
 }
@@ -1030,6 +1054,10 @@ export async function activateSubscriptionTier(identity: string, tier: Tier): Pr
     }
     acct.tier = nextTier;
     acct.subscriptionStatus = "active";
+    if (nextTier !== "free") {
+      acct.freeCycleKey = undefined;
+      acct.freeCycleGrantVersion = undefined;
+    }
     acct.starterGiven = true;
     return summarize(acct);
   });
@@ -1062,6 +1090,10 @@ export async function grantForTransaction(
       }
       acct.tier = nextTier;
       acct.subscriptionStatus = context.status || "active";
+      if (nextTier !== "free") {
+        acct.freeCycleKey = undefined;
+        acct.freeCycleGrantVersion = undefined;
+      }
       if (incomingEnd && incomingEnd >= (acct.billingPeriodEnd || 0)) {
         acct.billingPeriodStart = context.periodStart ?? acct.billingPeriodStart ?? null;
         acct.billingPeriodEnd = incomingEnd;
@@ -1076,6 +1108,10 @@ export async function grantForTransaction(
       addGrant(acct, `subscription:${tier}`, conf.creditsPerCycle);
     }
     acct.tier = tier;
+    if (tier !== "free") {
+      acct.freeCycleKey = undefined;
+      acct.freeCycleGrantVersion = undefined;
+    }
     acct.voiceCredits = conf?.voiceCreditsPerCycle || 0;
     acct.subscriptionStatus = context.status || "active";
     acct.billingPeriodStart = context.periodStart ?? acct.billingPeriodStart ?? null;
@@ -1229,6 +1265,8 @@ export async function downgradeToFree(identity: string, context: SubscriptionGra
     acct.tier = "free";
     acct.voiceCredits = 0;
     acct.subscriptionStatus = "expired";
+    acct.freeCycleKey = undefined;
+    acct.freeCycleGrantVersion = undefined;
   });
 }
 
@@ -1239,6 +1277,8 @@ export async function revokeSubscription(identity: string, context: Subscription
     acct.tier = "free";
     acct.voiceCredits = 0;
     acct.subscriptionStatus = "revoked";
+    acct.freeCycleKey = undefined;
+    acct.freeCycleGrantVersion = undefined;
     for (const g of acct.grants) {
       if (g.source.startsWith("subscription:")) g.remaining = 0;
     }
@@ -1267,7 +1307,7 @@ export async function clearRetiredSubscription(identity: string, originalTransac
 export async function reset(deviceId: string): Promise<void> {
   await updateAccount(deviceId, (acct) => {
     // Keep the account shape normalized while clearing all credit-bearing state.
-    Object.assign(acct, { tier: "free", grants: [], voiceCredits: 0, subscriptionStatus: "none", starterGiven: false, processedTx: [], processedConsumableTx: [], processedWebTopups: [], topupAllowances: [], voiceCount: 0, voiceCycleCount: 0, usageRemainderMicros: 0, hasPurchasedCredits: false, retiredSubscriptionIds: [] });
+    Object.assign(acct, { tier: "free", grants: [], voiceCredits: 0, subscriptionStatus: "none", starterGiven: false, freeCycleKey: undefined, freeCycleGrantVersion: undefined, processedTx: [], processedConsumableTx: [], processedWebTopups: [], topupAllowances: [], voiceCount: 0, usageRemainderMicros: 0, hasPurchasedCredits: false, retiredSubscriptionIds: [] });
   });
 }
 

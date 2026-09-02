@@ -19,7 +19,7 @@ test("admin credit grants update the balance without changing the tier and keep 
     assert.equal(result.amount, 1_250);
     assert.equal(result.reason, "Goodwill correction");
     assert.equal(result.summary.tier, "free");
-    assert.equal(result.summary.balance, 1_500);
+    assert.equal(result.summary.balance, 1_750);
     assert.equal(result.summary.additionalCredits, 1_250);
     assert.equal(result.summary.purchasedExpiring.length, 1);
 
@@ -27,7 +27,7 @@ test("admin credit grants update the balance without changing the tier and keep 
     assert.equal(history.length, 1);
     assert.equal(history[0].amount, 1_250);
     assert.equal(history[0].reason, "Goodwill correction");
-    assert.equal(history[0].balanceAfter, 1_500);
+    assert.equal(history[0].balanceAfter, 1_750);
     assert.equal(history[0].expiresAt, result.expiresAt);
   } finally {
     await storeDelete(`credits:${identity}`);

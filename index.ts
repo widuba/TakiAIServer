@@ -51,6 +51,7 @@ import { isProductKnowledgeQuestion, productAnswerFor } from "./src/productKnowl
 import { readSyncedChats, syncChats } from "./src/chatSync.js";
 import { TurnReplayCache } from "./src/turnReplay.js";
 import { commitSignupSlot, MAX_ACCOUNTS_PER_IP, releaseSignupSlot, reserveSignupSlot } from "./src/registration.js";
+import { clientIpForRequest, locationForRequest, mergeIpLocations } from "./src/ipLocation.js";
 
 // Health/version evidence for the staged Brain v3 build. Keep this distinct
 // from the rollout flag so a deployed artifact can be identified even while
@@ -1236,6 +1237,7 @@ async function assignDeviceNumber(region: string): Promise<string> {
 
 app.post("/api/register-device", async (req, res) => {
   const ip = clientIp(req);
+  const location = clientLocation(req, ip);
   let reservation = "";
   try {
     reservation = await reserveSignupSlot(ip) || "";
@@ -1264,7 +1266,7 @@ app.post("/api/register-device", async (req, res) => {
     // Registration creates the account record and starter ledger together. A
     // device ID can therefore never exist only on the phone or be invisible in
     // the admin dashboard.
-    await noteUserStrict(deviceId, ip, String(req.headers?.["user-agent"] || ""));
+    await noteUserStrict(deviceId, ip, String(req.headers?.["user-agent"] || ""), location);
     const credits = await creditSummary(deviceId);
     const credential = await issueDeviceCredential(deviceId);
     if (!(await commitSignupSlot(ip, reservation))) {
@@ -1308,6 +1310,7 @@ async function finishWebSignIn(req: any, res: any, identity: string, email?: str
   // Check enforcement before persisting a web-auth marker or analytics record.
   // A rejected sign-in must not leave a session that can be replayed later.
   const ip = clientIp(req);
+  const location = clientLocation(req, ip);
   if ((await isBanned(identity, undefined, ip)) || (await isTestRestricted(identity))) {
     res.status(403).json({ error: "This account is restricted." });
     return;
@@ -1318,7 +1321,7 @@ async function finishWebSignIn(req: any, res: any, identity: string, email?: str
     res.status(503).json({ error: "Web sign-in is temporarily unavailable. Please try again." });
     return;
   }
-  await noteUser(identity, ip, String(req.headers?.["user-agent"] || ""));
+  await noteUser(identity, ip, String(req.headers?.["user-agent"] || ""), location);
   if (identity.startsWith("apple:")) {
     const appleSub = identity.slice("apple:".length);
     await noteApple(identity, { sub: appleSub, email, name });
@@ -1376,7 +1379,8 @@ app.post("/api/device/info", async (req, res) => {
   }
   // Repair accounts created by older builds that issued an ID without adding a
   // complete dashboard record. Validation runs whenever the app launches.
-  await noteUser(deviceId, clientIp(req), String(req.headers?.["user-agent"] || ""));
+  const ip = clientIp(req);
+  await noteUser(deviceId, ip, String(req.headers?.["user-agent"] || ""), clientLocation(req, ip));
   await noteDevice(deviceId, {
     name: typeof b.name === "string" ? b.name : "",
     model: typeof b.model === "string" ? b.model : "",
@@ -1413,7 +1417,8 @@ app.post("/api/analytics/profile", async (req, res) => {
     pushEnabled: req.body?.engagementPush === true,
     emailEnabled: req.body?.engagementEmail === true
   });
-  await noteUser(identity, clientIp(req), String(req.headers?.["user-agent"] || ""));
+  const ip = clientIp(req);
+  await noteUser(identity, ip, String(req.headers?.["user-agent"] || ""), clientLocation(req, ip));
   const profile = await userForIdentity(identity);
   res.json({ ok: true, engagement: profile.engagement, emailAvailable: !!profile.apple?.email });
 });
@@ -1525,7 +1530,7 @@ app.get("/api/credits", async (req, res) => {
     // Only 8-digit physical-device ids participate in device association;
     // apple:/google: account identities have no hardware id.
     const dev = /^\d{8}$/.test(deviceId) ? deviceId : undefined;
-    await recordAssoc(deviceId, dev, ip);
+    await recordAssoc(deviceId, dev, ip, clientLocation(req, ip));
     const acct = await getSafetyAccount(deviceId);
     if (acct.status === "terminated" || (await isBanned(deviceId, dev, ip)) || (await isTestRestricted(deviceId))) { access = "banned"; accessMessage = BANNED_MSG; }
     else if (acct.status === "suspended") { access = "suspended"; accessMessage = SUSPENDED_MSG; }
@@ -2352,8 +2357,10 @@ app.post("/api/account/apple", async (req, res) => {
     if (priorDeviceUser.engagement.updatedAt > priorAccountUser.engagement.updatedAt) {
       await noteEngagementPreferences(ledgerIdentity, priorDeviceUser.engagement);
     }
-    await noteUser(deviceId, clientIp(req), String(req.headers?.["user-agent"] || ""));
-    await noteUser(ledgerIdentity, clientIp(req), String(req.headers?.["user-agent"] || ""));
+    const ip = clientIp(req);
+    const location = clientLocation(req, ip);
+    await noteUser(deviceId, ip, String(req.headers?.["user-agent"] || ""), location);
+    await noteUser(ledgerIdentity, ip, String(req.headers?.["user-agent"] || ""), location);
     const activeTransactionIds: string[] = [];
     for (const jws of entitlementJWS) {
       const info = await verifyTransaction(jws);
@@ -2925,6 +2932,7 @@ function combineAdminUsers(identity: string, records: UserRecord[]): UserRecord 
     tierHistory: records.flatMap((record) => record.tierHistory || []).sort((a, b) => a.at - b.at).slice(-100),
     deviceType: records.map((record) => record.deviceType).find(Boolean),
     ips: [...new Set(records.flatMap((record) => record.ips || []))],
+    ipLocations: mergeIpLocations(records.flatMap((record) => record.ipLocations || [])),
     apple,
     revenueUsd: records.reduce((sum, record) => sum + Number(record.revenueUsd || 0), 0),
     purchases: records.flatMap((record) => record.purchases || []).sort((a, b) => b.at - a.at).slice(0, 200),
@@ -2955,14 +2963,19 @@ async function buildAdminAccount(requestedIdentity: string) {
   const memberIds = [...new Set([identity, ...deviceIds])];
   const records = await Promise.all(memberIds.map(userForIdentity));
   const user = combineAdminUsers(identity, records);
-  const associationIps = await Promise.all(memberIds.map(async (memberId) => {
-    try { return (await associationsFor(memberId)).ips; }
-    catch (error) { console.error("admin account association lookup:", error); return []; }
+  const associationData = await Promise.all(memberIds.map(async (memberId) => {
+    try { return await associationsFor(memberId); }
+    catch (error) { console.error("admin account association lookup:", error); return { devices: [], ips: [], ipLocations: [] }; }
   }));
+  const associationIps = associationData.map((association) => association.ips);
   const ips = [...new Set([
     ...user.ips,
     ...associationIps.flat()
   ].filter((ip): ip is string => typeof ip === "string" && ip.trim().length > 0 && ip.length <= 120 && ip !== "unknown"))];
+  const ipLocations = mergeIpLocations([
+    ...(user.ipLocations || []),
+    ...associationData.flatMap((association) => association.ipLocations || [])
+  ]).filter((location) => ips.includes(location.ip));
   const [credit, creditAdjustments] = await Promise.all([
     creditSummary(identity),
     adminCreditAdjustments(identity)
@@ -3060,6 +3073,7 @@ async function buildAdminAccount(requestedIdentity: string) {
       tierHistory: user.tierHistory,
       devices,
       ips,
+      ipLocations,
       ipNeighbors: [...neighbors],
       linkedIdentities: memberIds,
       engagement
@@ -3470,14 +3484,11 @@ app.post("/api/travel-time", async (req, res) => {
 
 // Express' trusted-proxy setting normalizes req.ip to the client address.
 function clientIp(req: any): string {
-  const xf = String(req.headers?.["x-forwarded-for"] || "");
-  const forwarded = xf.split(",").map((part) => part.trim()).filter(Boolean);
-  const raw = String(req.ip || forwarded.at(-1) || req.socket?.remoteAddress || "unknown").trim().toLowerCase();
-  // Keep one stable spelling for IPv4 across Render's proxy and local/native
-  // listeners. This is especially important for the per-IP signup cap and the
-  // account-association index; otherwise ::ffff:203.0.113.4 and 203.0.113.4
-  // would be treated as two different networks.
-  return raw.replace(/^::ffff:/, "").replace(/^\[([^\]]+)\](?::\d+)?$/, "$1").slice(0, 120) || "unknown";
+  return clientIpForRequest(req);
+}
+
+function clientLocation(req: any, ip = clientIp(req)) {
+  return locationForRequest(req, ip);
 }
 
 function validTimeZone(value: string | undefined): boolean {
@@ -3498,11 +3509,12 @@ type GateResult = { message: string; block?: "banned" | "suspended"; failClosed?
 async function safetyGate(identity: string, message: string, req: any, _voiceMode = false): Promise<GateResult | null> {
   if (!identity) return null;
   const ip = clientIp(req);
+  const location = clientLocation(req, ip);
   const dev = identity.startsWith("apple:") ? undefined : identity;
   try {
     await Promise.all([
-      recordAssoc(identity, dev, ip),
-      noteUser(identity, ip, String(req.headers?.["user-agent"] || ""))
+      recordAssoc(identity, dev, ip, location),
+      noteUser(identity, ip, String(req.headers?.["user-agent"] || ""), location)
     ]);
     const [banned, testRestricted, acct] = await Promise.all([
       isBanned(identity, dev, ip),

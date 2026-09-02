@@ -1,4 +1,5 @@
 import { storeDelete, storeGet, storeGetMany, storeUpdate } from "./store.js";
+import { mergeIpLocations, normalizeStoredIpLocation, type IpLocation } from "./ipLocation.js";
 
 /* ============================================================================
  * User registry / analytics. The credits + safety stores are keyed per identity
@@ -53,6 +54,7 @@ export interface UserRecord {
   tierHistory: { tier: string; at: number; source: string }[];
   deviceType?: string;               // parsed from User-Agent
   ips: string[];
+  ipLocations?: IpLocation[];        // approximate Cloudflare IP geolocation, admin-only
   apple?: { sub?: string; email?: string; name?: string };
   revenueUsd: number;                // cumulative gross paid
   purchases: Purchase[];
@@ -73,7 +75,7 @@ function normalizeUser(identity: string, stored?: UserRecord): UserRecord {
   // (or an array) as though it were a UserRecord.
   const u = stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {
     identity, firstSeenAt: 0, lastSeenAt: 0, requestCount: 0, creditsUsed: 0,
-    tier: "free", tierHistory: [], ips: [], revenueUsd: 0, purchases: [], activeDays: [],
+    tier: "free", tierHistory: [], ips: [], ipLocations: [], revenueUsd: 0, purchases: [], activeDays: [],
     analytics: { textQuestions: 0, voiceQuestions: 0, textCostUsd: 0, voiceCostUsd: 0, featureUsage: {}, recentQuestions: [], sessions: 0, totalSessionSeconds: 0, recentSessions: [], billingEvents: [] },
     engagement: { interests: [], pushEnabled: false, emailEnabled: false, updatedAt: 0 }
   };
@@ -83,6 +85,7 @@ function normalizeUser(identity: string, stored?: UserRecord): UserRecord {
     u[key] = Number.isFinite(value) ? Math.max(0, key.endsWith("At") ? value : Math.floor(value)) as never : 0 as never;
   }
   if (!Array.isArray(u.ips)) u.ips = [];
+  u.ipLocations = mergeIpLocations(Array.isArray(u.ipLocations) ? u.ipLocations : []);
   if (!Array.isArray(u.tierHistory)) u.tierHistory = [];
   if (!Array.isArray(u.purchases)) u.purchases = [];
   if (!Array.isArray(u.activeDays)) u.activeDays = [];
@@ -188,7 +191,7 @@ function parseDeviceType(ua: string): string {
 // Called on every request: last-seen, request count, IP + IP index, device type.
 // Registration uses the strict variant below so a failed durable write cannot
 // still return a new device id that later appears as an empty "Taki user" row.
-async function writeUser(identity: string, ip: string, ua: string): Promise<void> {
+async function writeUser(identity: string, ip: string, ua: string, location?: IpLocation | null): Promise<void> {
   if (!identity) return;
   await withUser(identity, async (u) => {
     const now = Date.now();
@@ -205,6 +208,10 @@ async function writeUser(identity: string, ip: string, ua: string): Promise<void
         return { value: { ids: ids.slice(-100_000) }, result: undefined };
       });
     }
+    const safeLocation = normalizeStoredIpLocation(location);
+    if (safeLocation && safeLocation.ip === ip) {
+      u.ipLocations = mergeIpLocations([...(u.ipLocations || []), safeLocation]);
+    }
     const dt = parseDeviceType(ua); if (dt) u.deviceType = dt;
     const day = new Date(now).toISOString().slice(0, 10);
     if (!u.activeDays.includes(day)) u.activeDays = [...u.activeDays, day].slice(-120);
@@ -212,13 +219,13 @@ async function writeUser(identity: string, ip: string, ua: string): Promise<void
   });
 }
 
-export async function noteUser(identity: string, ip: string, ua: string): Promise<void> {
-  try { await writeUser(identity, ip, ua); } catch (e) { console.error("noteUser:", e); }
+export async function noteUser(identity: string, ip: string, ua: string, location?: IpLocation | null): Promise<void> {
+  try { await writeUser(identity, ip, ua, location); } catch (e) { console.error("noteUser:", e); }
 }
 
 /** Durable registration path: propagate storage failures to the caller. */
-export async function noteUserStrict(identity: string, ip: string, ua: string): Promise<void> {
-  await writeUser(identity, ip, ua);
+export async function noteUserStrict(identity: string, ip: string, ua: string, location?: IpLocation | null): Promise<void> {
+  await writeUser(identity, ip, ua, location);
 }
 
 export async function noteSpend(identity: string, credits: number): Promise<void> {

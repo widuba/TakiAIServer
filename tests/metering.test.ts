@@ -3,6 +3,7 @@ import test from "node:test";
 import { geminiListPriceUsd, googleSearchListPriceUsd, openAIListPriceUsd, openAIWebSearchCallCount, sttCostUsd, ttsCostUsd } from "../src/metering.js";
 import { ATTACHMENT_BASE_CREDITS, FREE_STARTER_CREDITS, FREE_VOICE_LIMIT, FREE_VOICE_PER_CYCLE, GRANT_EXPIRY_DAYS, IN_APP_CREDIT_PRODUCTS, TIERS, attachmentBaseCostCredits, compareGrantSpendOrder, hasVoiceAccess, inAppCreditsForProduct, isFreeVoice, summary as creditSummary, topupCentsPerCredit, topupPriceCents, type CreditGrant } from "../src/credits.js";
 import { detectPersonalSearch } from "../src/planner.js";
+import { storeDelete, storeSet } from "../src/store.js";
 
 test("one credit always represents exactly $0.001 of vendor usage", () => {
   assert.equal(ttsCostUsd(1000), 0.05);
@@ -97,7 +98,7 @@ test("the authoritative catalog contains the new plan grants and prices", () => 
 });
 
 test("free accounts get recurring AI Credits but no Voice Credits", () => {
-  assert.equal(FREE_STARTER_CREDITS, 250);
+  assert.equal(FREE_STARTER_CREDITS, 500);
   assert.equal(FREE_VOICE_LIMIT, 0);
   assert.equal(isFreeVoice("free", 250, 0, 0), false);
   assert.equal(hasVoiceAccess("free", 0), false);
@@ -105,7 +106,7 @@ test("free accounts get recurring AI Credits but no Voice Credits", () => {
   assert.equal(hasVoiceAccess("plus", 500), true);
 });
 
-test("a free account starts at 250 AI Credits, zero Voice Credits, and doesn't restack within the month", async () => {
+test("a free account starts at 500 AI Credits, zero Voice Credits, and doesn't restack within the month", async () => {
   const id = `free-cycle-${Date.now()}`;
   const first = await creditSummary(id);
   assert.equal(first.tier, "free");
@@ -113,6 +114,28 @@ test("a free account starts at 250 AI Credits, zero Voice Credits, and doesn't r
   assert.equal(first.voiceCredits, 0);
   const again = await creditSummary(id);
   assert.equal(again.balance, FREE_STARTER_CREDITS);
+});
+
+test("an already-active legacy 250-credit cycle receives only its one-time 250-credit upgrade", async () => {
+  const id = `free-upgrade-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const now = Date.now();
+  const month = new Date(now).toISOString().slice(0, 7);
+  try {
+    await storeSet(`credits:${id}`, {
+      deviceId: id,
+      tier: "free",
+      grants: [{ id: "legacy-free", amount: 250, remaining: 250, grantedAt: now, expiresAt: now + 90 * 86400_000, source: "free_monthly" }],
+      starterGiven: true,
+      freeCycleKey: month,
+      voiceCredits: 0,
+      updatedAt: now
+    });
+    const upgraded = await creditSummary(id);
+    assert.equal(upgraded.balance, 500);
+    assert.equal((await creditSummary(id)).balance, 500);
+  } finally {
+    await storeDelete(`credits:${id}`);
+  }
 });
 
 test("legacy voice helpers reflect the new Voice Credit allowances and attachment floor", () => {

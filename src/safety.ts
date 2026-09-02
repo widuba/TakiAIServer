@@ -1,4 +1,5 @@
 import { storeGet, storeGetMany, storeSet, storeUpdate, storeUpdatePair } from "./store.js";
+import { mergeIpLocations, normalizeStoredIpLocation, type IpLocation } from "./ipLocation.js";
 
 /* ============================================================================
  * Safety & enforcement.
@@ -282,7 +283,7 @@ export async function noteMessageAfterSafetyThreshold(identity: string): Promise
 }
 
 /* ---- Associations + ban list (for cascade bans) ------------------------- */
-interface Assoc { devices: string[]; ips: string[]; }
+interface Assoc { devices: string[]; ips: string[]; ipLocations?: IpLocation[]; }
 interface BanList { identities: string[]; devices: string[]; ips: string[]; }
 export interface BanImpact { identities: string[]; devices: string[]; ips: string[]; }
 interface TestRestriction { identity: string; expiresAt: number; }
@@ -291,20 +292,25 @@ function assocKey(id: string): string { return `safety:assoc:${keyify(id)}`; }
 function devKey(dev: string): string { return `safety:dev:${keyify(dev)}`; } // device -> identities seen on it
 function testRestrictionKey(identity: string): string { return `safety:test-restriction:${keyify(identity)}`; }
 
-export async function recordAssoc(identity: string, deviceId?: string, ip?: string): Promise<void> {
+export async function recordAssoc(identity: string, deviceId?: string, ip?: string, location?: IpLocation | null): Promise<void> {
   if (!identity) return;
   const safeDeviceId = typeof deviceId === "string" && /^\d{8}$/.test(deviceId) ? deviceId : "";
   const safeIp = typeof ip === "string" && ip.length <= 120 ? ip : "";
+  const safeLocation = normalizeStoredIpLocation(location);
   await storeUpdate<Assoc, void>(assocKey(identity), { devices: [], ips: [] }, (stored) => {
     const a = {
       devices: Array.isArray(stored.devices) ? stored.devices : [],
-      ips: Array.isArray(stored.ips) ? stored.ips : []
+      ips: Array.isArray(stored.ips) ? stored.ips : [],
+      ipLocations: mergeIpLocations(Array.isArray(stored.ipLocations) ? stored.ipLocations : [])
     };
     if (safeDeviceId && !a.devices.includes(safeDeviceId)) a.devices.push(safeDeviceId);
     if (a.devices.length > 50) a.devices = a.devices.slice(-50);
     if (safeIp && safeIp !== "unknown" && !a.ips.includes(safeIp)) {
       a.ips.push(safeIp);
       if (a.ips.length > 25) a.ips = a.ips.slice(-25);
+    }
+    if (safeLocation && safeLocation.ip === safeIp) {
+      a.ipLocations = mergeIpLocations([...a.ipLocations, safeLocation]);
     }
     return { value: a, result: undefined };
   });
@@ -369,9 +375,11 @@ export async function retiredBannedIps(): Promise<string[]> {
 // Device ids + IPs seen for an identity (used to show linked devices per account).
 export async function associationsFor(identity: string): Promise<Assoc> {
   const stored = await storeGet<Assoc>(assocKey(identity), { devices: [], ips: [] });
+  const ips = Array.isArray(stored?.ips) ? stored.ips.filter((ip): ip is string => typeof ip === "string" && ip.length <= 120).slice(-25) : [];
   return {
     devices: Array.isArray(stored?.devices) ? stored.devices.filter((id): id is string => typeof id === "string" && /^\d{8}$/.test(id)).slice(-50) : [],
-    ips: Array.isArray(stored?.ips) ? stored.ips.filter((ip): ip is string => typeof ip === "string" && ip.length <= 120).slice(-25) : []
+    ips,
+    ipLocations: mergeIpLocations(Array.isArray(stored?.ipLocations) ? stored.ipLocations : []).filter((location) => ips.includes(location.ip))
   };
 }
 
