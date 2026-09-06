@@ -8,6 +8,7 @@ import {
   brainV4CanAttempt,
   brainV4PromotionReady,
   brainV4RolloutStats,
+  brainV4ShadowPercent,
   classifyBrainV4Request,
   normalizeBrainV4RolloutMode,
   resetBrainV4RolloutStats,
@@ -245,4 +246,10 @@ test("Brain v4 rollout is disabled without evidence and stable when promoted", (
   assert.equal(shouldUseBrainV4({ deviceId: "12345678" }, env), true);
   assert.equal(shouldShadowBrainV4({ TAKI_BRAIN_V4_MODE: "shadow", TAKI_BRAIN_V4_SHADOW_PERCENT: "100" }), true);
   assert.equal(brainV4CanAttempt(), true);
+});
+
+test("Brain v4 defaults to a one-percent detached shadow sample", () => {
+  assert.equal(normalizeBrainV4RolloutMode({}), "shadow");
+  assert.equal(brainV4ShadowPercent({}), 1);
+  assert.equal(normalizeBrainV4RolloutMode({ TAKI_BRAIN_V4_MODE: "disabled" }), "disabled");
 });

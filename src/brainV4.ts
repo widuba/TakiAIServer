@@ -32,8 +32,9 @@ import { briefForVoice, extractJsonObject, withTimeout } from "./util.js";
  *
  * The module is intentionally answer-only. It cannot emit a device action, so a
  * v4 model response can never bypass the native confirmation and validation
- * contract. The rollout is disabled by default and requires promotion evidence
- * before canary or active traffic is admitted.
+ * contract. Production starts with a small, detached shadow sample after an
+ * explicit rollout decision; user-visible canary or active traffic still
+ * requires promotion evidence. Set TAKI_BRAIN_V4_MODE=disabled to roll back.
  */
 
 export type BrainV4RolloutMode = "disabled" | "shadow" | "canary" | "active";
@@ -589,7 +590,7 @@ export async function runBrainV4Plan(
 }
 
 function requestedRolloutMode(env: Record<string, string | undefined>): BrainV4RolloutMode {
-  const value = String(env.TAKI_BRAIN_V4_MODE || "disabled").trim().toLowerCase();
+  const value = String(env.TAKI_BRAIN_V4_MODE || "shadow").trim().toLowerCase();
   if (value === "active" || value === "v4") return "active";
   if (value === "canary") return "canary";
   if (value === "shadow") return "shadow";
@@ -620,7 +621,7 @@ export function brainV4CanaryPercent(env: Record<string, string | undefined> = p
 }
 
 export function brainV4ShadowPercent(env: Record<string, string | undefined> = process.env): number {
-  return boundedPercent(env.TAKI_BRAIN_V4_SHADOW_PERCENT);
+  return boundedPercent(env.TAKI_BRAIN_V4_SHADOW_PERCENT, 1);
 }
 
 function stableBucket(value: string): number {

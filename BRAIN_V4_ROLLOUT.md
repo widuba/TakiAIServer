@@ -29,12 +29,15 @@ existing v3/v2/legacy path for the same turn.
 
 ## Runtime modes
 
-`TAKI_BRAIN_V4_MODE` is unset or `disabled` by default:
+This deployed revision intentionally enables a 1% production shadow sample by
+default after explicit operational authorization. The environment override
+`TAKI_BRAIN_V4_MODE=disabled` is the immediate rollback switch. User-visible
+canary and active modes remain promotion-gated:
 
 - `disabled`: v4 makes no provider calls.
 - `shadow`: a stable sample runs v4 asynchronously, discards its plan, and does
-  not add latency, actions, or user credit charges. Set
-  `TAKI_BRAIN_V4_SHADOW_PERCENT` explicitly; detached work is limited by
+  not add latency, actions, or user credit charges. The default sample is 1%;
+  set `TAKI_BRAIN_V4_SHADOW_PERCENT` explicitly to change it. Detached work is limited by
   `TAKI_BRAIN_V4_SHADOW_MAX_CONCURRENCY` (default 1, maximum 4).
 - `canary`: stable device assignments below `TAKI_BRAIN_V4_PERCENT` use v4 for
   eligible conversational turns. Requests without a device id stay on the
