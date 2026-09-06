@@ -76,10 +76,15 @@ test("Taki model selection is validated, scoped, and has a bounded fallback", as
   assert.equal(normalizeTakiModel(undefined), "taki_2_1");
   assert.equal(normalizeTakiModel("made-up-model"), "taki_2_1");
   assert.equal(takiModelInfo("taki_2_0_swift").name, "Dromos");
+  assert.deepEqual(fallbackModelCandidates("gpt-5.6-sol"), ["gpt-5.6-sol", "gpt-5.6-terra"]);
+  assert.deepEqual(fallbackModelCandidates("gpt-5.6-terra"), ["gpt-5.6-terra", "gpt-5.6-luna"]);
   assert.deepEqual(fallbackModelCandidates("gemini-3.6-flash"), ["gemini-3.6-flash", "gemini-3.5-flash"]);
   assert.deepEqual(fallbackModelCandidates("gemini-3.1-pro-preview"), ["gemini-3.1-pro-preview", "gemini-3.6-flash"]);
   assert.deepEqual(providerCandidates("gemini-3.1-pro-preview", { config: { modelRole: "brain_v3" } }), [
     { provider: "gemini", model: "gemini-3.1-pro-preview" }
+  ]);
+  assert.deepEqual(providerCandidates("gemini-3.6-flash", { config: { modelRole: "brain_v4" } }), [
+    { provider: "gemini", model: "gemini-3.6-flash" }
   ]);
   await withTakiModel("taki_2_1_reasoning", async () => {
     assert.equal(activeTakiModelInfo().name, "Sophos");
@@ -90,29 +95,30 @@ test("Taki model selection is validated, scoped, and has a bounded fallback", as
   });
   await withTakiModel("taki_2_1", async () => {
     assert.equal(modelForRequest({ model: "ignored", config: { responseMimeType: "application/json" } }), PLANNER_MODEL);
+    assert.equal(modelForRequest({ model: "selected-v4-model", config: { modelRole: "brain_v4", responseMimeType: "application/json" } }), "selected-v4-model");
   });
   assert.equal(activeTakiModelInfo().name, "Metron");
 });
 
 test("OpenAI answer models follow the selected Taki speed-to-intelligence tier", () => {
   const defaults = {};
-  assert.equal(openAIModelForTaki("taki_2_0_swift", defaults), "gpt-5.4-mini");
-  assert.equal(openAIModelForTaki("taki_2_1", defaults), "gpt-5.5");
-  assert.equal(openAIModelForTaki("taki_2_1_reasoning", defaults), "gpt-5.6-luna");
+  assert.equal(openAIModelForTaki("taki_2_0_swift", defaults), "gpt-5.6-luna");
+  assert.equal(openAIModelForTaki("taki_2_1", defaults), "gpt-5.6-terra");
+  assert.equal(openAIModelForTaki("taki_2_1_reasoning", defaults), "gpt-5.6-sol");
 
   // Tier-specific overrides take precedence, while legacy role names remain
   // supported for existing Render deployments.
   const configured = {
-    OPENAI_TAKI_FAST_MODEL: "gpt-5.4-mini",
-    OPENAI_TAKI_BALANCED_MODEL: "gpt-5.5",
-    OPENAI_TAKI_SMART_MODEL: "gpt-5.6-luna",
+    OPENAI_TAKI_FAST_MODEL: "gpt-5.6-luna",
+    OPENAI_TAKI_BALANCED_MODEL: "gpt-5.6-terra",
+    OPENAI_TAKI_SMART_MODEL: "gpt-5.6-sol",
     OPENAI_FAST_MODEL: "gpt-5.4-nano",
     OPENAI_MODEL: "gpt-5.4-mini",
     OPENAI_SMART_MODEL: "gpt-5.4-mini"
   };
-  assert.equal(openAIModelForTaki("taki_2_0_swift", configured), "gpt-5.4-mini");
-  assert.equal(openAIModelForTaki("taki_2_1", configured), "gpt-5.5");
-  assert.equal(openAIModelForTaki("taki_2_1_reasoning", configured), "gpt-5.6-luna");
+  assert.equal(openAIModelForTaki("taki_2_0_swift", configured), "gpt-5.6-luna");
+  assert.equal(openAIModelForTaki("taki_2_1", configured), "gpt-5.6-terra");
+  assert.equal(openAIModelForTaki("taki_2_1_reasoning", configured), "gpt-5.6-sol");
 
   const legacy = {
     OPENAI_FAST_MODEL: "gpt-5.4-nano",

@@ -31,6 +31,9 @@ test("Gemini-shaped text, JSON, search, reasoning, and limits map to Responses",
   assert.equal(request.max_output_tokens, 240);
   assert.deepEqual(request.text, { format: { type: "json_object" } });
   assert.deepEqual(request.tools, [{ type: "web_search_preview", search_context_size: "medium" }]);
+
+  const terraRequest = buildOpenAIRequest({ contents: "Answer briefly.", config: {} }, "gpt-5.6-terra");
+  assert.equal(terraRequest.reasoning.effort, "medium");
 });
 
 test("Brain v3 JSON stages use strict Responses Structured Outputs", () => {
@@ -54,6 +57,36 @@ test("Brain v3 JSON stages use strict Responses Structured Outputs", () => {
     format: {
       type: "json_schema",
       name: "taki_brain_v3_policy",
+      strict: true,
+      schema
+    }
+  });
+});
+
+test("Brain v4 keeps its selected answer model while using strict Responses JSON", () => {
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    properties: { answer: { type: "string" } },
+    required: ["answer"]
+  };
+  const request = buildOpenAIRequest({
+    model: "gpt-5.6-luna",
+    contents: "Answer the user's question.",
+    config: {
+      modelRole: "brain_v4",
+      responseMimeType: "application/json",
+      responseJsonSchema: schema,
+      responseJsonSchemaName: "taki_brain_v4_answer",
+      openAIReasoningEffort: "none"
+    }
+  }, "gpt-5.6-luna");
+  assert.equal(request.model, "gpt-5.6-luna");
+  assert.equal(request.reasoning.effort, "none");
+  assert.deepEqual(request.text, {
+    format: {
+      type: "json_schema",
+      name: "taki_brain_v4_answer",
       strict: true,
       schema
     }

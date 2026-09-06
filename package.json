@@ -6,6 +6,8 @@
   "scripts": {
     "test": "AI_PROVIDER=gemini OPENAI_API_KEY= GEMINI_API_KEY=test node --import tsx --test tests/*.test.ts",
     "eval:brain-v3": "node --import tsx scripts/brainV3Eval.ts",
+    "eval:brain-v4": "node --import tsx scripts/brainV4Eval.ts",
+    "eval:brain-v4-batch": "node --import tsx scripts/brainV4BatchEval.ts",
     "dev": "tsx index.ts",
     "start": "tsx index.ts",
     "typecheck": "tsc --noEmit",

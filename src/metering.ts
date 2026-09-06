@@ -166,20 +166,20 @@ export function openAIListPriceUsd(model: string, metadata: any): number {
     cacheWriteRate = longContext ? 0.5 : 0.25;
     outputRate = longContext ? 1.8 : 1.2;
   } else if (/gpt-5\.6-terra/.test(id)) {
-    inputRate = longContext ? 5 : 2.5;
-    cachedRate = longContext ? 0.5 : 0.25;
-    cacheWriteRate = longContext ? 6.25 : 3.125;
-    outputRate = longContext ? 22.5 : 15;
+    inputRate = longContext ? 4 : 2;
+    cachedRate = longContext ? 0.4 : 0.2;
+    cacheWriteRate = longContext ? 5 : 2.5;
+    outputRate = longContext ? 18 : 12;
   } else if (/gpt-5\.5/.test(id)) {
     inputRate = longContext ? 10 : 5;
     cachedRate = longContext ? 1 : 0.5;
     cacheWriteRate = longContext ? 12.5 : 6.25;
     outputRate = longContext ? 45 : 30;
   } else if (/gpt-5\.6(?:-sol)?(?:$|-)/.test(id)) {
-    inputRate = longContext ? 10 : 5;
-    cachedRate = longContext ? 1 : 0.5;
-    cacheWriteRate = longContext ? 12.5 : 6.25;
-    outputRate = longContext ? 45 : 30;
+    inputRate = longContext ? 8 : 4;
+    cachedRate = longContext ? 0.8 : 0.4;
+    cacheWriteRate = longContext ? 10 : 5;
+    outputRate = longContext ? 30 : 20;
   } else if (/gpt-5\.4-mini/.test(id)) {
     inputRate = 0.75;
     cachedRate = 0.075;

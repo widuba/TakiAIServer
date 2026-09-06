@@ -116,7 +116,7 @@ function reasoningEffort(model: string, config: any): "none" | "low" | "medium" 
   if (Number(thinking?.thinkingBudget ?? thinking?.thinking_budget) === 0 || level === "MINIMAL") return "none";
   if (level === "LOW") return "low";
   if (level === "HIGH") return "high";
-  return /gpt-5\.(?:4|5|6)(?:-pro|-sol|-luna)?$/i.test(model) ? "medium" : "none";
+  return /gpt-5\.(?:4|5|6)(?:-pro|-sol|-terra|-luna)?$/i.test(model) ? "medium" : "none";
 }
 
 function requestsWebSearch(config: any): boolean {
@@ -287,7 +287,17 @@ function requestTimeout(args: any): {
     ? Math.max(25, Math.min(45_000, Math.floor(requested)))
     : 40_000;
   const controller = new AbortController();
+  const upstream = args?.config?.abortSignal as AbortSignal | undefined;
+  let onAbort: (() => void) | undefined;
   let timedOut = false;
+  if (upstream) {
+    if (upstream.aborted) {
+      controller.abort(upstream.reason);
+    } else {
+      onAbort = () => controller.abort(upstream.reason);
+      upstream.addEventListener("abort", onAbort, { once: true });
+    }
+  }
   const timer = setTimeout(() => {
     timedOut = true;
     controller.abort();
@@ -295,7 +305,10 @@ function requestTimeout(args: any): {
   return {
     signal: controller.signal,
     didTimeOut: () => timedOut,
-    cancel: () => clearTimeout(timer)
+    cancel: () => {
+      clearTimeout(timer);
+      if (onAbort) upstream?.removeEventListener("abort", onAbort);
+    }
   };
 }
 

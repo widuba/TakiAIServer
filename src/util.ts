@@ -1,4 +1,4 @@
-import { TIME_ZONE } from "./ai.js";
+import { activeRequestAbortSignal, TIME_ZONE } from "./ai.js";
 
 /* ============================================================================
  * Pure, domain-free helpers: timeouts, JSON parsing, date/time, text cleanup.
@@ -33,7 +33,10 @@ export async function fetchWithTimeout(
   label = "Network request"
 ): Promise<Response> {
   const controller = new AbortController();
-  const upstream = init.signal;
+  // Planner web/tool fetches normally do not receive a signal parameter. Pick
+  // up the active assistant request's signal so deleting its chat also stops a
+  // slow research source instead of waiting for the tool deadline.
+  const upstream = init.signal || activeRequestAbortSignal();
   let onAbort: (() => void) | undefined;
   if (upstream) {
     if (upstream.aborted) controller.abort(upstream.reason);
@@ -46,6 +49,7 @@ export async function fetchWithTimeout(
   try {
     return await fetch(input, { ...init, signal: controller.signal });
   } catch (error) {
+    if (upstream?.aborted) throw error;
     if (controller.signal.aborted) throw new Error(`${label} timed out`);
     throw error;
   } finally {

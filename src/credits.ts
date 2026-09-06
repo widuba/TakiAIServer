@@ -461,6 +461,13 @@ export class InsufficientCreditsError extends Error {
   }
 }
 
+export class CreditChargeCancelledError extends Error {
+  constructor() {
+    super("credit charge cancelled");
+    this.name = "CreditChargeCancelledError";
+  }
+}
+
 export function quoteCreditCharge(normalAiCredits: number, mode: "text" | "voice", voiceCreditsAvailable: number): CreditChargeQuote {
   const normal = Math.max(0, Math.ceil(normalAiCredits));
   const useVoiceCredit = mode === "voice" && Math.floor(voiceCreditsAvailable) > 0;
@@ -555,11 +562,13 @@ export async function chargeUsageUsd(
   identity: string,
   costUsd: number,
   mode: "text" | "voice",
-  requestId: string
+  requestId: string,
+  options: { shouldCancel?: () => boolean } = {}
 ): Promise<CreditSummary & CreditChargeQuote & { spent: number; usageUsd: number; deduplicated: boolean }> {
   const costMicros = Math.max(0, Math.round(costUsd * 1_000_000));
   let rejection: InsufficientCreditsError | null = null;
   const charged = await updateAccount(identity, (acct) => {
+    if (options.shouldCancel?.()) throw new CreditChargeCancelledError();
     ensureFreeCycle(acct);
     const existing = (acct.usageLedger || []).find((entry) => entry.requestId === requestId && entry.status === "charged");
     if (existing) {
@@ -577,6 +586,7 @@ export async function chargeUsageUsd(
     const accumulated = Math.max(0, Math.floor(acct.usageRemainderMicros || 0)) + costMicros;
     const quote = quoteCreditCharge(Math.floor(accumulated / 1000), mode, acct.voiceCredits || 0);
     const available = balanceOf(acct);
+    if (options.shouldCancel?.()) throw new CreditChargeCancelledError();
     if (available < quote.totalAiCredits) {
       rejection = new InsufficientCreditsError("ai", quote.totalAiCredits, available);
       acct.usageLedger = [...(acct.usageLedger || []), {

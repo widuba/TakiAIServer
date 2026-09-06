@@ -313,6 +313,10 @@ test("model-free message clarification completes on the next turn without guessi
 
   assert.equal(directCorePhoneAction(stateFor("Text Chris about the next Braves game")), null);
   assert.equal(directCorePhoneAction(stateFor("Take me to my next calendar meeting")), null);
+  assert.equal(directCorePhoneAction(stateFor("Remind me what we discussed")), null);
+  assert.equal(directCorePhoneAction(stateFor("Call out the mistake in this paragraph")), null);
+  assert.equal(directCorePhoneAction(stateFor("Ring a bell?")), null);
+  assert.equal(directCorePhoneAction(stateFor("Open up about something difficult")), null);
 });
 
 test("undo is a model-free executable action rather than a guessed name-based deletion", async () => {

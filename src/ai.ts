@@ -15,6 +15,36 @@ dotenv.config();
 const geminiApiKey = String(process.env.GEMINI_API_KEY || "").trim();
 const openAIApiKey = String(process.env.OPENAI_API_KEY || "").trim();
 export type AIProvider = "openai" | "gemini";
+const requestAbortStorage = new AsyncLocalStorage<AbortSignal>();
+
+export function withRequestAbort<T>(signal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T> {
+  return signal ? requestAbortStorage.run(signal, fn) : fn();
+}
+
+export function activeRequestAbortSignal(): AbortSignal | undefined {
+  return requestAbortStorage.getStore();
+}
+
+function requestWasAborted(): boolean {
+  return requestAbortStorage.getStore()?.aborted === true;
+}
+
+function throwIfRequestWasAborted(): void {
+  if (!requestWasAborted()) return;
+  const error = new Error("request cancelled");
+  error.name = "AbortError";
+  throw error;
+}
+
+function requestArgsWithAbortSignal(args: any): any {
+  const signal = requestAbortStorage.getStore();
+  if (!signal) return args;
+  return {
+    ...args,
+    config: { ...(args?.config || {}), abortSignal: signal }
+  };
+}
+
 function configuredProvider(): AIProvider {
   const requested = String(process.env.AI_PROVIDER || "").trim().toLowerCase();
   if (requested === "openai" || requested === "gemini") return requested;
@@ -118,15 +148,16 @@ function configuredModel(env: ModelEnvironment, names: string[], fallback: strin
  * needed to execute calendar, maps, messages, and other device actions.
  *
  * The defaults intentionally follow the customer-facing speed-to-intelligence
- * order requested by the product: Dromos -> GPT-5.4 Mini, Metron -> GPT-5.5,
- * Sophos -> GPT-5.6 Luna. The OPENAI_TAKI_* variables are tier-specific
- * overrides; the older role variables remain supported for existing Render
- * deployments during the transition.
+ * order requested by the product: Dromos -> GPT-5.6 Luna, Metron -> GPT-5.6
+ * Terra, Sophos -> GPT-5.6 Sol. This keeps the customer-facing tier names,
+ * provider capability, and list-price order aligned. The OPENAI_TAKI_* variables
+ * are tier-specific overrides; the older role variables remain supported for
+ * existing Render deployments during the transition.
  */
 export function openAIModelForTaki(key: TakiModelKey, env: ModelEnvironment = process.env): string {
-  const fast = configuredModel(env, ["OPENAI_TAKI_FAST_MODEL", "OPENAI_FAST_MODEL"], "gpt-5.4-mini");
-  const balanced = configuredModel(env, ["OPENAI_TAKI_BALANCED_MODEL", "OPENAI_BALANCED_MODEL", "OPENAI_MODEL"], "gpt-5.5");
-  const smart = configuredModel(env, ["OPENAI_TAKI_SMART_MODEL", "OPENAI_SMART_MODEL", "OPENAI_RESEARCH_MODEL"], "gpt-5.6-luna");
+  const fast = configuredModel(env, ["OPENAI_TAKI_FAST_MODEL", "OPENAI_FAST_MODEL"], "gpt-5.6-luna");
+  const balanced = configuredModel(env, ["OPENAI_TAKI_BALANCED_MODEL", "OPENAI_BALANCED_MODEL", "OPENAI_MODEL"], "gpt-5.6-terra");
+  const smart = configuredModel(env, ["OPENAI_TAKI_SMART_MODEL", "OPENAI_SMART_MODEL", "OPENAI_RESEARCH_MODEL"], "gpt-5.6-sol");
   if (key === "taki_2_0_swift") return fast;
   if (key === "taki_2_1_reasoning") return smart;
   return balanced;
@@ -188,7 +219,7 @@ export function activeTakiModelInfo(): typeof TAKI_MODELS[number] {
 export function fallbackModelCandidates(primary: string): string[] {
   const id = String(primary || "").trim();
   const production = /^gpt-/i.test(id)
-    ? ["gpt-5.4-mini", "gpt-5.4-nano"]
+    ? ["gpt-5.6-terra", "gpt-5.6-luna"]
     : ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"];
   return [id, ...production.filter((candidate) => candidate !== id)].filter(Boolean).slice(0, 2);
 }
@@ -196,10 +227,10 @@ export function fallbackModelCandidates(primary: string): string[] {
 export function modelForRequest(args: any): string {
   const selected = modelSelectionStorage.getStore();
   if (!selected) return String(args?.model || MAIN_MODEL);
-  // Brain v3 has its own model role and structured-output contract. Do not
+  // Brain v3/v4 have their own model roles and structured-output contracts. Do not
   // silently replace it with the legacy planner model just because its output
   // is JSON; the role is what makes the replacement independently tunable.
-  if (args?.config?.modelRole === "brain_v3") {
+  if (args?.config?.modelRole === "brain_v3" || args?.config?.modelRole === "brain_v4") {
     return String(args?.model || MAIN_MODEL);
   }
   // Model choice controls answer depth, latency, and the usual token price. It
@@ -333,10 +364,10 @@ function geminiFallbackFor(openAIModel: string): string {
 }
 
 export function providerCandidates(primary: string, args: any = {}): ProviderCandidate[] {
-  // Brain v3 promotion evidence is provider- and model-bound. Do not silently
+  // Brain v3/v4 promotion evidence is provider- and model-bound. Do not silently
   // move an evaluated v3 request to the legacy alternate provider: the planner
   // owns the compatibility fallback after this single promoted attempt fails.
-  if (args?.config?.modelRole === "brain_v3") {
+  if (args?.config?.modelRole === "brain_v3" || args?.config?.modelRole === "brain_v4") {
     return [{ provider: ACTIVE_AI_PROVIDER, model: primary }];
   }
   if (/^gpt-/i.test(primary)) {
@@ -360,22 +391,26 @@ function canTryNextProvider(error: unknown, serviceError: ServiceError | null): 
 }
 
 export async function generateContent(args: any): Promise<any> {
-  const candidates = providerCircuit.order(providerCandidates(modelForRequest(args), args));
+  const requestArgs = requestArgsWithAbortSignal(args);
+  throwIfRequestWasAborted();
+  const candidates = providerCircuit.order(providerCandidates(modelForRequest(requestArgs), requestArgs));
   let lastError: unknown;
   for (let index = 0; index < candidates.length; index += 1) {
     const candidate = candidates[index];
     const request = candidate.provider === "gemini"
-      ? prepareGeminiRequest(args, candidate.model)
-      : prepareOpenAIRequest(args, candidate.model);
+      ? prepareGeminiRequest(requestArgs, candidate.model)
+      : prepareOpenAIRequest(requestArgs, candidate.model);
     try {
       const response = candidate.provider === "openai"
         ? await generateOpenAIContent(request, candidate.model, openAIApiKey)
         : await rawGenerateContent!(request);
+      throwIfRequestWasAborted();
       providerCircuit.recordSuccess(candidate);
       if (candidate.provider === "openai") recordOpenAICall(request, response);
       else recordGeminiCall(request, response);
       return response;
     } catch (error) {
+      if (requestWasAborted()) throw error;
       const serviceError = classifyAIError(error);
       providerCircuit.recordFailure(candidate, serviceError ?? error);
       lastError = serviceError ?? error;
@@ -392,13 +427,15 @@ export async function generateContent(args: any): Promise<any> {
 // so a user can never hear the beginning of one model's answer and the ending
 // of another model's answer.
 export async function* generateContentStream(args: any): AsyncGenerator<any> {
-  const candidates = providerCircuit.order(providerCandidates(modelForRequest(args), args));
+  const requestArgs = requestArgsWithAbortSignal(args);
+  throwIfRequestWasAborted();
+  const candidates = providerCircuit.order(providerCandidates(modelForRequest(requestArgs), requestArgs));
   let lastError: unknown;
   for (let index = 0; index < candidates.length; index += 1) {
     const candidate = candidates[index];
     const request = candidate.provider === "gemini"
-      ? prepareGeminiRequest(args, candidate.model)
-      : prepareOpenAIRequest(args, candidate.model);
+      ? prepareGeminiRequest(requestArgs, candidate.model)
+      : prepareOpenAIRequest(requestArgs, candidate.model);
     let emitted = false;
     let lastResponse: any;
     try {
@@ -406,6 +443,7 @@ export async function* generateContentStream(args: any): AsyncGenerator<any> {
         ? generateOpenAIContentStream(request, candidate.model, openAIApiKey)
         : await rawGenerateContentStream!(request);
       for await (const response of stream) {
+        throwIfRequestWasAborted();
         if (String(response?.text || "")) emitted = true;
         lastResponse = response;
         yield response;
@@ -417,6 +455,7 @@ export async function* generateContentStream(args: any): AsyncGenerator<any> {
       }
       return;
     } catch (error) {
+      if (requestWasAborted()) throw error;
       const serviceError = classifyAIError(error);
       providerCircuit.recordFailure(candidate, serviceError ?? error);
       lastError = serviceError ?? error;
@@ -441,16 +480,18 @@ function currentModel(configured: string | undefined, fallback: string): string 
 
 /**
  * Model roles (each tuned for its job):
- *   PLANNER_MODEL   -> fast routing/extraction. flash with thinking off (~1-2s).
- *                      NOTE: flash-lite was tested and is too inaccurate here —
- *                      it dropped recipients ("text Chris" -> "who?"), so flash
- *                      is the fastest model that still routes correctly.
+ *   PLANNER_MODEL   -> fast routing/extraction with low reasoning. The default
+ *                      provider models are tuned for reliable structured output
+ *                      without spending flagship-model tokens on every route.
+ *                      NOTE: Gemini flash-lite was tested and is too inaccurate
+ *                      here — it dropped recipients ("text Chris" -> "who?"),
+ *                      so the Gemini planner stays on full flash.
  *   MAIN_MODEL      -> balanced model, for general answers + research extraction.
  *   RESEARCH_MODEL  -> most accurate model + web grounding, for current/
  *                      changeable facts (scores, prices, schedules, news).
  */
 export const PLANNER_MODEL = ACTIVE_AI_PROVIDER === "openai"
-  ? String(process.env.OPENAI_PLANNER_MODEL || "gpt-5.4-mini").trim()
+  ? String(process.env.OPENAI_PLANNER_MODEL || "gpt-5.6-luna").trim()
   : currentModel(process.env.GEMINI_PLANNER_MODEL, "gemini-3.6-flash");
 export const MAIN_MODEL = ACTIVE_AI_PROVIDER === "openai"
   ? openAIModelForTaki("taki_2_1")
@@ -528,8 +569,8 @@ export function brainV3StructuredRequest(
 export const RESEARCH_MODEL = ACTIVE_AI_PROVIDER === "openai"
   ? openAIModelForTaki("taki_2_1_reasoning")
   : currentModel(process.env.GEMINI_RESEARCH_MODEL, "gemini-3.1-pro-preview");
-// FAST_MODEL answers easy, static knowledge questions (no routing/extraction —
-// that's where flash-lite failed as a planner; as a plain answerer it's fine).
+// FAST_MODEL answers easy, static knowledge questions (no routing/extraction).
+// The Gemini compatibility path uses flash-lite here; OpenAI uses GPT-5.6 Luna.
 export const FAST_MODEL = ACTIVE_AI_PROVIDER === "openai"
   ? openAIModelForTaki("taki_2_0_swift")
   : currentModel(process.env.GEMINI_FAST_MODEL, "gemini-3.5-flash-lite");

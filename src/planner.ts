@@ -115,6 +115,7 @@ import type { MessageAnalysis, MessageStyleVector } from "./messageStyle.js";
 import { restyleMessageBody } from "./messageStyleRewrite.js";
 import { runBrainV2Planner, runBrainV2Shadow, shouldShadowBrainV2, shouldUseBrainV2 } from "./brainV2.js";
 import { brainV3CanAttempt, noteBrainV3Failure, noteBrainV3Success, runBrainV3Plan, runBrainV3Shadow, shouldShadowBrainV3, shouldUseBrainV3 } from "./brainV3.js";
+import { brainV4CanAttempt, noteBrainV4Failure, noteBrainV4Success, runBrainV4Plan, runBrainV4Shadow, shouldShadowBrainV4, shouldUseBrainV4 } from "./brainV4.js";
 import { runUnmetered } from "./metering.js";
 import {
   addDaysToYmd,
@@ -137,8 +138,9 @@ import {
  * planAssistantResponse is the single brain. It:
  *   1. handles a couple of unambiguous deterministic answer tools,
  *   2. completes a pending clarification deterministically when possible,
- *   3. otherwise asks the selected understanding planner (Brain v2 when its
- *      rollout gate is on, the legacy planner otherwise) for a structured plan,
+ *   3. otherwise gives eligible conversational turns to Brain v4's single-call
+ *      answer core, then asks the selected understanding planner (Brain v2 when
+ *      its rollout gate is on, the legacy planner otherwise) for a structured plan,
  *   4. routes the plan to tools / actions / clarifications,
  *   5. attaches structured memory (event / contact / place / pending).
  *
@@ -330,6 +332,31 @@ async function brainV3GroundedFreeformPlan(
   return null;
 }
 
+/**
+ * Brain v4 owns only conversational answers. Device/account actions, safety
+ * requests, and ambiguous follow-ups return null from the v4 core and continue
+ * through the established planner/compiler below. This keeps the v4 rollout
+ * additive: a failed or misclassified answer cannot bypass an action audit.
+ */
+async function brainV4FreeformPlan(
+  state: ConversationState,
+  onStableVoiceText?: (text: string) => void | Promise<void>
+): Promise<AssistantPlan | null> {
+  if (!shouldUseBrainV4(state) || !brainV4CanAttempt()) return null;
+  try {
+    const plan = await runBrainV4Plan(state, onStableVoiceText);
+    noteBrainV4Success();
+    return plan;
+  } catch (error) {
+    noteBrainV4Failure(error);
+    // v4 is a quality/latency optimization, never a single point of failure.
+    // The same turn immediately uses the existing v3/v2/legacy compatibility
+    // path, while the bounded circuit prevents repeated provider waits.
+    console.error("Brain v4 failed; using the compatibility planner:", error);
+    return null;
+  }
+}
+
 // Dedicated tools called by the compatibility planner can still participate in
 // a selected v3 request. The circuit check matters here: after a v3 failure the
 // same turn must not immediately issue a second v3 specialist request before
@@ -491,6 +518,14 @@ export function looksLikeEmotionalSupportRequest(message: string): boolean {
   return looksLikePersonalSupportRequest(message);
 }
 
+// A recall request uses the words "remind me" conversationally. Keep it out of
+// the native reminder compiler so the answer model can use this chat's history.
+export function looksLikeConversationRecallRequest(message: string): boolean {
+  const text = String(message || "").trim();
+  return /^remind\s+me\s+(?:what|why|how|when|where|who|whether|if)\b/i.test(text)
+    || /^remind\s+me\s+(?:of|about)\s+(?:what\s+(?:we|i)|our\s+(?:conversation|discussion))\b/i.test(text);
+}
+
 /**
  * A medical question must never fall through to a device-writing parser. In
  * particular, "what prescription medication dosage should I take" contains
@@ -558,6 +593,11 @@ function directPending(
 export function directCorePhoneAction(state: ConversationState, message = state.message): AssistantPlan | null {
   const text = directCommandText(message);
   if (!text) return null;
+  if (looksLikeConversationRecallRequest(text)) return null;
+  // Idiomatic speech such as "call out the mistake" is not a phone action.
+  if (/^(?:call|ring)\s+(?:out|it|this|that|for|upon|attention|a\s+bell)\b/i.test(text)) return null;
+  // "Open up about ..." is emotional conversation, not an app-open request.
+  if (/^open\s+up(?:\s+about)?\b/i.test(text)) return null;
 
   if (/^(?:undo|undo that|undo the last (?:thing|action)|take that back|revert that|cancel what you just did)$/i.test(text)) {
     return actionPlan("I'll undo the last supported item I created.", blankAction("undo_last"), { lastIntent: "undo_last" });
@@ -1389,6 +1429,11 @@ export async function planAssistantResponse(
       if (shadow.ok === false) console.warn("Brain v3 shadow evaluation failed:", shadow.error);
     }).catch((error) => console.warn("Brain v3 shadow evaluation error:", error));
   }
+  if (shouldShadowBrainV4(state)) {
+    void runUnmetered(() => runBrainV4Shadow(state)).then((shadow) => {
+      if (shadow.ok === false) console.warn("Brain v4 shadow evaluation failed:", shadow.error);
+    }).catch((error) => console.warn("Brain v4 shadow evaluation error:", error));
+  }
 
   // Writing assistance, transformations of text already supplied in the turn,
   // and personal support are answers—not phone actions or public web lookups.
@@ -1399,12 +1444,29 @@ export async function planAssistantResponse(
     || looksLikeInlineTransformationRequest(state.message)
     || looksLikeEmotionalSupportRequest(state.message)
   ) {
+    const brainV4Plan = await brainV4FreeformPlan(state, onStableVoiceText);
+    if (brainV4Plan) return brainV4Plan;
     const brainV3Plan = await brainV3FreeformPlan(state, onStableVoiceText);
     if (brainV3Plan) return brainV3Plan;
     const brainPlan = await brainV2FreeformPlan(state, onStableVoiceText);
     if (brainPlan) return brainPlan;
     const supportGuidance = emotionalSupportGuidanceFor(state.message);
     if (supportGuidance) return answerPlan(supportGuidance, { lastIntent: "answer_only" });
+    const answer = await getGeneralAnswer(state, onStableVoiceText);
+    return answerPlan(answer.text, { lastIntent: "answer_only" }, answer.sources);
+  }
+
+  // "Remind me what we discussed" is a conversational request for chat
+  // recall, not a native reminder. Give the staged brain and its compatibility
+  // answer paths the full transcript before action parsing gets a chance to
+  // interpret the leading words as a reminder command.
+  if (looksLikeConversationRecallRequest(state.message)) {
+    const brainV4Plan = await brainV4FreeformPlan(state, onStableVoiceText);
+    if (brainV4Plan) return brainV4Plan;
+    const brainV3Plan = await brainV3FreeformPlan(state, onStableVoiceText);
+    if (brainV3Plan) return brainV3Plan;
+    const brainPlan = await brainV2FreeformPlan(state, onStableVoiceText);
+    if (brainPlan) return brainPlan;
     const answer = await getGeneralAnswer(state, onStableVoiceText);
     return answerPlan(answer.text, { lastIntent: "answer_only" }, answer.sources);
   }
@@ -2031,6 +2093,8 @@ export async function planAssistantResponse(
         return answerPlan(`${snap.title} — ${snap.status}.${dep}${arr}`.trim(), { lastIntent: "web_search" }, snap.sources);
       }
     }
+    const brainV4Plan = await brainV4FreeformPlan(state, onStableVoiceText);
+    if (brainV4Plan) return brainV4Plan;
     const brainV3Plan = await brainV3FreeformPlan(state, onStableVoiceText);
     if (brainV3Plan) return brainV3Plan;
     const res = await getStrictWebAnswer(state.message, {
@@ -2192,6 +2256,8 @@ export async function planAssistantResponse(
   // analysts). Route them straight to a grounded prediction answer so they are
   // never refused as "unverifiable."
   if (looksLikePredictionQuestion(state.message)) {
+    const brainV4Plan = await brainV4FreeformPlan(state, onStableVoiceText);
+    if (brainV4Plan) return brainV4Plan;
     const brainV3Plan = await brainV3GroundedFreeformPlan(state, onStableVoiceText);
     if (brainV3Plan) return brainV3Plan;
     const res = await getStrictWebAnswer(state.message, {
@@ -2230,6 +2296,8 @@ export async function planAssistantResponse(
   // deliberately precedes generic live-fact routing so recommendation intent
   // wins if a sentence also contains words such as "current" or "release."
   if (!isActionCommand && looksLikeCurrentRecommendationQuestion(state.message)) {
+    const brainV4Plan = await brainV4FreeformPlan(state, onStableVoiceText);
+    if (brainV4Plan) return brainV4Plan;
     const brainV3Plan = await brainV3GroundedFreeformPlan(state, onStableVoiceText);
     if (brainV3Plan) return brainV3Plan;
     const res = await getStrictWebAnswer(state.message, {
@@ -2243,6 +2311,8 @@ export async function planAssistantResponse(
   }
 
   if (!isActionCommand && (looksLikeFreshFactQuestion(state.message) || looksLikeLiveInfoQuestion(state.message))) {
+    const brainV4Plan = await brainV4FreeformPlan(state, onStableVoiceText);
+    if (brainV4Plan) return brainV4Plan;
     const brainV3Plan = await brainV3GroundedFreeformPlan(state, onStableVoiceText);
     if (brainV3Plan) return brainV3Plan;
     const res = await getStrictWebAnswer(state.message, {
@@ -2336,9 +2406,12 @@ export async function planAssistantResponse(
   // researched result can feed the requested device action.
   const explicitWebSearchNeedsAction = /\b(?:text|message|email|call|add|put|schedule|save|create|remind|directions|navigate)\b/i.test(state.message);
   if (looksLikeExplicitWebSearchRequest(state.message) && !explicitWebSearchNeedsAction) {
-    // Explicit web requests are only successful when v3 carries linkable
-    // grounding through the final plan. A plausible provider paragraph without
-    // sources must open the bounded v3 circuit and use the compatibility path.
+    // Brain v4 carries the same linkable-source contract for answer-only
+    // research while avoiding the compatibility planner's extra round trip.
+    // If v4 is disabled, fails, or lacks grounding, v3 and the established
+    // utility retain the exact fallback behavior.
+    const brainV4Plan = await brainV4FreeformPlan(state, onStableVoiceText);
+    if (brainV4Plan) return brainV4Plan;
     const brainV3Plan = await brainV3GroundedFreeformPlan(state, onStableVoiceText);
     if (brainV3Plan) return brainV3Plan;
     const brainPlan = await brainV2FreeformPlan(state, onStableVoiceText);
@@ -2356,6 +2429,8 @@ export async function planAssistantResponse(
   // of paying for a planner request first. This measured about twice as fast in
   // the live voice path while capability-shaped questions still keep planning.
   if (looksLikePlainVoiceKnowledgeQuestion(state)) {
+    const brainV4Plan = await brainV4FreeformPlan(state, onStableVoiceText);
+    if (brainV4Plan) return brainV4Plan;
     const brainV3Plan = await brainV3FreeformPlan(state, onStableVoiceText);
     if (brainV3Plan) return brainV3Plan;
     const brainPlan = await brainV2FreeformPlan(state, onStableVoiceText);
@@ -2363,6 +2438,12 @@ export async function planAssistantResponse(
     const ga = await getGeneralAnswer(state, onStableVoiceText);
     return answerPlan(ga.text, { lastIntent: "answer_only" }, ga.sources);
   }
+
+  // Brain v4 owns the remaining conversational path when explicitly enabled.
+  // If it declines the request or fails, the existing v3/v2/legacy planner
+  // continues with the same turn and action contract.
+  const brainV4Plan = await brainV4FreeformPlan(state, onStableVoiceText);
+  if (brainV4Plan) return brainV4Plan;
 
   // The v3 replacement owns the remaining model-driven path when explicitly
   // enabled. If it fails, brainV3FreeformPlan returns null and this exact turn

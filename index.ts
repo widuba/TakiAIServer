@@ -4,9 +4,10 @@ import Stripe from "stripe";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-import { PORT, ACTIVE_AI_PROVIDER, MAIN_MODEL, PLANNER_MODEL, RESEARCH_MODEL, BRAIN_V3_MODEL, BRAIN_V3_MODELS, ServiceError, VOICE_UNAVAILABLE_SPOKEN, brainV3AuxEnabled, normalizeTakiModel, withTakiModel } from "./src/ai.js";
+import { PORT, ACTIVE_AI_PROVIDER, MAIN_MODEL, PLANNER_MODEL, RESEARCH_MODEL, BRAIN_V3_MODEL, BRAIN_V3_MODELS, ServiceError, VOICE_UNAVAILABLE_SPOKEN, brainV3AuxEnabled, normalizeTakiModel, withTakiModel, withRequestAbort } from "./src/ai.js";
 import { brainV2Percent, brainV2RolloutStats, normalizeBrainRolloutMode } from "./src/brainV2.js";
 import { brainV3CanaryPercent, brainV3MaintenanceOverrideEnabled, brainV3PromotionReady, brainV3PromotionStatus, brainV3RolloutStats, brainV3ShadowPercent, normalizeBrainV3RolloutMode } from "./src/brainV3.js";
+import { BRAIN_V4_MODELS, brainV4CanaryPercent, brainV4PromotionReady, brainV4PromotionStatus, brainV4RolloutStats, brainV4ShadowPercent, normalizeBrainV4RolloutMode } from "./src/brainV4.js";
 import type { DeviceLocation, DeviceWeather, SpeechMetadata } from "./src/types.js";
 import { buildConversationState } from "./src/context.js";
 import { planAssistantResponse } from "./src/planner.js";
@@ -26,7 +27,7 @@ import { extractFlightCode, normalizeTrackerKind } from "./src/entityClassifier.
 import { clearPushToken, getPushToken, setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, clearAlertsForReset, type Alert } from "./src/alerts.js";
 import { isDurable, storeDelete, storeDeleteCategory, storeGet, storeSet, storeUpdate } from "./src/store.js";
-import { summary as creditSummary, chargeUsageUsd, InsufficientCreditsError, reset as resetCredits, tierCatalog, grantForTransaction, activateSubscriptionTier, updateSubscriptionStatus, grantForConsumableTransaction, grantWebTopup, grantAdminCredits, adminCreditAdjustments, MAX_ADMIN_CREDIT_GRANT, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, CREDIT_USD, type Tier } from "./src/credits.js";
+import { summary as creditSummary, chargeUsageUsd, InsufficientCreditsError, CreditChargeCancelledError, reset as resetCredits, tierCatalog, grantForTransaction, activateSubscriptionTier, updateSubscriptionStatus, grantForConsumableTransaction, grantWebTopup, grantAdminCredits, adminCreditAdjustments, MAX_ADMIN_CREDIT_GRANT, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, CREDIT_USD, type Tier } from "./src/credits.js";
 import { measureUsage, sttCostUsd, totalUsageUsd, ttsCostUsd } from "./src/metering.js";
 import { decideAssistantCharge, planCorrectionSynthesis, usageBlockFor, usageBlockedPayload, voiceTurnEstimateCredits } from "./src/usage.js";
 import { verifyTransaction, verifyCreditTransaction, claimCreditTransaction, transferCreditTransaction, rebindCreditTransactions, linkTransactionIdentity, transferSubscriptionIdentity, claimSubscriptionPeriod, releaseSubscriptionPeriod, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
@@ -53,10 +54,10 @@ import { TurnReplayCache } from "./src/turnReplay.js";
 import { commitSignupSlot, MAX_ACCOUNTS_PER_IP, releaseSignupSlot, reserveSignupSlot } from "./src/registration.js";
 import { clientIpForRequest, locationForRequest, mergeIpLocations } from "./src/ipLocation.js";
 
-// Health/version evidence for the staged Brain v3 build. Keep this distinct
+// Health/version evidence for the staged Brain v4 build. Keep this distinct
 // from the rollout flag so a deployed artifact can be identified even while
 // all customer traffic remains on the compatibility path.
-const SERVER_VERSION = "2026-08-29-brain-v3-staged-v1";
+const SERVER_VERSION = "2026-09-05-brain-v4-staged-v1";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
 // Render. (The purchase-simulating grant endpoint was removed when real
@@ -77,6 +78,55 @@ const FULL_RESET_PREVIEW_KEY = "system:full-reset-preview";
 const fullResetPreviews = new Map<string, { expiresAt: number; fingerprint: string }>();
 let fullResetInProgress = false;
 let activeRequests = 0;
+const activeAssistantRequests = new Map<string, { controller: AbortController; cancelled: boolean }>();
+
+class RequestCancelledError extends Error {
+  constructor() {
+    super("request cancelled");
+    this.name = "RequestCancelledError";
+  }
+}
+
+function throwIfRequestCancelled(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new RequestCancelledError();
+}
+
+function isRequestCancelled(error: unknown, signal?: AbortSignal): boolean {
+  return signal?.aborted === true || error instanceof RequestCancelledError || (error as any)?.name === "AbortError";
+}
+
+function requestAbortHandle(req: express.Request, res: express.Response): {
+  controller: AbortController;
+  signal: AbortSignal;
+  cleanup: () => void;
+} {
+  const controller = new AbortController();
+  let cleaned = false;
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort();
+  };
+  const onClose = () => {
+    if (!res.writableFinished) abort();
+    cleanup();
+  };
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    req.off("aborted", abort);
+    res.off("close", onClose);
+    res.off("finish", cleanup);
+  };
+  req.once("aborted", abort);
+  res.once("close", onClose);
+  res.once("finish", cleanup);
+  if (req.aborted || res.destroyed) abort();
+  return { controller, signal: controller.signal, cleanup };
+}
+
+function clientRequestId(value: unknown): string {
+  const supplied = typeof value === "string" ? value.trim().slice(0, 128) : "";
+  return /^[a-zA-Z0-9-]{16,128}$/.test(supplied) ? supplied : "";
+}
 
 function turnMeteringRequestId(value: unknown, ...fingerprintParts: string[]): string {
   const supplied = typeof value === "string" ? value.trim().slice(0, 128) : "";
@@ -169,10 +219,17 @@ function releaseVoiceSynthesisToken(token: string, deviceId: string): void {
 async function chargeMeasuredUsage(
   deviceId: string,
   usage: { geminiUsd: number; searchUsd: number },
-  requestId?: string
+  requestId?: string,
+  shouldCancel?: () => boolean
 ): Promise<number> {
   if (!deviceId) throw new Error("Cannot meter usage without an account identity");
-  const charged = await chargeUsageUsd(deviceId, usage.geminiUsd + usage.searchUsd, "text", requestId || randomUUID());
+  const charged = await chargeUsageUsd(
+    deviceId,
+    usage.geminiUsd + usage.searchUsd,
+    "text",
+    requestId || randomUUID(),
+    { shouldCancel }
+  );
   await noteSpend(deviceId, charged.spent);
   return charged.spent;
 }
@@ -512,7 +569,7 @@ app.get("/health", async (_req, res) => {
   res.status(200).json({
     ok: true,
     app: "Taki AI server",
-    mode: "planner-first-modular-v3",
+    mode: "planner-first-modular-v4-staged",
     version: SERVER_VERSION,
     durableStorage,
     aiProvider: ACTIVE_AI_PROVIDER,
@@ -539,6 +596,18 @@ app.get("/health", async (_req, res) => {
       // change a user's answer, action, or billing result.
       liveUserImpact: ["disabled", "shadow"].includes(normalizeBrainV3RolloutMode()) ? "none" : "scoped",
       stats: brainV3RolloutStats()
+    },
+    brainV4: {
+      version: normalizeBrainV4RolloutMode(),
+      promotionReady: brainV4PromotionReady(),
+      promotion: brainV4PromotionStatus(),
+      canaryPercent: brainV4CanaryPercent(),
+      shadowPercent: brainV4ShadowPercent(),
+      models: BRAIN_V4_MODELS,
+      // v4 shadow calls are detached and discard their plans. Active/canary
+      // traffic still has the compatibility planner immediately available.
+      liveUserImpact: ["disabled", "shadow"].includes(normalizeBrainV4RolloutMode()) ? "none" : "scoped",
+      stats: brainV4RolloutStats()
     },
     // Live Activity background updates require APNs config (APNS_KEY_P8 or
     // APNS_KEY_PATH + KEY_ID + TEAM_ID). Surfaced here so a missing key on the
@@ -1098,7 +1167,9 @@ app.post("/api/vision", async (req, res) => {
     return;
   }
   if (!(await requireCreditIdentity(deviceId, res, req))) return;
+  const requestAbort = requestAbortHandle(req, res);
   const visionGate = await safetyGate(deviceId, question, req);
+  if (requestAbort.signal.aborted) return;
   if (visionGate) { res.status(visionGate.failClosed ? 503 : 200).json({ spokenText: visionGate.message, blocked: true, ...(visionGate.block ? { access: visionGate.block, accessMessage: visionGate.message } : {}) }); return; }
   let tier: Tier = "free";
   const sum = await creditSummary(deviceId);
@@ -1107,7 +1178,11 @@ app.post("/api/vision", async (req, res) => {
   if (block) { res.status(402).json(usageBlockedPayload(block)); return; }
   try {
     const takiModel = normalizeTakiModel(req.body?.profile?.model);
-    const measured = await measureUsage(() => withTakiModel(takiModel, () => withTimeout(answerAboutImage(image, mime, question, userProfile, timeZone, voiceMode), 45000, "Vision")));
+    const measured = await measureUsage(() => withTakiModel(takiModel, () => withRequestAbort(
+      requestAbort.signal,
+      () => withTimeout(answerAboutImage(image, mime, question, userProfile, timeZone, voiceMode), 45000, "Vision")
+    )));
+    throwIfRequestCancelled(requestAbort.signal);
     const spokenText = measured.value;
     const speechUsd = voiceMode ? ttsCostUsd(speechCharacterCount(spokenText || "")) : 0;
     const ownerCostUsd = totalUsageUsd(measured.usage) + speechUsd;
@@ -1125,7 +1200,8 @@ app.post("/api/vision", async (req, res) => {
       deviceId,
       charge.usageUsd,
       voiceMode ? "voice" : "text",
-      turnMeteringRequestId(req.body?.requestId, "vision", image, question, mime, voiceMode ? "voice" : "text")
+      turnMeteringRequestId(req.body?.requestId, "vision", image, question, mime, voiceMode ? "voice" : "text"),
+      { shouldCancel: () => requestAbort.signal.aborted }
     );
     await noteSpend(deviceId, s.spent);
     await noteCreditCharge(deviceId, voiceMode ? "voice" : "text", s);
@@ -1137,6 +1213,10 @@ app.post("/api/vision", async (req, res) => {
     });
     res.json({ spokenText, credits: { ...s, cost: s.spent } });
   } catch (error) {
+    if (isRequestCancelled(error, requestAbort.signal) || error instanceof CreditChargeCancelledError) {
+      if (!res.writableEnded && !res.destroyed) res.status(499).json({ error: "request cancelled", code: "request_cancelled" });
+      return;
+    }
     if (error instanceof InsufficientCreditsError) {
       const fresh = await creditSummary(deviceId);
       res.status(402).json(usageBlockedPayload(usageBlockFor(fresh, error.required)!));
@@ -1160,8 +1240,10 @@ app.post("/api/attachments", async (req, res) => {
   const voiceMode = req.body?.voiceMode === true;
   if (!attachments.length) { res.status(400).json({ error: "attachment is required" }); return; }
   if (!(await requireCreditIdentity(deviceId, res, req))) return;
+  const requestAbort = requestAbortHandle(req, res);
 
   const gate = await safetyGate(deviceId, question, req);
+  if (requestAbort.signal.aborted) return;
   if (gate) { res.status(gate.failClosed ? 503 : 200).json({ spokenText: gate.message, blocked: true, ...(gate.block ? { access: gate.block, accessMessage: gate.message } : {}) }); return; }
 
   let tier: Tier = "free";
@@ -1172,7 +1254,11 @@ app.post("/api/attachments", async (req, res) => {
 
   try {
     const takiModel = normalizeTakiModel(req.body?.profile?.model);
-    const measured = await measureUsage(() => withTakiModel(takiModel, () => answerAboutAttachments(attachments, question, userProfile, timeZone, voiceMode)));
+    const measured = await measureUsage(() => withTakiModel(takiModel, () => withRequestAbort(
+      requestAbort.signal,
+      () => answerAboutAttachments(attachments, question, userProfile, timeZone, voiceMode)
+    )));
+    throwIfRequestCancelled(requestAbort.signal);
     const answer = measured.value;
     const speechUsd = voiceMode ? ttsCostUsd(speechCharacterCount(answer.text)) : 0;
     const ownerCostUsd = totalUsageUsd(measured.usage) + speechUsd;
@@ -1190,7 +1276,8 @@ app.post("/api/attachments", async (req, res) => {
       deviceId,
       charge.usageUsd,
       voiceMode ? "voice" : "text",
-      turnMeteringRequestId(req.body?.requestId, "attachments", question, JSON.stringify(attachments), voiceMode ? "voice" : "text")
+      turnMeteringRequestId(req.body?.requestId, "attachments", question, JSON.stringify(attachments), voiceMode ? "voice" : "text"),
+      { shouldCancel: () => requestAbort.signal.aborted }
     );
     await noteSpend(deviceId, spent.spent);
     await noteInteraction(deviceId, {
@@ -1201,6 +1288,10 @@ app.post("/api/attachments", async (req, res) => {
     });
     res.json({ spokenText: answer.text, sources: answer.sources, credits: { ...spent, cost: spent.spent } });
   } catch (error) {
+    if (isRequestCancelled(error, requestAbort.signal) || error instanceof CreditChargeCancelledError) {
+      if (!res.writableEnded && !res.destroyed) res.status(499).json({ error: "request cancelled", code: "request_cancelled" });
+      return;
+    }
     if (error instanceof InsufficientCreditsError) {
       const fresh = await creditSummary(deviceId);
       res.status(402).json(usageBlockedPayload(usageBlockFor(fresh, error.required)!));
@@ -3546,8 +3637,10 @@ async function runAssistant(
   voiceInputUsd = 0,
   meteringRequestId: string = randomUUID(),
   beforeUsageCommit?: (details: { response: any; deferVoiceSynthesis: boolean; includedVoice: boolean }) => Promise<void>,
-  onStableVoiceText?: (text: string) => void | Promise<void>
+  onStableVoiceText?: (text: string) => void | Promise<void>,
+  requestSignal?: AbortSignal
 ): Promise<any> {
+  throwIfRequestCancelled(requestSignal);
   let tier: Tier = "free";
   let usageSummary: Awaited<ReturnType<typeof creditSummary>> | null = null;
   if (deviceId) {
@@ -3556,6 +3649,7 @@ async function runAssistant(
     tier = sum.tier;
     state.accountSummary = sum;
   }
+  throwIfRequestCancelled(requestSignal);
 
   // Product/support questions are answered from the authoritative catalog and
   // live ledger without an AI call or credit charge. This remains available
@@ -3567,6 +3661,7 @@ async function runAssistant(
     voiceMode
   });
   if (productAnswer) {
+    throwIfRequestCancelled(requestSignal);
     const response = finalizeResponse({
       spokenText: productAnswer,
       action: null,
@@ -3583,13 +3678,14 @@ async function runAssistant(
   }
 
   if (deviceId && usageSummary) {
+    throwIfRequestCancelled(requestSignal);
     const sum = usageSummary;
     const estimated = voiceMode ? voiceTurnEstimateCredits(sum.voiceCredits > 0) : MIN_REQUEST_CREDITS;
     const block = usageBlockFor(sum, estimated);
     if (block) return usageBlockedPayload(block);
   }
   const measured = await measureUsage(async () => {
-    const plan = await withTimeout(planAssistantResponse(state, onStableVoiceText), 45000, "Assistant plan");
+    const plan = await withRequestAbort(requestSignal, () => withTimeout(planAssistantResponse(state, onStableVoiceText), 45000, "Assistant plan"));
     const response = finalizeResponse(plan, state);
     // Action confirmations and clarification prompts already come from the
     // capability-aware planner. Keep them model-independent so calls, texts,
@@ -3600,6 +3696,7 @@ async function runAssistant(
     }
     return response;
   });
+  throwIfRequestCancelled(requestSignal);
   const finalized = measured.value;
   const hasActions = !!finalized.action || (Array.isArray(finalized.actions) && finalized.actions.length > 0);
   const deferVoiceSynthesis = voiceMode && !prefersDeviceSpeech && supportsDeferredActionSynthesis && hasActions && !!deviceId;
@@ -3621,10 +3718,17 @@ async function runAssistant(
     // The block check comes first: a refused turn must not burn an included
     // voice turn the user never got to hear.
     if (charge.block) return usageBlockedPayload(charge.block);
+    throwIfRequestCancelled(requestSignal);
     const voiceSynthesisIncluded = charge.includedVoice;
     let s: Awaited<ReturnType<typeof chargeUsageUsd>>;
     try {
-      s = await chargeUsageUsd(deviceId, charge.usageUsd, voiceMode ? "voice" : "text", meteringRequestId);
+      s = await chargeUsageUsd(
+        deviceId,
+        charge.usageUsd,
+        voiceMode ? "voice" : "text",
+        meteringRequestId,
+        { shouldCancel: () => requestSignal?.aborted === true }
+      );
     } catch (error) {
       if (error instanceof InsufficientCreditsError) {
         const fresh = await creditSummary(deviceId);
@@ -3633,6 +3737,7 @@ async function runAssistant(
       }
       throw error;
     }
+    throwIfRequestCancelled(requestSignal);
     // Reserve/charge the authoritative ledger before starting any optional
     // provider work (especially ElevenLabs TTS).  This closes the old window
     // where a provider call could succeed while the balance update later lost a
@@ -3662,6 +3767,22 @@ async function runAssistant(
   return finalized;
 }
 
+app.post("/api/assistant/cancel", async (req, res) => {
+  const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
+  if (!(await requireCreditIdentity(deviceId, res, req))) return;
+  const requestId = clientRequestId(req.body?.requestId);
+  if (!requestId) {
+    res.status(400).json({ error: "valid requestId required" });
+    return;
+  }
+  const active = activeAssistantRequests.get(`${deviceId}:${requestId}`);
+  if (active) {
+    active.cancelled = true;
+    active.controller.abort();
+  }
+  res.json({ ok: true, cancelled: Boolean(active) });
+});
+
 app.post("/api/assistant", async (req, res) => {
   const userMessage = String(req.body?.message || "").slice(0, 12_000);
   const rawContext = typeof req.body?.context === "string" ? req.body.context.slice(-120_000) : "";
@@ -3670,6 +3791,18 @@ app.post("/api/assistant", async (req, res) => {
   const timeZone: string | undefined = typeof req.body?.timeZone === "string" ? req.body.timeZone : undefined;
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   if (!(await requireCreditIdentity(deviceId, res, req))) return;
+  const requestAbort = requestAbortHandle(req, res);
+  const suppliedRequestId = clientRequestId(req.body?.requestId);
+  const activeRequestKey = suppliedRequestId ? `${deviceId}:${suppliedRequestId}` : "";
+  const activeRequest = { controller: requestAbort.controller, cancelled: false };
+  if (activeRequestKey) activeAssistantRequests.set(activeRequestKey, activeRequest);
+  const clearActiveRequest = () => {
+    if (activeRequestKey && activeAssistantRequests.get(activeRequestKey) === activeRequest) {
+      activeAssistantRequests.delete(activeRequestKey);
+    }
+  };
+  res.once("finish", clearActiveRequest);
+  res.once("close", clearActiveRequest);
   const voiceMode = req.body?.voiceMode === true;
   // Opt-in progressive text. Older installed builds omit the flag and keep
   // receiving a single JSON body, so streaming can ship before the app does.
@@ -3718,6 +3851,7 @@ app.post("/api/assistant", async (req, res) => {
   const state = buildConversationState(userMessage, rawContext, deviceLocation, timeZone, styleProfiles, userProfile, voiceMode, deviceId, deviceWeather);
 
   const gate = await safetyGate(deviceId, userMessage, req, voiceMode);
+  if (requestAbort.signal.aborted) return;
   if (gate) {
     res.status(gate.failClosed ? 503 : 200).json({
       ...finalizeResponse({ spokenText: gate.message, action: null, memoryPatch: { pendingClarification: null }, needsExecution: false }, state),
@@ -3738,14 +3872,20 @@ app.post("/api/assistant", async (req, res) => {
         0,
         meteringRequestId,
         undefined,
-        progressiveText
+          progressiveText
           ? (text: string) => { startTextStream(); writeTextEvent({ type: "text", text }); }
-          : undefined
+          : undefined,
+        requestAbort.signal
       ))
     );
     if (result?.usageBlocked) { finishTextResponse(result, 402); return; }
     finishTextResponse(result);
   } catch (error) {
+    if (isRequestCancelled(error, requestAbort.signal) || error instanceof CreditChargeCancelledError) {
+      if (textStreamStarted && !res.writableEnded && !res.destroyed) res.end();
+      else if (!res.writableEnded && !res.destroyed) res.status(499).json({ error: "request cancelled", code: "request_cancelled" });
+      return;
+    }
     // Vendor outage (Gemini quota/auth/down): reply immediately with a spoken
     // message instead of a bare 502 the app can't voice.
     if (error instanceof ServiceError) {
@@ -4030,6 +4170,7 @@ app.post("/api/chat/title", async (req, res) => {
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   if (!message || !deviceId) { res.status(400).json({ error: "message and deviceId required" }); return; }
   if (!(await requireCreditIdentity(deviceId, res, req))) return;
+  const requestAbort = requestAbortHandle(req, res);
   const ip = clientIp(req);
   if ((await isBanned(deviceId, deviceId, ip)) || (await isTestRestricted(deviceId))) {
     res.status(403).json({ error: "access restricted" }); return;
@@ -4041,14 +4182,27 @@ app.post("/api/chat/title", async (req, res) => {
   if (windowState.count >= 6) { res.status(429).json({ error: "chat title limit reached" }); return; }
   windowState.count += 1;
   memoryExtractWindows.set(rateKey, windowState);
-  const measured = await measureUsage(() => createChatTitle(message, req.body?.teen === true));
-  await chargeMeasuredUsage(deviceId, measured.usage, turnMeteringRequestId(
-    req.body?.requestId,
-    "chat-title",
-    message,
-    req.body?.teen === true ? "teen" : "adult"
-  ));
-  res.json({ title: measured.value });
+  try {
+    const measured = await measureUsage(() => withRequestAbort(
+      requestAbort.signal,
+      () => createChatTitle(message, req.body?.teen === true)
+    ));
+    throwIfRequestCancelled(requestAbort.signal);
+    await chargeMeasuredUsage(deviceId, measured.usage, turnMeteringRequestId(
+      req.body?.requestId,
+      "chat-title",
+      message,
+      req.body?.teen === true ? "teen" : "adult"
+    ), () => requestAbort.signal.aborted);
+    throwIfRequestCancelled(requestAbort.signal);
+    res.json({ title: measured.value });
+  } catch (error) {
+    if (isRequestCancelled(error, requestAbort.signal) || error instanceof CreditChargeCancelledError) {
+      if (!res.writableEnded && !res.destroyed) res.status(499).json({ error: "request cancelled", code: "request_cancelled" });
+      return;
+    }
+    throw error;
+  }
 });
 
 // The account's available voices, for the app's voice picker.

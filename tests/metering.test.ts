@@ -67,7 +67,7 @@ test("OpenAI standard pricing accounts for cached tokens, output, and web calls"
   }), 2);
 });
 
-test("OpenAI GPT-5.5 and GPT-5.6 Luna pricing matches the current catalog", () => {
+test("OpenAI GPT-5.5 compatibility and GPT-5.6 pricing match the current catalog", () => {
   assert.equal(
     openAIListPriceUsd("gpt-5.5", {
       input_tokens: 1000,
@@ -83,6 +83,22 @@ test("OpenAI GPT-5.5 and GPT-5.6 Luna pricing matches the current catalog", () =
       output_tokens: 1000
     }),
     0.00142
+  );
+  assert.equal(
+    openAIListPriceUsd("gpt-5.6-terra", {
+      input_tokens: 2000,
+      input_tokens_details: { cached_tokens: 1000 },
+      output_tokens: 1000
+    }),
+    0.0142
+  );
+  assert.equal(
+    openAIListPriceUsd("gpt-5.6-sol", {
+      input_tokens: 2000,
+      input_tokens_details: { cached_tokens: 1000 },
+      output_tokens: 1000
+    }),
+    0.0244
   );
 });
 

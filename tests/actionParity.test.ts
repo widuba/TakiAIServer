@@ -240,7 +240,7 @@ test("phone calls use a verified native handoff", () => {
 
 test("maps and service handoffs are verified before success is shown", () => {
   assert.match(deviceBridgeSource, /UIApplication\.shared\.open\(url, options: \[:\]\) \{ opened in/);
-  assert.match(deviceBridgeSource, /\["https", "http", "uber", "lyft"\]\.contains\(scheme\)/);
+  assert.match(deviceBridgeSource, /\["https", "http", "uber", "lyft", "youtube", "spotify", "maps", "googlegmail", "music", "message", "mailto", "app-settings"\]\.contains\(scheme\)/);
   assert.match(appSource, /async function openMapsDirections/);
   assert.match(appSource, /await openExternalURL\(url\)/);
   assert.match(appSource, /if \(!\/\^\(uber\|lyft\):\/i\.test\(url\)\) throw error/);

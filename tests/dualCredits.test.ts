@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  CreditChargeCancelledError,
   InsufficientCreditsError,
   TIERS,
   VOICE_SURCHARGE_CREDITS,
@@ -136,6 +137,20 @@ test("7b. retrying one metered turn returns the original charge without deductin
   assert.equal(retry.voiceCredits, first.voiceCredits);
   assert.equal((await summary(id)).balance, first.balance);
   assert.equal((await summary(id)).voiceCredits, first.voiceCredits);
+});
+
+test("7c. a cancelled metered turn leaves the credit ledger untouched", async () => {
+  const id = identity("metered-cancelled");
+  await seed(id, 100, 2);
+  await assert.rejects(
+    chargeUsageUsd(id, 0.009, "text", "cancelled-turn-id", { shouldCancel: () => true }),
+    CreditChargeCancelledError
+  );
+  const after = await summary(id);
+  assert.equal(after.balance, 100);
+  assert.equal(after.voiceCredits, 2);
+  const raw = await storeGet<CreditAccount | null>(keyFor(id), null);
+  assert.equal(raw?.usageLedger?.some((entry) => entry.requestId === "cancelled-turn-id"), false);
 });
 
 test("8. all plans grant the exact advertised monthly balances", async () => {
