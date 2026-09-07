@@ -532,7 +532,9 @@ export function directCorePhoneAction(state: ConversationState, message = state.
     return actionPlan("I'll check the actions that actually completed on your devices.", blankAction("action_history"), { lastIntent: "action_history" });
   }
 
-  const call = text.match(/^(?:call|phone|ring)\s+(.+)$/i);
+  const call = text.match(/^(?:call|phone|ring)\s+(.+)$/i)
+    || text.match(/^(?:give|make)\s+(.+?)\s+a\s+call$/i)
+    || text.match(/^(?:get|put)\s+(.+?)\s+on\s+(?:the\s+)?phone$/i);
   if (call) {
     const recipient = cleanDirectValue(call[1]);
     if (!recipient || /^(?:someone|somebody|a person)$/i.test(recipient)) {
@@ -548,11 +550,14 @@ export function directCorePhoneAction(state: ConversationState, message = state.
     });
   }
 
-  const clearBodyStart = "(?:I(?:'m|'ll|'ve|'d)?|we(?:'re|'ll|'ve|'d)?|you(?:'re|'ll|'ve|'d)?|can|could|please|if|whether|don'?t|do not|let'?s?|meet|bring|pick|grab|get|be|thanks|thank you|happy|sorry|yes|no)";
+  const clearBodyStart = "(?:I(?:'m|'ll|'ve|'d)?|we(?:'re|'ll|'ve|'d)?|you(?:'re|'ll|'ve|'d)?|can|could|please|if|whether|that|the|a|an|my|our|this|don'?t|do not|let'?s?|meet|bring|pick|grab|get|be|thanks|thank you|happy|sorry|yes|no)";
   const explicitMessage =
     text.match(/^(?:text|message)\s+(.+?)\s+(?:and\s+)?(?:say|saying|that|and tell (?:him|her|them)(?: that)?)\s+(.+)$/i) ||
     text.match(/^(?:text|message)\s+(.+?)\s*[:,]\s*(.+)$/i) ||
+    text.match(/^send\s+(.+?)\s+(?:a\s+)?(?:text|message)\s+(?:and\s+)?(?:say|saying|that)\s+(.+)$/i) ||
+    text.match(/^send\s+(?:a\s+)?(?:text|message)\s+to\s+(.+?)\s+(?:and\s+)?(?:say|saying|that)\s+(.+)$/i) ||
     text.match(new RegExp(`^(?:tell|ask)\\s+([^\\s,:]+)\\s+(${clearBodyStart}\\b.+)$`, "i")) ||
+    text.match(/^let\s+([^\s,:]+)\s+know(?:\s+that)?\s+(.+)$/i) ||
     text.match(new RegExp(`^(?:text|message)\\s+([^\\s,:]+)\\s+(${clearBodyStart}\\b.+)$`, "i"));
   if (explicitMessage) {
     const recipient = cleanDirectValue(explicitMessage[1]);
@@ -606,7 +611,10 @@ export function directCorePhoneAction(state: ConversationState, message = state.
 
   const explicitEmail =
     text.match(/^(?:email|e-mail|mail)\s+(.+?)\s+(?:and\s+)?(?:say|saying|that)\s+(.+)$/i) ||
-    text.match(/^(?:email|e-mail|mail)\s+(.+?)\s*[:,]\s*(.+)$/i);
+    text.match(/^(?:email|e-mail|mail)\s+(.+?)\s*[:,]\s*(.+)$/i) ||
+    text.match(/^send\s+(?:an?\s+)?email\s+to\s+(.+?)\s+(?:and\s+)?(?:say|saying|that)\s+(.+)$/i) ||
+    text.match(/^send\s+(.+?)\s+an?\s+email\s+(?:and\s+)?(?:say|saying|that)\s+(.+)$/i) ||
+    text.match(/^(?:email|e-mail|mail)\s+([^\s,:]+)\s+(.+\s+.+)$/i);
   if (explicitEmail) {
     const recipient = cleanDirectValue(explicitEmail[1]);
     const body = normalizeMessageBodyForRecipient(cleanDirectValue(explicitEmail[2]));
@@ -686,6 +694,7 @@ export function directCorePhoneAction(state: ConversationState, message = state.
 
   const directions =
     text.match(/^(?:(?:get|give me|show me)\s+)?(?:(?:driving|walking|cycling|transit)\s+)?(?:directions|navigation)\s+(?:to|for)\s+(.+)$/i) ||
+    text.match(/^(?:get|give|show)\s+me\s+(?:(?:driving|walking|cycling|transit)\s+)?(?:directions|navigation)\s+(?:to|for)\s+(.+)$/i) ||
     text.match(/^(?:navigate|take me|drive|walk|route me|go)\s+(?:me\s+)?to\s+(.+)$/i);
   if (directions) {
     let destination = cleanDirectValue(directions[1]);

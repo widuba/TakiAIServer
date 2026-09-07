@@ -274,10 +274,25 @@ test("clear core phone commands route without depending on an AI provider", asyn
   assert.equal(contractedQuestionText.action?.type, "compose_message");
   assert.equal(contractedQuestionText.action?.body, "Are you ready?");
 
+  const letKnown = await planAssistantResponse(stateFor("Let Mom know that I am late"));
+  assert.equal(letKnown.action?.type, "compose_message");
+  assert.equal(letKnown.action?.contactQuery, "Mom");
+  assert.equal(letKnown.action?.body, "I am late.");
+
+  const sendNamedText = await planAssistantResponse(stateFor("Send Mom a text saying I am late"));
+  assert.equal(sendNamedText.action?.type, "compose_message");
+  assert.equal(sendNamedText.action?.contactQuery, "Mom");
+  assert.equal(sendNamedText.action?.body, "I am late.");
+
   const email = await planAssistantResponse(stateFor("Email alex@example.com saying I can meet at noon"));
   assert.equal(email.action?.type, "compose_email");
   assert.equal(email.action?.emailAddress, "alex@example.com");
   assert.equal(email.action?.body, "I can meet at noon.");
+
+  const sentEmail = await planAssistantResponse(stateFor("Send an email to alex@example.com saying the project is ready"));
+  assert.equal(sentEmail.action?.type, "compose_email");
+  assert.equal(sentEmail.action?.emailAddress, "alex@example.com");
+  assert.equal(sentEmail.action?.body, "The project is ready.");
 
   const reminder = await planAssistantResponse(stateFor("Remind me to renew DMV tags tomorrow at 9 AM"));
   assert.equal(reminder.action?.type, "reminder_create");
@@ -293,6 +308,10 @@ test("clear core phone commands route without depending on an AI provider", asyn
   const directions = await planAssistantResponse(stateFor("Get directions to Amicalola Falls"));
   assert.equal(directions.action?.type, "maps_directions");
   assert.equal(directions.action?.mapsDestination, "Amicalola Falls");
+
+  const directionsForMe = await planAssistantResponse(stateFor("Get me directions to Amicalola Falls"));
+  assert.equal(directionsForMe.action?.type, "maps_directions");
+  assert.equal(directionsForMe.action?.mapsDestination, "Amicalola Falls");
 
   const open = await planAssistantResponse(stateFor("Open Spotify"));
   assert.equal(open.action?.type, "open_app");
