@@ -54,3 +54,10 @@ p50 was 253.874 ms, p95 754.964 ms, and measured cost was $0.00 because no
 provider request succeeded. Artifact: `/tmp/taki3-live-smoke-1788804235137.json`.
 Promotion remains blocked until a real provider run has successful provider
 calls and reports quality, p95 latency, and measured usage.
+
+The compatibility compiler treats `identify_song` as a read-only action with
+its own question cues. Requests such as “What song is playing right now?” stay
+an on-device identification action when the compatibility brain serves the
+turn instead of being downgraded to a generic answer. The regression suite
+covers this path; the full server suite and 144-case action matrix remain
+green.
