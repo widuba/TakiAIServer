@@ -284,7 +284,11 @@ function instructionalHowLikeMessage(message: string): boolean {
 function explicitResearchLikeMessage(message: string): boolean {
   const text = stripConversationalLead(message);
   if (!text) return false;
-  if (/\b(?:my contacts?|my calendar|my reminders?|my photos?|my location|near me|nearby|on maps?)\b/i.test(text)) return false;
+  // Private calendar lookups belong to the device planner. Keep the longer
+  // forms out of the public-search path as well ("my next calendar event"
+  // does not contain the shorter "my calendar" phrase).
+  if (/\b(?:my contacts?|my calendar|my reminders?|my photos?|my location|near me|nearby|on maps?)\b/i.test(text)
+    || /\b(?:my|our)\s+(?:(?:next|upcoming|previous|last|today['’]s|tomorrow['’]s)\s+)?calendar\s+(?:events?|appointments?|meetings?)\b/i.test(text)) return false;
   if (/^(?:search|browse|find|look up)\b/i.test(text)) return true;
   return /\bnext\s+public\s+event\b/i.test(text)
     && !/\b(?:add|put|save|schedule|calendar|remind)\b/i.test(text);
@@ -298,6 +302,9 @@ function actionLikeMessage(message: string): boolean {
   if (/^turn\s+(?:this|that|it|these|those|the following)(?:\s+(?:notes?|text|sentence|paragraph))?\s+into\b/i.test(text)) return false;
   // “Open up” is an emotional/conversational phrase, not an app launch.
   if (/^open\s+up\b/i.test(text) || /\bopen\s+up\s+about\b/i.test(text)) return false;
+  // “Send me an example/template…” asks for writing help. The word “send”
+  // must not turn an answer request into an outbound message action.
+  if (/\b(?:send|share|give)\s+me\s+(?:an?\s+)?(?:example|sample|template|draft|version|idea|copy)\b/i.test(text)) return false;
   // "Remind me what we discussed" asks the assistant to recall the chat. It
   // must not become a device reminder just because it starts with "remind me".
   if (/^remind\s+me\s+(?:what|why|how|when|where|who|whether|if)\b/i.test(text)
@@ -305,6 +312,10 @@ function actionLikeMessage(message: string): boolean {
   // Idiomatic "call out" / "call it" phrases are conversation. A phone call
   // request still uses a person, number, or explicit call-back wording.
   if (/^(?:call|ring)\s+(?:out|it|this|that|for|upon|attention|a\s+bell)\b/i.test(text)) return false;
+  if (/\b(?:call|name|label)\s+(?:it|this|that)\s+(?:a|an)\b/i.test(text)) return false;
+  // Broad calendar advice is conversation. A lookup with an event, meeting,
+  // or appointment remains a private-device action below.
+  if (/^(?:what|how)\s+should\s+i\s+do\s+(?:about|with)\s+(?:my|our)\s+calendar\b/i.test(text)) return false;
   // Educational "show me how" requests are conversation, even though "show"
   // is also used by private-device lookups handled by the compatibility path.
   if (/\bshow\s+me\s+how\b/i.test(text)) return false;
@@ -322,6 +333,8 @@ function actionLikeMessage(message: string): boolean {
   if (/^(?:i|we)\s+(?:want|need|would like)\b.{0,60}\b(?:directions?|navigate|take me|drive me)\b/i.test(text)) return true;
   if (/\b(?:my calendar|my reminders?|my contacts?|my photos?|my location|my battery|my steps?|my sleep|the flashlight|homekit)\b/i.test(text)
     && /^(?:what|where|when|how|show|check|find|search|look up|open|is|are|can|could|would)\b/i.test(text)) return true;
+  if (/\b(?:my|our)\s+(?:(?:next|upcoming|previous|last|today['’]s|tomorrow['’]s)\s+)?calendar\s+(?:events?|appointments?|meetings?)\b/i.test(text)
+    && /^(?:what|where|when|which|show|check|find|search|look up|open|is|are|can|could|would|tell me|give me)\b/i.test(text)) return true;
   if (/\b(?:on my calendar|to my calendar|in my reminders?|to my clipboard|as a text file|on my lock screen)\b/i.test(text)
     && /\b(?:add|put|save|create|copy|export|show|track|alert|remind|schedule)\b/i.test(text)) return true;
   return false;

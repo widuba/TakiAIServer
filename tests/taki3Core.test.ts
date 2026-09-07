@@ -62,6 +62,10 @@ test("Taki 3.0 classifier keeps conversation, research, actions, safety, and amb
   assert.equal(classifyTaki3Request(state("Can you explain how to open a bank account?")).kind, "direct");
   assert.equal(classifyTaki3Request(state("Could you explain how to turn on a computer?")).kind, "direct");
   assert.equal(classifyTaki3Request(state("Can you show me how to schedule a workout?")).kind, "direct");
+  assert.equal(classifyTaki3Request(state("Can you send me an example of a polite email?")).kind, "direct");
+  assert.equal(classifyTaki3Request(state("What should I do about my calendar?")).kind, "direct");
+  assert.equal(classifyTaki3Request(state("Look up my next calendar event and tell me where it is.")).kind, "delegate");
+  assert.equal(classifyTaki3Request(state("I want to call this a success.")).kind, "direct");
   assert.equal(classifyTaki3Request(state("Turn this into a strong resume bullet: I helped customers.")).kind, "direct");
   assert.equal(classifyTaki3Request(state("Could you turn these notes into a checklist, please?")).kind, "direct");
   assert.equal(classifyTaki3Request(state("What dosage should I take for chest pain?")).kind, "safety");
