@@ -12,6 +12,7 @@
     "eval:taki3-6000-contract": "node --import tsx scripts/taki3ContractEval6000.ts",
     "eval:taki3-6000-all-models": "TAKI_TAKI3_CONTRACT_ALL_MODELS=1 node --import tsx scripts/taki3ContractEval6000.ts",
     "eval:taki3-long-chat": "node --import tsx scripts/taki3LongChatAudit.ts",
+    "eval:taki3-action-matrix": "node --import tsx scripts/taki3ActionMatrix.ts",
     "eval:taki3-live-smoke": "node --import tsx scripts/taki3LiveSmoke.ts",
     "dev": "tsx index.ts",
     "start": "tsx index.ts",

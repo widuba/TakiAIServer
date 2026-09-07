@@ -34,6 +34,7 @@ npm run eval:taki3-6000
 npm run eval:taki3-6000-contract
 npm run eval:taki3-6000-all-models
 npm run eval:taki3-long-chat
+npm run eval:taki3-action-matrix
 ```
 
 The all-model contract sweep repeats the complete 6,000-case corpus across
@@ -41,5 +42,10 @@ Dromos, Metron, and Sophos (18,000 fixture turns total). The long-chat audit
 adds 500 varied turns with 1,500-history contexts, oversized turns, repeated
 corrections, voice bounds, and the strict answer contract. These checks do not
 certify vendor quality or live web grounding.
+The action matrix runs 48 supported action families through the understanding,
+policy, grounding, and validation boundary with three natural-language variants
+per family (144 fixture-provider cases). The current run passes 144/144. Its
+weekday reminder case uses the existing `weekly` recurrence contract and the
+native weekday values; it does not add an unsupported recurrence kind.
 Promotion remains blocked until a real provider run has successful provider
 calls and reports quality, p95 latency, and measured usage.
