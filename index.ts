@@ -1865,7 +1865,12 @@ app.post("/api/credits/purchase-link", async (req, res) => {
 });
 
 app.post("/api/credits/handoff", async (req, res) => {
-  const payload = verifyPurchaseLink(req.body?.token, "credits");
+  // Account-ID lookup tokens are issued with the checkout purpose because the
+  // same confirmed account can start either a plan checkout or a credit
+  // top-up. This endpoint only returns the read-only confirmation details, so
+  // it may exchange either checkout-purpose or credits-purpose tokens. The
+  // actual payment endpoints remain strict about their own purpose.
+  const payload = verifyPurchaseLink(req.body?.token);
   if (!payload) { res.status(401).json({ valid: false, reason: "This purchase link expired. Open Membership in Taki and try again." }); return; }
   const account = await validateTopupAccount(payload.identity);
   if (!account.valid) { res.status(400).json(publicPurchaseAccount(account)); return; }
