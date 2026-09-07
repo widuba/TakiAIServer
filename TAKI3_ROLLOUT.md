@@ -47,5 +47,10 @@ policy, grounding, and validation boundary with three natural-language variants
 per family (144 fixture-provider cases). The current run passes 144/144. Its
 weekday reminder case uses the existing `weekly` recurrence contract and the
 native weekday values; it does not add an unsupported recurrence kind.
+The latest explicitly confirmed live smoke reached the configured Gemini
+provider for 8 eligible cases, but all 8 returned typed HTTP 429 `ai_quota`
+errors. The four local safety/clarification/delegation cases passed. Provider
+p50 was 253.874 ms, p95 754.964 ms, and measured cost was $0.00 because no
+provider request succeeded. Artifact: `/tmp/taki3-live-smoke-1788804235137.json`.
 Promotion remains blocked until a real provider run has successful provider
 calls and reports quality, p95 latency, and measured usage.
