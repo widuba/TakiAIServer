@@ -272,6 +272,15 @@ function directTransformationLikeMessage(message: string): boolean {
     || /\b(?:rewrite|rephrase|paraphrase|summari[sz]e|translate|proofread)\s+(?:this|that|the following)\b/i.test(text);
 }
 
+function instructionalHowLikeMessage(message: string): boolean {
+  const text = stripConversationalLead(message);
+  if (!text) return false;
+  // These are requests for an explanation or tutorial. A capability verb later
+  // in the sentence ("explain how to send…") must not turn the lesson into a
+  // real device action or a current-schedule lookup.
+  return /^(?:(?:can|could|would|will)\s+you\s+)?(?:(?:please|maybe|possibly|just)\s+)*(?:explain|teach|show\s+me\s+how|tell\s+me\s+how|walk\s+me\s+through|describe)\b/i.test(text);
+}
+
 function explicitResearchLikeMessage(message: string): boolean {
   const text = stripConversationalLead(message);
   if (!text) return false;
@@ -284,6 +293,7 @@ function explicitResearchLikeMessage(message: string): boolean {
 function actionLikeMessage(message: string): boolean {
   const text = String(message || "").trim();
   if (!text) return false;
+  if (instructionalHowLikeMessage(text)) return false;
   // Transform requests are writing work, not a device "turn on/off" command.
   if (/^turn\s+(?:this|that|it|these|those|the following)(?:\s+(?:notes?|text|sentence|paragraph))?\s+into\b/i.test(text)) return false;
   // “Open up” is an emotional/conversational phrase, not an app launch.
@@ -385,6 +395,7 @@ export function classifyTaki3Request(state: ConversationState): Taki3Classificat
   if (safetyLikeMessage(message) || safetyLikeMessage(normalized)) return { ...base, kind: "safety", reason: "high_risk_request" };
   if (promptInjectionLikeMessage(message) || promptInjectionLikeMessage(normalized)) return { ...base, kind: "safety", reason: "prompt_injection" };
   if (directTransformationLikeMessage(normalized)) return { ...base, kind: "direct", reason: "writing_or_transformation" };
+  if (instructionalHowLikeMessage(normalized)) return { ...base, kind: "direct", reason: "instructional_explanation" };
   if (actionLikeMessage(message) || actionLikeMessage(normalized)) return { ...base, kind: "delegate", reason: "device_or_account_action" };
   if (explicitResearchLikeMessage(normalized)) return { ...base, kind: "research", reason: "explicit_search_or_public_event" };
 
