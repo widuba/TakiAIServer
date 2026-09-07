@@ -9,7 +9,7 @@ import {
   generateContent,
   safetyConfig
 } from "./ai.js";
-import { brainV4PromotionGateStatus } from "./brainV4Promotion.js";
+import { taki3PromotionGateStatus } from "./taki3Promotion.js";
 import { answerRoutingFor, responseSatisfiesExplicitFormat, responseStyleForTakiModel } from "./tools.js";
 import { normalizeBrainV3Input } from "./brainV3.js";
 import { capabilityPromptBlock } from "./capabilities.js";
@@ -20,46 +20,46 @@ import { cleanAssistantText, sanitizeSources } from "./validators.js";
 import { briefForVoice, extractJsonObject, withTimeout } from "./util.js";
 
 /*
- * Taki Brain v4
+ * Taki 3.0 conversational core
  *
  * v3 improved understanding by splitting one turn into several strict stages.
  * That is valuable for actions, but it is wasteful for ordinary conversation:
  * a greeting, explanation, rewrite, or grounded fact answer should not pay for
- * a planner, a policy stage, and a second answer writer. v4 is the conversational
+ * a planner, a policy stage, and a second answer writer. Taki 3.0 is the conversational
  * core that sits after deterministic device routes and before the compatibility
  * planner. It makes one bounded answer call, chooses search only for fresh facts,
  * and delegates action-shaped turns back to the existing action compiler.
  *
  * The module is intentionally answer-only. It cannot emit a device action, so a
- * v4 model response can never bypass the native confirmation and validation
+ * Taki 3.0 model response can never bypass the native confirmation and validation
  * contract. Production starts with a small, detached shadow sample after an
  * explicit rollout decision; user-visible canary or active traffic still
- * requires promotion evidence. Set TAKI_BRAIN_V4_MODE=disabled to roll back.
+ * requires promotion evidence. Set TAKI_TAKI3_MODE=disabled to roll back.
  */
 
-export type BrainV4RolloutMode = "disabled" | "shadow" | "canary" | "active";
-export type BrainV4RequestClass = "direct" | "research" | "delegate" | "safety" | "clarify";
+export type Taki3RolloutMode = "disabled" | "shadow" | "canary" | "active";
+export type Taki3RequestClass = "direct" | "research" | "delegate" | "safety" | "clarify";
 
-export type BrainV4Classification = {
-  kind: BrainV4RequestClass;
+export type Taki3Classification = {
+  kind: Taki3RequestClass;
   reason: string;
   query: string;
   normalizedQuery: string;
 };
 
-export type BrainV4Answer = {
+export type Taki3Answer = {
   answer: string;
   confidence: number;
   shouldAskClarification: boolean;
   clarifyingQuestion: string | null;
 };
 
-export type BrainV4Dependencies = {
+export type Taki3Dependencies = {
   generateContent: (args: any) => Promise<any>;
   env?: Record<string, string | undefined>;
 };
 
-export type BrainV4RolloutStats = {
+export type Taki3RolloutStats = {
   attempts: number;
   directAttempts: number;
   directSuccesses: number;
@@ -84,7 +84,7 @@ export type BrainV4RolloutStats = {
   circuitSkips: number;
 };
 
-export const BRAIN_V4_ANSWER_SCHEMA = {
+export const TAKI3_ANSWER_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -96,16 +96,16 @@ export const BRAIN_V4_ANSWER_SCHEMA = {
   required: ["answer", "confidence", "shouldAskClarification", "clarifyingQuestion"]
 } as const;
 
-export const BRAIN_V4_MODELS = Array.from(new Set([
+export const TAKI3_MODELS = Array.from(new Set([
   ...TAKI_MODELS.map((entry) => entry.providerModel),
   FAST_MODEL,
   MAIN_MODEL,
   RESEARCH_MODEL
 ]));
 
-const MAX_BRAIN_V4_MESSAGE_CHARS = 12_000;
+const MAX_TAKI3_MESSAGE_CHARS = 12_000;
 
-const rolloutStats: BrainV4RolloutStats = {
+const rolloutStats: Taki3RolloutStats = {
   attempts: 0,
   directAttempts: 0,
   directSuccesses: 0,
@@ -130,7 +130,7 @@ const rolloutStats: BrainV4RolloutStats = {
   circuitSkips: 0
 };
 
-let brainV4CircuitOpenUntil = 0;
+let taki3CircuitOpenUntil = 0;
 let shadowInFlight = 0;
 
 function boundedText(value: unknown, max: number): string {
@@ -369,11 +369,11 @@ function clarificationLikeMessage(message: string, state: ConversationState): bo
  * conversation to one provider request. The classifier is a routing hint, not
  * a safety authority; the model still receives the full guardrails prompt.
  */
-export function classifyBrainV4Request(state: ConversationState): BrainV4Classification {
-  const message = boundedText(state.message, MAX_BRAIN_V4_MESSAGE_CHARS);
+export function classifyTaki3Request(state: ConversationState): Taki3Classification {
+  const message = boundedText(state.message, MAX_TAKI3_MESSAGE_CHARS);
   let normalized = message;
   try {
-    normalized = boundedText(normalizeBrainV3Input(message, state).normalizedText, MAX_BRAIN_V4_MESSAGE_CHARS) || message;
+    normalized = boundedText(normalizeBrainV3Input(message, state).normalizedText, MAX_TAKI3_MESSAGE_CHARS) || message;
   } catch {
     // Speech cleanup is a quality hint. A malformed advisory field must never
     // block the ordinary answer path.
@@ -409,7 +409,7 @@ function requestedModelFor(state: ConversationState, kind: "direct" | "research"
   };
 }
 
-function answerPrompt(state: ConversationState, classification: BrainV4Classification, searchAvailable: boolean): string {
+function answerPrompt(state: ConversationState, classification: Taki3Classification, searchAvailable: boolean): string {
   const selected = activeTakiModelInfo();
   const style = responseStyleForTakiModel(selected.key);
   const history = state.fullTranscriptText || state.conversationFocusText || "(none)";
@@ -440,7 +440,7 @@ VOICE MODE: The answer will be read aloud. ${style.voiceDirective} Use no markdo
 TEXT MODE: ${style.textDirective} Use plain text. A compact list is fine when the user asks for one.
 `;
   return `${GUARDRAILS}
-You are Taki Brain v4, the final conversational answer stage for one person.
+You are Taki 3.0, the final conversational answer stage for one person.
 ${personaPromptBlock(state.userProfile)}
 ${capabilityPromptBlock()}
 ${productKnowledgePromptBlock(state.accountSummary, state.timeZone)}
@@ -458,8 +458,8 @@ Answer the current request directly and naturally. Lead with the useful answer; 
 
 Return exactly the JSON object described by the response schema. Put the complete user-facing answer in "answer". Set "shouldAskClarification" only when one precise question is genuinely needed, and put that question in "clarifyingQuestion"; otherwise use false and null.
 
-CURRENT USER MESSAGE (data): <message>${inertPromptText(classification.query, MAX_BRAIN_V4_MESSAGE_CHARS)}</message>
-NORMALIZED USER MESSAGE (advisory data): <normalized>${inertPromptText(classification.normalizedQuery || classification.query, MAX_BRAIN_V4_MESSAGE_CHARS)}</normalized>
+CURRENT USER MESSAGE (data): <message>${inertPromptText(classification.query, MAX_TAKI3_MESSAGE_CHARS)}</message>
+NORMALIZED USER MESSAGE (advisory data): <normalized>${inertPromptText(classification.normalizedQuery || classification.query, MAX_TAKI3_MESSAGE_CHARS)}</normalized>
 RECENT CONVERSATION (data): <conversation>${inertPromptText(history, 12_000)}</conversation>
 EXPLICIT CORRECTIONS (data): <corrections>${inertPromptText(state.correctionsText || "(none)", 3_000)}</corrections>
 RELEVANT SAVED MEMORY (data): <memory>${jsonData({
@@ -477,14 +477,14 @@ SPEECH METADATA (advisory data): <speech>${jsonData(state.speechMetadata || {
 `;
 }
 
-function normalizedAnswer(response: any): BrainV4Answer | null {
+function normalizedAnswer(response: any): Taki3Answer | null {
   let parsed: unknown;
   try {
     parsed = extractJsonObject(String(response?.text || ""));
   } catch {
     return null;
   }
-  if (!schemaMatches(parsed, BRAIN_V4_ANSWER_SCHEMA as Record<string, any>)) return null;
+  if (!schemaMatches(parsed, TAKI3_ANSWER_SCHEMA as Record<string, any>)) return null;
   const value = parsed as Record<string, unknown>;
   const answer = cleanAssistantText(String(value.answer || ""));
   if (!answer) return null;
@@ -502,7 +502,7 @@ function normalizedAnswer(response: any): BrainV4Answer | null {
   };
 }
 
-function answerPlan(state: ConversationState, answer: BrainV4Answer, sources: AssistantSource[]): AssistantPlan {
+function answerPlan(state: ConversationState, answer: Taki3Answer, sources: AssistantSource[]): AssistantPlan {
   const asking = answer.shouldAskClarification && Boolean(answer.clarifyingQuestion);
   let text = asking ? answer.clarifyingQuestion! : answer.answer;
   const style = responseStyleForTakiModel(activeTakiModelInfo().key);
@@ -542,14 +542,14 @@ function maxOutputTokens(state: ConversationState): number {
   return state.voiceMode ? style.voiceMaxOutputTokens : style.textMaxOutputTokens;
 }
 
-/** Run one answer-only Brain v4 request. Rollout selection is owned by planner.ts. */
-export async function runBrainV4Plan(
+/** Run one answer-only Taki 3.0 request. Rollout selection is owned by planner.ts. */
+export async function runTaki3Plan(
   state: ConversationState,
   onStableVoiceText?: (text: string) => void | Promise<void>,
-  deps: BrainV4Dependencies = { generateContent }
+  deps: Taki3Dependencies = { generateContent }
 ): Promise<AssistantPlan | null> {
   rolloutStats.attempts += 1;
-  const classification = classifyBrainV4Request(state);
+  const classification = classifyTaki3Request(state);
   if (classification.kind === "delegate" || classification.kind === "safety" || classification.kind === "clarify") {
     rolloutStats.delegated += 1;
     if (classification.kind === "safety") rolloutStats.safetyDelegated += 1;
@@ -573,10 +573,10 @@ export async function runBrainV4Plan(
       classification.kind === "research" || (!state.voiceMode && answerRoutingFor(classification.normalizedQuery || classification.query, false).policy === "offered")
     ),
     config: {
-      modelRole: "brain_v4",
+      modelRole: "taki3",
       responseMimeType: "application/json",
-      responseJsonSchema: BRAIN_V4_ANSWER_SCHEMA,
-      responseJsonSchemaName: "taki_brain_v4_answer",
+      responseJsonSchema: TAKI3_ANSWER_SCHEMA,
+      responseJsonSchemaName: "taki3_answer",
       maxOutputTokens: maxOutputTokens(state),
       openAIReasoningEffort: selected.effort,
       thinkingConfig: { thinkingLevel: selected.effort === "medium" ? "LOW" : "MINIMAL" },
@@ -596,30 +596,30 @@ export async function runBrainV4Plan(
     const response = await withTimeout(
       deps.generateContent(request),
       providerTimeoutMs(state, kind),
-      `Brain v4 ${kind}`
+      `Taki 3.0 ${kind}`
     );
     const parsed = normalizedAnswer(response);
     if (!parsed) {
       if (String(response?.text || "").trim()) rolloutStats.malformedResponses += 1;
       else rolloutStats.emptyResponses += 1;
-      throw new Error("Brain v4 returned invalid structured output");
+      throw new Error("Taki 3.0 returned invalid structured output");
     }
     if (isGenericRefusal(parsed.answer)) {
       rolloutStats.genericRefusalFallbacks += 1;
-      throw new Error("Brain v4 returned a generic refusal");
+      throw new Error("Taki 3.0 returned a generic refusal");
     }
     if (unsafeAnswer(parsed.answer)) {
       rolloutStats.unsafeOutputFallbacks += 1;
-      throw new Error("Brain v4 output failed the safety boundary");
+      throw new Error("Taki 3.0 output failed the safety boundary");
     }
     if (!state.voiceMode && !responseSatisfiesExplicitFormat(classification.query, parsed.answer)) {
       rolloutStats.formatFallbacks += 1;
-      throw new Error("Brain v4 output failed the requested format");
+      throw new Error("Taki 3.0 output failed the requested format");
     }
     const searchAvailable = kind === "research" || (!state.voiceMode && answerRoutingFor(classification.normalizedQuery || classification.query, false).policy === "offered");
     const sources = searchAvailable ? extractGroundingSources(response) : [];
     if (kind === "research" && sources.length === 0) {
-      throw new Error("Brain v4 research answer lacked linkable grounding");
+      throw new Error("Taki 3.0 research answer lacked linkable grounding");
     }
     const plan = answerPlan(state, parsed, sources);
     if (state.voiceMode && onStableVoiceText && plan.spokenText) await onStableVoiceText(plan.spokenText);
@@ -642,25 +642,25 @@ export async function runBrainV4Plan(
   }
 }
 
-function requestedRolloutMode(env: Record<string, string | undefined>): BrainV4RolloutMode {
-  const value = String(env.TAKI_BRAIN_V4_MODE || "shadow").trim().toLowerCase();
-  if (value === "active" || value === "v4") return "active";
+function requestedRolloutMode(env: Record<string, string | undefined>): Taki3RolloutMode {
+  const value = String(env.TAKI_TAKI3_MODE || "shadow").trim().toLowerCase();
+  if (value === "active") return "active";
   if (value === "canary") return "canary";
   if (value === "shadow") return "shadow";
   return "disabled";
 }
 
-export function brainV4PromotionStatus(env: Record<string, string | undefined> = process.env) {
-  return brainV4PromotionGateStatus(env, ACTIVE_AI_PROVIDER, BRAIN_V4_MODELS);
+export function taki3PromotionStatus(env: Record<string, string | undefined> = process.env) {
+  return taki3PromotionGateStatus(env, ACTIVE_AI_PROVIDER, TAKI3_MODELS);
 }
 
-export function brainV4PromotionReady(env: Record<string, string | undefined> = process.env): boolean {
-  return brainV4PromotionStatus(env).ready;
+export function taki3PromotionReady(env: Record<string, string | undefined> = process.env): boolean {
+  return taki3PromotionStatus(env).ready;
 }
 
-export function normalizeBrainV4RolloutMode(env: Record<string, string | undefined> = process.env): BrainV4RolloutMode {
+export function normalizeTaki3RolloutMode(env: Record<string, string | undefined> = process.env): Taki3RolloutMode {
   const requested = requestedRolloutMode(env);
-  if ((requested === "active" || requested === "canary") && !brainV4PromotionReady(env)) return "disabled";
+  if ((requested === "active" || requested === "canary") && !taki3PromotionReady(env)) return "disabled";
   return requested;
 }
 
@@ -669,12 +669,12 @@ function boundedPercent(value: unknown, fallback = 0): number {
   return Number.isFinite(number) ? Math.max(0, Math.min(100, number)) : fallback;
 }
 
-export function brainV4CanaryPercent(env: Record<string, string | undefined> = process.env): number {
-  return boundedPercent(env.TAKI_BRAIN_V4_PERCENT);
+export function taki3CanaryPercent(env: Record<string, string | undefined> = process.env): number {
+  return boundedPercent(env.TAKI_TAKI3_PERCENT);
 }
 
-export function brainV4ShadowPercent(env: Record<string, string | undefined> = process.env): number {
-  return boundedPercent(env.TAKI_BRAIN_V4_SHADOW_PERCENT, 1);
+export function taki3ShadowPercent(env: Record<string, string | undefined> = process.env): number {
+  return boundedPercent(env.TAKI_TAKI3_SHADOW_PERCENT, 1);
 }
 
 function stableBucket(value: string): number {
@@ -686,27 +686,28 @@ function stableBucket(value: string): number {
   return Math.abs(hash >>> 0) % 100;
 }
 
-export function shouldUseBrainV4(
+export function shouldUseTaki3(
   state: Pick<ConversationState, "deviceId">,
   env: Record<string, string | undefined> = process.env
 ): boolean {
-  const mode = normalizeBrainV4RolloutMode(env);
+  const mode = normalizeTaki3RolloutMode(env);
   if (mode === "active") return true;
   if (mode !== "canary") return false;
-  const percent = brainV4CanaryPercent(env);
+  const percent = taki3CanaryPercent(env);
   const deviceId = String(state.deviceId || "").trim();
   return deviceId ? stableBucket(deviceId) < percent : percent >= 100;
 }
 
-export function shouldShadowBrainV4(
+export function shouldShadowTaki3(
   stateOrEnv: Pick<ConversationState, "deviceId"> | Record<string, string | undefined> = process.env,
   providedEnv?: Record<string, string | undefined>
 ): boolean {
-  const looksLikeState = !Object.prototype.hasOwnProperty.call(stateOrEnv, "TAKI_BRAIN_V4_MODE");
+  const looksLikeEnvironment = Object.keys(stateOrEnv).some((key) => key.startsWith("TAKI_TAKI3_"));
+  const looksLikeState = !looksLikeEnvironment;
   const state = looksLikeState ? stateOrEnv as Pick<ConversationState, "deviceId"> : null;
   const env = (looksLikeState ? providedEnv : stateOrEnv) || process.env;
-  if (normalizeBrainV4RolloutMode(env) !== "shadow") return false;
-  const percent = brainV4ShadowPercent(env);
+  if (normalizeTaki3RolloutMode(env) !== "shadow") return false;
+  const percent = taki3ShadowPercent(env);
   if (!state) return percent > 0;
   const deviceId = String(state.deviceId || "").trim();
   return deviceId ? stableBucket(deviceId) < percent : percent >= 100;
@@ -725,63 +726,63 @@ function failureCooldownMs(error: unknown): number {
   return 10_000;
 }
 
-export function brainV4CircuitOpen(now = Date.now()): boolean {
-  return brainV4CircuitOpenUntil > now;
+export function taki3CircuitOpen(now = Date.now()): boolean {
+  return taki3CircuitOpenUntil > now;
 }
 
-export function brainV4CanAttempt(now = Date.now()): boolean {
-  if (!brainV4CircuitOpen(now)) return true;
+export function taki3CanAttempt(now = Date.now()): boolean {
+  if (!taki3CircuitOpen(now)) return true;
   rolloutStats.circuitSkips += 1;
   return false;
 }
 
-export function noteBrainV4Success(): void {
-  brainV4CircuitOpenUntil = 0;
+export function noteTaki3Success(): void {
+  taki3CircuitOpenUntil = 0;
 }
 
-export function noteBrainV4Failure(error: unknown, now = Date.now()): void {
-  const wasOpen = brainV4CircuitOpen(now);
-  brainV4CircuitOpenUntil = Math.max(brainV4CircuitOpenUntil, now + failureCooldownMs(error));
+export function noteTaki3Failure(error: unknown, now = Date.now()): void {
+  const wasOpen = taki3CircuitOpen(now);
+  taki3CircuitOpenUntil = Math.max(taki3CircuitOpenUntil, now + failureCooldownMs(error));
   if (!wasOpen) rolloutStats.circuitOpens += 1;
 }
 
-export function brainV4RolloutStats(): BrainV4RolloutStats {
+export function taki3RolloutStats(): Taki3RolloutStats {
   return { ...rolloutStats };
 }
 
-export function resetBrainV4RolloutStats(): void {
-  for (const key of Object.keys(rolloutStats) as (keyof BrainV4RolloutStats)[]) rolloutStats[key] = 0;
-  brainV4CircuitOpenUntil = 0;
+export function resetTaki3RolloutStats(): void {
+  for (const key of Object.keys(rolloutStats) as (keyof Taki3RolloutStats)[]) rolloutStats[key] = 0;
+  taki3CircuitOpenUntil = 0;
   shadowInFlight = 0;
 }
 
 function shadowMaxConcurrency(env: Record<string, string | undefined> = process.env): number {
-  const value = Number(env.TAKI_BRAIN_V4_SHADOW_MAX_CONCURRENCY);
+  const value = Number(env.TAKI_TAKI3_SHADOW_MAX_CONCURRENCY);
   return Number.isFinite(value) ? Math.max(1, Math.min(4, Math.floor(value))) : 1;
 }
 
 /** Run the same answer core in a detached, discarded, unmetered shadow path. */
-export async function runBrainV4Shadow(
+export async function runTaki3Shadow(
   state: ConversationState,
-  deps: BrainV4Dependencies = { generateContent }
+  deps: Taki3Dependencies = { generateContent }
 ): Promise<{ ok: true; plan: AssistantPlan | null } | { ok: false; error: string }> {
-  if (!brainV4CanAttempt()) return { ok: false, error: "brain_v4_circuit_open" };
+  if (!taki3CanAttempt()) return { ok: false, error: "taki3_circuit_open" };
   if (shadowInFlight >= shadowMaxConcurrency(deps.env || process.env)) return { ok: false, error: "shadow_concurrency_limited" };
   const started = Date.now();
   rolloutStats.shadowAttempts += 1;
   shadowInFlight += 1;
   try {
-    const plan = await runBrainV4Plan(state, undefined, deps);
+    const plan = await runTaki3Plan(state, undefined, deps);
     rolloutStats.shadowSuccesses += 1;
     rolloutStats.shadowLatencyMs += Math.max(0, Date.now() - started);
-    noteBrainV4Success();
+    noteTaki3Success();
     return { ok: true, plan };
   } catch (error) {
     rolloutStats.shadowFailures += 1;
     rolloutStats.shadowLatencyMs += Math.max(0, Date.now() - started);
-    noteBrainV4Failure(error);
+    noteTaki3Failure(error);
     if (error instanceof ServiceError) return { ok: false, error: error.kind };
-    return { ok: false, error: "brain_v4_failed" };
+    return { ok: false, error: "taki3_failed" };
   } finally {
     shadowInFlight = Math.max(0, shadowInFlight - 1);
   }

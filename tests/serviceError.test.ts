@@ -83,7 +83,7 @@ test("Taki model selection is validated, scoped, and has a bounded fallback", as
   assert.deepEqual(providerCandidates("gemini-3.1-pro-preview", { config: { modelRole: "brain_v3" } }), [
     { provider: "gemini", model: "gemini-3.1-pro-preview" }
   ]);
-  assert.deepEqual(providerCandidates("gemini-3.6-flash", { config: { modelRole: "brain_v4" } }), [
+  assert.deepEqual(providerCandidates("gemini-3.6-flash", { config: { modelRole: "taki3" } }), [
     { provider: "gemini", model: "gemini-3.6-flash" }
   ]);
   await withTakiModel("taki_2_1_reasoning", async () => {
@@ -95,7 +95,7 @@ test("Taki model selection is validated, scoped, and has a bounded fallback", as
   });
   await withTakiModel("taki_2_1", async () => {
     assert.equal(modelForRequest({ model: "ignored", config: { responseMimeType: "application/json" } }), PLANNER_MODEL);
-    assert.equal(modelForRequest({ model: "selected-v4-model", config: { modelRole: "brain_v4", responseMimeType: "application/json" } }), "selected-v4-model");
+    assert.equal(modelForRequest({ model: "selected-taki3-model", config: { modelRole: "taki3", responseMimeType: "application/json" } }), "selected-taki3-model");
   });
   assert.equal(activeTakiModelInfo().name, "Metron");
 });

@@ -15,7 +15,7 @@ import { buildConversationState } from "../src/context.js";
 import { classifyTaki3Request, runTaki3Plan } from "../src/taki3.js";
 import { runBrainV2Planner } from "../src/brainV2.js";
 import { runBrainV3Plan } from "../src/brainV3.js";
-import { buildCorpus, type CorpusCase } from "./brain6000Eval.js";
+import { buildCorpus, type CorpusCase } from "./taki3Eval6000.js";
 import { blankAction, type AssistantPlan } from "../src/types.js";
 
 type BrainName = "v2" | "v3" | "taki3";

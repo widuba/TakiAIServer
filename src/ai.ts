@@ -227,10 +227,11 @@ export function fallbackModelCandidates(primary: string): string[] {
 export function modelForRequest(args: any): string {
   const selected = modelSelectionStorage.getStore();
   if (!selected) return String(args?.model || MAIN_MODEL);
-  // Brain v3/v4 have their own model roles and structured-output contracts. Do not
+  // Taki 3.0 and the legacy structured specialist surfaces have their own
+  // model roles and contracts. Do not
   // silently replace it with the legacy planner model just because its output
   // is JSON; the role is what makes the replacement independently tunable.
-  if (args?.config?.modelRole === "brain_v3" || args?.config?.modelRole === "brain_v4") {
+  if (args?.config?.modelRole === "taki3" || args?.config?.modelRole === "brain_v3" || args?.config?.modelRole === "brain_v4") {
     return String(args?.model || MAIN_MODEL);
   }
   // Model choice controls answer depth, latency, and the usual token price. It
@@ -364,10 +365,10 @@ function geminiFallbackFor(openAIModel: string): string {
 }
 
 export function providerCandidates(primary: string, args: any = {}): ProviderCandidate[] {
-  // Brain v3/v4 promotion evidence is provider- and model-bound. Do not silently
+  // Taki 3.0 promotion evidence is provider- and model-bound. Do not silently
   // move an evaluated v3 request to the legacy alternate provider: the planner
   // owns the compatibility fallback after this single promoted attempt fails.
-  if (args?.config?.modelRole === "brain_v3" || args?.config?.modelRole === "brain_v4") {
+  if (args?.config?.modelRole === "taki3" || args?.config?.modelRole === "brain_v3" || args?.config?.modelRole === "brain_v4") {
     return [{ provider: ACTIVE_AI_PROVIDER, model: primary }];
   }
   if (/^gpt-/i.test(primary)) {

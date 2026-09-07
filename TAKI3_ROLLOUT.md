@@ -17,7 +17,7 @@ The canonical rollout variables are:
 - `TAKI_TAKI3_READY=1`, `TAKI_TAKI3_RELEASE_ID`, and
   `TAKI_TAKI3_PROMOTION_EVIDENCE` for promotion evidence
 
-Numbered-brain rollout variables are ignored. A stale `TAKI_BRAIN_V4_*` flag
+Legacy numbered-brain rollout variables are ignored. A stale legacy flag
 cannot revive an old traffic surface; only the Taki 3.0 variables below are
 translated into the internal rollout gate. A mode alone never promotes traffic: the evidence token must
 match the committed release, provider, model set, deterministic suite, live

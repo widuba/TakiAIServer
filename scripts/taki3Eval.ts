@@ -1,10 +1,10 @@
 /*
- * Staging-only Brain v4 evaluator.
+ * Staging-only Taki 3.0 evaluator.
  *
  * It never charges an account or executes an action. The explicit confirmation
  * is required before importing the provider client so a production shell cannot
  * accidentally turn the evaluator into customer traffic. The default corpus is
- * deterministic; set TAKI_BRAIN_V4_EVAL_PROVIDER=1 with an isolated staging
+ * deterministic; set TAKI_TAKI3_EVAL_PROVIDER=1 with an isolated staging
  * credential for the provider-backed corpus.
  */
 
@@ -13,13 +13,13 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { AssistantPlan } from "../src/types.js";
 import {
-  BRAIN_V4_PROMOTION_EVIDENCE_TTL_MS,
-  BRAIN_V4_PROMOTION_EVIDENCE_VERSION,
-  BRAIN_V4_PROMOTION_MIN_DETERMINISTIC_TESTS,
-  BRAIN_V4_PROMOTION_MIN_DIRECT_CASES,
-  BRAIN_V4_PROMOTION_MIN_RESEARCH_CASES,
-  encodeBrainV4PromotionEvidence
-} from "../src/brainV4Promotion.js";
+  TAKI3_PROMOTION_EVIDENCE_TTL_MS,
+  TAKI3_PROMOTION_EVIDENCE_VERSION,
+  TAKI3_PROMOTION_MIN_DETERMINISTIC_TESTS,
+  TAKI3_PROMOTION_MIN_DIRECT_CASES,
+  TAKI3_PROMOTION_MIN_RESEARCH_CASES,
+  encodeTaki3PromotionEvidence
+} from "../src/taki3Promotion.js";
 
 dotenv.config();
 
@@ -56,14 +56,14 @@ async function runNpm(args: string[], env: NodeJS.ProcessEnv): Promise<{ code: n
 async function deterministicGate(): Promise<GateSummary> {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
-    if (key.startsWith("TAKI_BRAIN_V4_")) delete env[key];
+    if (key.startsWith("TAKI_TAKI3_")) delete env[key];
   }
-  env.TAKI_BRAIN_V4_MODE = "disabled";
-  env.TAKI_BRAIN_V4_READY = "";
-  env.TAKI_BRAIN_V4_PERCENT = "0";
-  env.TAKI_BRAIN_V4_SHADOW_PERCENT = "0";
-  env.TAKI_BRAIN_V4_PROMOTION_EVIDENCE = "";
-  env.TAKI_BRAIN_V4_RELEASE_ID = "";
+  env.TAKI_TAKI3_MODE = "disabled";
+  env.TAKI_TAKI3_READY = "";
+  env.TAKI_TAKI3_PERCENT = "0";
+  env.TAKI_TAKI3_SHADOW_PERCENT = "0";
+  env.TAKI_TAKI3_PROMOTION_EVIDENCE = "";
+  env.TAKI_TAKI3_RELEASE_ID = "";
   env.AI_PROVIDER = "gemini";
   env.OPENAI_API_KEY = "";
   env.GEMINI_API_KEY = "test";
@@ -77,7 +77,7 @@ async function deterministicGate(): Promise<GateSummary> {
   return {
     passed: typecheck.code === 0
       && tests.code === 0
-      && testCount >= BRAIN_V4_PROMOTION_MIN_DETERMINISTIC_TESTS
+      && testCount >= TAKI3_PROMOTION_MIN_DETERMINISTIC_TESTS
       && passed === testCount
       && failed === 0
       && cancelled === 0
@@ -104,7 +104,7 @@ function stateFactory(buildConversationState: any, message: string, voice = fals
     [],
     { personality: "friendly", responseLength: "balanced" },
     voice,
-    "brain-v4-eval"
+    "taki3-eval"
   );
 }
 
@@ -125,19 +125,19 @@ type ProviderSummary = {
 };
 
 async function providerCorpus(): Promise<ProviderSummary> {
-  const provider = String(process.env.TAKI_BRAIN_V4_STAGING_PROVIDER || "").trim().toLowerCase();
-  const key = String(process.env.TAKI_BRAIN_V4_STAGING_API_KEY || "").trim();
-  if (provider !== "openai" && provider !== "gemini") throw new Error("Set TAKI_BRAIN_V4_STAGING_PROVIDER to openai or gemini.");
-  if (!key) throw new Error("Set TAKI_BRAIN_V4_STAGING_API_KEY to an isolated staging credential.");
+  const provider = String(process.env.TAKI_TAKI3_STAGING_PROVIDER || "").trim().toLowerCase();
+  const key = String(process.env.TAKI_TAKI3_STAGING_API_KEY || "").trim();
+  if (provider !== "openai" && provider !== "gemini") throw new Error("Set TAKI_TAKI3_STAGING_PROVIDER to openai or gemini.");
+  if (!key) throw new Error("Set TAKI_TAKI3_STAGING_API_KEY to an isolated staging credential.");
 
-  // Set the isolated provider before importing ai/brainV4: those modules choose
+  // Set the isolated provider before importing ai/taki3: those modules choose
   // their clients and model names at module initialization time.
   process.env.AI_PROVIDER = provider;
   process.env.OPENAI_API_KEY = provider === "openai" ? key : "";
   process.env.GEMINI_API_KEY = provider === "gemini" ? key : "";
   const [{ buildConversationState }, brain, ai] = await Promise.all([
     import("../src/context.js"),
-    import("../src/brainV4.js"),
+    import("../src/taki3Core.js"),
     import("../src/ai.js")
   ]);
 
@@ -175,7 +175,7 @@ async function providerCorpus(): Promise<ProviderSummary> {
   for (const model of ["taki_2_0_swift", "taki_2_1", "taki_2_1_reasoning"] as const) {
     for (const item of cases) {
       try {
-        const plan = await ai.withTakiModel(model, () => brain.runBrainV4Plan(stateFactory(buildConversationState, item.message)));
+        const plan = await ai.withTakiModel(model, () => brain.runTaki3Plan(stateFactory(buildConversationState, item.message)));
         const reasons = answerable(plan);
         if (reasons.length) {
           failures += 1;
@@ -203,24 +203,24 @@ async function revision(): Promise<{ id: string; clean: boolean }> {
 }
 
 async function main(): Promise<void> {
-  const confirmation = String(process.env.TAKI_BRAIN_V4_EVAL_CONFIRM || "").trim().toLowerCase();
+  const confirmation = String(process.env.TAKI_TAKI3_EVAL_CONFIRM || "").trim().toLowerCase();
   if (confirmation !== "staging" && confirmation !== "maintenance") {
-    console.error("Refusing to run. Set TAKI_BRAIN_V4_EVAL_CONFIRM=staging (or maintenance) explicitly.");
+    console.error("Refusing to run. Set TAKI_TAKI3_EVAL_CONFIRM=staging (or maintenance) explicitly.");
     process.exitCode = 2;
     return;
   }
   const deterministic = await deterministicGate();
   let provider: ProviderSummary = { passed: true, direct: 0, research: 0, failures: 0 };
-  if (/^(?:1|true|yes)$/i.test(String(process.env.TAKI_BRAIN_V4_EVAL_PROVIDER || ""))) {
+  if (/^(?:1|true|yes)$/i.test(String(process.env.TAKI_TAKI3_EVAL_PROVIDER || ""))) {
     provider = await providerCorpus();
   }
   const rev = await revision();
-  const promotion = /^(?:1|true|yes)$/i.test(String(process.env.TAKI_BRAIN_V4_EVAL_PROMOTION || ""));
-  const providerEnabled = /^(?:1|true|yes)$/i.test(String(process.env.TAKI_BRAIN_V4_EVAL_PROVIDER || ""));
+  const promotion = /^(?:1|true|yes)$/i.test(String(process.env.TAKI_TAKI3_EVAL_PROMOTION || ""));
+  const providerEnabled = /^(?:1|true|yes)$/i.test(String(process.env.TAKI_TAKI3_EVAL_PROVIDER || ""));
   const providerGate = providerEnabled
     ? provider.passed
-      && provider.direct >= BRAIN_V4_PROMOTION_MIN_DIRECT_CASES
-      && provider.research >= BRAIN_V4_PROMOTION_MIN_RESEARCH_CASES
+      && provider.direct >= TAKI3_PROMOTION_MIN_DIRECT_CASES
+      && provider.research >= TAKI3_PROMOTION_MIN_RESEARCH_CASES
     : !promotion;
   const passed = deterministic.passed && providerGate && (!promotion || rev.clean);
   console.log(JSON.stringify({
@@ -231,25 +231,25 @@ async function main(): Promise<void> {
     worktreeClean: rev.clean
   }));
   if (promotion && passed) {
-    const [{ ACTIVE_AI_PROVIDER }, brain] = await Promise.all([import("../src/ai.js"), import("../src/brainV4.js")]);
+    const [{ ACTIVE_AI_PROVIDER }, brain] = await Promise.all([import("../src/ai.js"), import("../src/taki3Core.js")]);
     const now = Date.now();
-    const evidence = encodeBrainV4PromotionEvidence({
-      format: "taki-brain-v4-promotion",
-      version: BRAIN_V4_PROMOTION_EVIDENCE_VERSION,
+    const evidence = encodeTaki3PromotionEvidence({
+      format: "taki3-promotion",
+      version: TAKI3_PROMOTION_EVIDENCE_VERSION,
       releaseId: rev.id,
       provider: ACTIVE_AI_PROVIDER,
-      models: brain.BRAIN_V4_MODELS,
+      models: brain.TAKI3_MODELS,
       direct: { passed: true, total: provider.direct, failed: 0 },
       research: { passed: true, total: provider.research, failed: 0 },
       deterministic: { passed: true, typecheckPassed: true, testCount: deterministic.testCount, failed: 0, cancelled: 0, skipped: 0 },
       rollback: { passed: true },
       noWrite: true,
       issuedAt: new Date(now).toISOString(),
-      expiresAt: new Date(now + BRAIN_V4_PROMOTION_EVIDENCE_TTL_MS).toISOString()
+      expiresAt: new Date(now + TAKI3_PROMOTION_EVIDENCE_TTL_MS).toISOString()
     });
-    console.log(`TAKI_BRAIN_V4_RELEASE_ID=${rev.id}`);
-    console.log(`TAKI_BRAIN_V4_PROMOTION_EVIDENCE=${evidence}`);
-    console.log("TAKI_BRAIN_V4_READY=1");
+    console.log(`TAKI_TAKI3_RELEASE_ID=${rev.id}`);
+    console.log(`TAKI_TAKI3_PROMOTION_EVIDENCE=${evidence}`);
+    console.log("TAKI_TAKI3_READY=1");
   }
   if (!passed) process.exitCode = 1;
 }

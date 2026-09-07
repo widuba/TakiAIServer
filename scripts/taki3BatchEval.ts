@@ -1,5 +1,5 @@
 /**
- * Brain v4's 150-question acceptance run.
+ * Taki 3.0's 150-question acceptance run.
  *
  * This is deliberately separate from the promotion evaluator. It exercises a
  * broad, fixed corpus, measures the actual provider adapter and metering path,
@@ -8,10 +8,10 @@
  * the existing capability planner.
  *
  * Live calls require an explicit confirmation:
- *   TAKI_BRAIN_V4_BATCH_CONFIRM=live npm run eval:brain-v4-batch
+ *   TAKI_TAKI3_BATCH_CONFIRM=live npm run eval:taki3-batch
  *
  * An isolated staging credential may be supplied with
- * TAKI_BRAIN_V4_STAGING_PROVIDER and TAKI_BRAIN_V4_STAGING_API_KEY. Without
+ * TAKI_TAKI3_STAGING_PROVIDER and TAKI_TAKI3_STAGING_API_KEY. Without
  * those variables, `live` uses the provider configured in the server .env and
  * records that the credential was the app's configured provider credential.
  */
@@ -294,17 +294,17 @@ function addUsage(a: any, b: any): any {
 }
 
 async function main(): Promise<void> {
-  const confirmation = String(process.env.TAKI_BRAIN_V4_BATCH_CONFIRM || "").trim().toLowerCase();
+  const confirmation = String(process.env.TAKI_TAKI3_BATCH_CONFIRM || "").trim().toLowerCase();
   if (confirmation !== "live" && confirmation !== "staging") {
-    console.error("Refusing live evaluation. Set TAKI_BRAIN_V4_BATCH_CONFIRM=live or staging explicitly.");
+    console.error("Refusing live evaluation. Set TAKI_TAKI3_BATCH_CONFIRM=live or staging explicitly.");
     process.exitCode = 2;
     return;
   }
 
-  const stagingProvider = String(process.env.TAKI_BRAIN_V4_STAGING_PROVIDER || "").trim().toLowerCase();
-  const stagingKey = String(process.env.TAKI_BRAIN_V4_STAGING_API_KEY || "").trim();
+  const stagingProvider = String(process.env.TAKI_TAKI3_STAGING_PROVIDER || "").trim().toLowerCase();
+  const stagingKey = String(process.env.TAKI_TAKI3_STAGING_API_KEY || "").trim();
   if (confirmation === "staging" && (!stagingKey || (stagingProvider !== "gemini" && stagingProvider !== "openai"))) {
-    throw new Error("Staging mode requires TAKI_BRAIN_V4_STAGING_PROVIDER=openai|gemini and TAKI_BRAIN_V4_STAGING_API_KEY.");
+    throw new Error("Staging mode requires TAKI_TAKI3_STAGING_PROVIDER=openai|gemini and TAKI_TAKI3_STAGING_API_KEY.");
   }
   if (stagingKey) {
     process.env.AI_PROVIDER = stagingProvider;
@@ -315,14 +315,14 @@ async function main(): Promise<void> {
   const [{ ACTIVE_AI_PROVIDER, TAKI_MODELS, withTakiModel }, { buildConversationState }, brain, metering, tools] = await Promise.all([
     import("../src/ai.js"),
     import("../src/context.js"),
-    import("../src/brainV4.js"),
+    import("../src/taki3Core.js"),
     import("../src/metering.js"),
     import("../src/tools.js")
   ]);
 
   const cases = buildCases();
-  const dryRun = /^(?:1|true|yes)$/i.test(String(process.env.TAKI_BRAIN_V4_BATCH_DRY_RUN || ""));
-  brain.resetBrainV4RolloutStats();
+  const dryRun = /^(?:1|true|yes)$/i.test(String(process.env.TAKI_TAKI3_BATCH_DRY_RUN || ""));
+  brain.resetTaki3RolloutStats();
   const emptyUsage = { calls: 0, promptTokens: 0, outputTokens: 0, providerUsd: 0, searchUsd: 0, totalUsd: 0 };
   const rows: ResultRow[] = [];
   const startedAt = new Date().toISOString();
@@ -337,9 +337,9 @@ async function main(): Promise<void> {
       undefined,
       undefined,
       item.voiceMode,
-      `brain-v4-batch-${index + 1}`
+      `taki3-batch-${index + 1}`
     );
-    const classification = brain.classifyBrainV4Request(state);
+    const classification = brain.classifyTaki3Request(state);
     const tier = item.tier || (["taki_2_0_swift", "taki_2_1", "taki_2_1_reasoning"] as const)[index % 3];
     const t0 = Date.now();
     const reasons: string[] = [];
@@ -353,7 +353,7 @@ async function main(): Promise<void> {
       if (item.expectedRoute && classification.kind !== item.expectedRoute) reasons.push(`expected_route_${item.expectedRoute}`);
     } else {
       try {
-        const measured = await metering.measureUsage(() => withTakiModel(tier, () => brain.runBrainV4Plan(state)));
+        const measured = await metering.measureUsage(() => withTakiModel(tier, () => brain.runTaki3Plan(state)));
         plan = measured.value;
         usage = {
           calls: measured.usage.calls,
@@ -400,13 +400,13 @@ async function main(): Promise<void> {
       error: caught ? errorText(caught) : null,
       failureReasons: reasons
     };
-    if ((index + 1) % 10 === 0) console.error(`brain-v4 batch progress ${index + 1}/150`);
+    if ((index + 1) % 10 === 0) console.error(`taki3 batch progress ${index + 1}/150`);
     return row;
   }
 
   // A small concurrency cap keeps this representative of a real service while
   // avoiding a burst that would turn a provider rate-limit result into noise.
-  const concurrency = Math.max(1, Math.min(3, Number(process.env.TAKI_BRAIN_V4_BATCH_CONCURRENCY || 3)));
+  const concurrency = Math.max(1, Math.min(3, Number(process.env.TAKI_TAKI3_BATCH_CONCURRENCY || 3)));
   let cursor = 0;
   async function worker(): Promise<void> {
     while (true) {
@@ -451,7 +451,7 @@ async function main(): Promise<void> {
     elapsedMs: Date.now() - started
   };
 
-  const outputPath = String(process.env.TAKI_BRAIN_V4_BATCH_OUTPUT || join("/tmp", `taki-brain-v4-150-${Date.now()}.json`));
+  const outputPath = String(process.env.TAKI_TAKI3_BATCH_OUTPUT || join("/tmp", `taki3-150-${Date.now()}.json`));
   await mkdir(dirname(outputPath), { recursive: true });
   await writeFile(outputPath, JSON.stringify({
     startedAt,
@@ -463,7 +463,7 @@ async function main(): Promise<void> {
     models: TAKI_MODELS,
     corpusCount: cases.length,
     summary,
-    brainV4Stats: brain.brainV4RolloutStats(),
+    taki3Stats: brain.taki3RolloutStats(),
     rows
   }, null, 2));
 

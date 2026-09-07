@@ -63,7 +63,7 @@ test("Brain v3 JSON stages use strict Responses Structured Outputs", () => {
   });
 });
 
-test("Brain v4 keeps its selected answer model while using strict Responses JSON", () => {
+test("Taki 3.0 keeps its selected answer model while using strict Responses JSON", () => {
   const schema = {
     type: "object",
     additionalProperties: false,
@@ -74,10 +74,10 @@ test("Brain v4 keeps its selected answer model while using strict Responses JSON
     model: "gpt-5.6-luna",
     contents: "Answer the user's question.",
     config: {
-      modelRole: "brain_v4",
+      modelRole: "taki3",
       responseMimeType: "application/json",
       responseJsonSchema: schema,
-      responseJsonSchemaName: "taki_brain_v4_answer",
+      responseJsonSchemaName: "taki3_answer",
       openAIReasoningEffort: "none"
     }
   }, "gpt-5.6-luna");
@@ -86,7 +86,7 @@ test("Brain v4 keeps its selected answer model while using strict Responses JSON
   assert.deepEqual(request.text, {
     format: {
       type: "json_schema",
-      name: "taki_brain_v4_answer",
+      name: "taki3_answer",
       strict: true,
       schema
     }
