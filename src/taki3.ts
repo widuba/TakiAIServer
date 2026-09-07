@@ -43,8 +43,17 @@ export type Taki3Dependencies = BrainV4Dependencies;
 
 function translatedEnvironment(env: Record<string, string | undefined>): Record<string, string | undefined> {
   const translated = { ...env };
-  // Taki 3.0 names are canonical. The old variables are read only as a
-  // compatibility bridge for an already-deployed Render service.
+  // Taki 3.0 owns the rollout controls. Delete numbered-brain variables before
+  // translating the canonical names so a stale operator flag cannot revive an
+  // old traffic surface during an environment migration.
+  for (const key of [
+    "TAKI_BRAIN_V4_MODE",
+    "TAKI_BRAIN_V4_PERCENT",
+    "TAKI_BRAIN_V4_SHADOW_PERCENT",
+    "TAKI_BRAIN_V4_READY",
+    "TAKI_BRAIN_V4_RELEASE_ID",
+    "TAKI_BRAIN_V4_PROMOTION_EVIDENCE"
+  ]) delete translated[key];
   if (translated.TAKI_TAKI3_MODE) translated.TAKI_BRAIN_V4_MODE = translated.TAKI_TAKI3_MODE;
   if (translated.TAKI_TAKI3_PERCENT) translated.TAKI_BRAIN_V4_PERCENT = translated.TAKI_TAKI3_PERCENT;
   if (translated.TAKI_TAKI3_SHADOW_PERCENT) translated.TAKI_BRAIN_V4_SHADOW_PERCENT = translated.TAKI_TAKI3_SHADOW_PERCENT;
@@ -85,8 +94,8 @@ export function shouldShadowTaki3(
   stateOrEnv: Pick<ConversationState, "deviceId"> | Record<string, string | undefined> = process.env,
   providedEnv?: Record<string, string | undefined>
 ): boolean {
-  if (Object.prototype.hasOwnProperty.call(stateOrEnv, "TAKI_TAKI3_MODE")
-    || Object.prototype.hasOwnProperty.call(stateOrEnv, "TAKI_BRAIN_V4_MODE")) {
+  const looksLikeRolloutEnvironment = Object.keys(stateOrEnv).some((key) => key.startsWith("TAKI_TAKI3_") || key.startsWith("TAKI_BRAIN_V4_"));
+  if (looksLikeRolloutEnvironment) {
     return shouldShadowBrainV4(translatedEnvironment(stateOrEnv as Record<string, string | undefined>));
   }
   return shouldShadowBrainV4(
