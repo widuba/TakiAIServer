@@ -256,10 +256,23 @@ test("clear core phone commands route without depending on an AI provider", asyn
   assert.equal(call.action?.type, "call_phone");
   assert.equal(call.action?.contactQuery, "Mom");
 
+  const indirectCall = await planAssistantResponse(stateFor("I need you to call Mom"));
+  assert.equal(indirectCall.action?.type, "call_phone");
+  assert.equal(indirectCall.action?.contactQuery, "Mom");
+
   const text = await planAssistantResponse(stateFor("Text Mom that I'm running late"));
   assert.equal(text.action?.type, "compose_message");
   assert.equal(text.action?.contactQuery, "Mom");
   assert.equal(text.action?.body, "I'm running late.");
+
+  const questionText = await planAssistantResponse(stateFor("Ask Mom if she is ready"));
+  assert.equal(questionText.action?.type, "compose_message");
+  assert.equal(questionText.action?.contactQuery, "Mom");
+  assert.equal(questionText.action?.body, "Are you ready?");
+
+  const contractedQuestionText = await planAssistantResponse(stateFor("Ask Mom if she's ready"));
+  assert.equal(contractedQuestionText.action?.type, "compose_message");
+  assert.equal(contractedQuestionText.action?.body, "Are you ready?");
 
   const email = await planAssistantResponse(stateFor("Email alex@example.com saying I can meet at noon"));
   assert.equal(email.action?.type, "compose_email");

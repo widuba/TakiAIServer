@@ -391,6 +391,7 @@ function directCommandText(message: string): string {
     .replace(/[.!?]+$/g, "")
     .replace(/^(?:hey\s+taki\s*[,—-]?\s*)/i, "")
     .replace(/^(?:can|could|would|will)\s+you\s+(?:please\s+)?/i, "")
+    .replace(/^(?:i\s+(?:need|want|would like)|i['’]d like)\s+(?:you\s+)?to\s+/i, "")
     .replace(/^please\s+/i, "")
     .trim();
 }
@@ -547,7 +548,7 @@ export function directCorePhoneAction(state: ConversationState, message = state.
     });
   }
 
-  const clearBodyStart = "(?:I(?:'m|'ll|'ve|'d)?|we(?:'re|'ll|'ve|'d)?|you(?:'re|'ll|'ve|'d)?|can|could|please|don'?t|do not|let'?s?|meet|bring|pick|grab|get|be|thanks|thank you|happy|sorry|yes|no)";
+  const clearBodyStart = "(?:I(?:'m|'ll|'ve|'d)?|we(?:'re|'ll|'ve|'d)?|you(?:'re|'ll|'ve|'d)?|can|could|please|if|whether|don'?t|do not|let'?s?|meet|bring|pick|grab|get|be|thanks|thank you|happy|sorry|yes|no)";
   const explicitMessage =
     text.match(/^(?:text|message)\s+(.+?)\s+(?:and\s+)?(?:say|saying|that|and tell (?:him|her|them)(?: that)?)\s+(.+)$/i) ||
     text.match(/^(?:text|message)\s+(.+?)\s*[:,]\s*(.+)$/i) ||

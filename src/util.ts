@@ -373,9 +373,13 @@ export function titleCaseTask(value: string) {
 // safety net; the planner also rewrites bodies semantically.
 export function normalizeMessageBodyForRecipient(body: string) {
   let text = String(body || "").replace(/\s+/g, " ").trim();
+  let questionLike = false;
 
   text = text.replace(/^(that|to say that|and say that|saying that|saying|to say|and tell (him|her|them)|tell (him|her|them) that|tell (him|her|them))\s+/i, "");
-  text = text.replace(/^(if|whether)\s+(he|she|they)\s+(is|are|was|were)\s+/i, "Are you ");
+  text = text.replace(/^(if|whether)\s+(he|she|they)(?:\s+(?:is|are|was|were)|['’](?:s|re))\s+/i, () => {
+    questionLike = true;
+    return "Are you ";
+  });
 
   text = text.replace(/\bIm\b/g, "I'm");
   text = text.replace(/\bi'm\b/g, "I'm");
@@ -413,7 +417,7 @@ export function normalizeMessageBodyForRecipient(body: string) {
     // punctuation OR an emoji (a trailing "😊." reads wrong, especially for the
     // casual, low-polish styles the learner can produce).
     const endsWithEmoji = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2764}]$/u.test(text);
-    if (!/[.!?]$/.test(text) && !endsWithEmoji) text += ".";
+    if (!/[.!?]$/.test(text) && !endsWithEmoji) text += questionLike ? "?" : ".";
   }
 
   return text;
@@ -462,7 +466,10 @@ function reminderWhenPattern() {
   // named time such as noon. The device's date/time resolvers apply the final
   // timezone and future-date rules after this title-only cleanup.
   const date = "(?:(?:on|by)?\\s*(?:(?:today|tomorrow|tonight)(?:\\s+(?:morning|afternoon|evening|night))?|(?:(?:this|next|coming)\\s+)?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|weekend|week)|\\d{4}-\\d{2}-\\d{2}|\\d{1,2}\\/\\d{1,2}(?:\\/\\d{2,4})?))";
-  const clock = "(?:(?:(?:at|around|by|@)\\s*)?\\d{1,2}(?::\\d{2})?\\s*(?:a\\.?m\\.?|p\\.?m\\.?)|(?:at|around|by|@)\\s*\\d{1,2}(?::\\d{2})?|noon|midnight)";
+  // Keep the spoken prefix optional for both numeric and named times. People
+  // naturally say “at noon Friday” as well as “noon Friday”; treating the
+  // named form differently leaves the time in the reminder title.
+  const clock = "(?:(?:(?:at|around|by|@)\\s*)?(?:\\d{1,2}(?::\\d{2})?\\s*(?:a\\.?m\\.?|p\\.?m\\.?)|\\d{1,2}(?::\\d{2})?|noon|midnight))";
   return `(?:${date}(?:\\s+${clock})?|${clock}(?:\\s+${date})?)`;
 }
 
