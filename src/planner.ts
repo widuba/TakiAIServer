@@ -113,7 +113,7 @@ import {
 } from "./messageStyle.js";
 import type { MessageAnalysis, MessageStyleVector } from "./messageStyle.js";
 import { restyleMessageBody } from "./messageStyleRewrite.js";
-import { noteTaki3Failure, noteTaki3Success, runTaki3Plan, runTaki3Shadow, shouldShadowTaki3, shouldUseTaki3, taki3CanAttempt } from "./taki3.js";
+import { classifyTaki3Request, noteTaki3Failure, noteTaki3Success, runTaki3Plan, runTaki3Shadow, shouldShadowTaki3, shouldUseTaki3, taki3CanAttempt } from "./taki3.js";
 import { runUnmetered } from "./metering.js";
 import {
   addDaysToYmd,
@@ -253,6 +253,28 @@ async function taki3FreeformPlan(
     console.error("Taki 3.0 answer core failed; using the compatibility planner:", error);
     return null;
   }
+}
+
+/**
+ * Keep ordinary text turns to one provider round trip while Taki 3.0 is
+ * staged, disabled, or temporarily behind its circuit. All deterministic
+ * action, safety, and clarification routes run before this point; the shared
+ * classifier is used only to prove that this fallback is an answer or a
+ * grounded research turn. This removes the old planner-then-answer latency
+ * from Dromos without widening the model's authority over device actions.
+ */
+async function fastConversationalFallback(
+  state: ConversationState,
+  onStableVoiceText?: (text: string) => void | Promise<void>
+): Promise<AssistantPlan | null> {
+  const classification = classifyTaki3Request(state);
+  if (classification.kind !== "direct" && classification.kind !== "research") return null;
+  const answer = await getGeneralAnswer(state, onStableVoiceText);
+  return answerPlan(
+    answer.text,
+    { lastIntent: classification.kind === "research" ? "web_search" : "answer_only" },
+    answer.sources
+  );
 }
 
 // Taki 3.0 keeps the established tool implementations and their final action
@@ -2309,6 +2331,12 @@ export async function planAssistantResponse(
   // retains the established action contract.
   const taki3Plan = await taki3FreeformPlan(state, onStableVoiceText);
   if (taki3Plan) return taki3Plan;
+
+  // If the staged brain is not serving this turn, answer-only and research
+  // requests still take the fast one-call path. Device/safety/clarification
+  // turns return null here and continue through the compatibility planner.
+  const fastFallback = await fastConversationalFallback(state, onStableVoiceText);
+  if (fastFallback) return fastFallback;
 
   let plan: PlannerModelOutput;
   try {
