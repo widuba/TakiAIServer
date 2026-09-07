@@ -1837,6 +1837,16 @@ app.post("/api/credits/purchase-link", async (req, res) => {
   const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
   const storefront = typeof req.body?.storefront === "string" ? req.body.storefront.toUpperCase() : "";
   if (storefront !== "USA" && storefront !== "US") { res.status(403).json({ error: "Web purchase links are unavailable in this storefront" }); return; }
+  // This route is protected by the device-credential middleware. Persist the
+  // current personalization name before looking up the account so the signed
+  // browser confirmation cannot fall back to `Account <id>` when a user edited
+  // their name moments before opening Membership. The credential check below
+  // keeps an arbitrary browser from writing a name onto another account.
+  const physicalDevice = await verifiedPhysicalDevice(req);
+  const takiName = typeof req.body?.takiName === "string" ? req.body.takiName.trim().slice(0, 60) : "";
+  if (physicalDevice && physicalDevice === identity && takiName) {
+    await noteDevice(physicalDevice, { takiName });
+  }
   const account = await validateTopupAccount(identity);
   if (!account.valid) { res.status(400).json({ error: account.reason || "Account unavailable" }); return; }
   const token = signPurchaseLink({ identity: account.publicId, exp: Date.now() + 10 * 60_000, nonce: randomUUID(), purpose: "credits" });
