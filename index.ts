@@ -28,6 +28,7 @@ import { isDurable, storeDelete, storeDeleteCategory, storeGet, storeSet, storeU
 import { summary as creditSummary, chargeUsageUsd, InsufficientCreditsError, CreditChargeCancelledError, reset as resetCredits, tierCatalog, grantForTransaction, activateSubscriptionTier, updateSubscriptionStatus, grantForConsumableTransaction, grantWebTopup, grantAdminCredits, adminCreditAdjustments, MAX_ADMIN_CREDIT_GRANT, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, CREDIT_USD, type Tier } from "./src/credits.js";
 import { measureUsage, sttCostUsd, totalUsageUsd, ttsCostUsd } from "./src/metering.js";
 import { decideAssistantCharge, planCorrectionSynthesis, usageBlockFor, usageBlockedPayload, voiceTurnEstimateCredits } from "./src/usage.js";
+import { resolvePurchaseDisplayName } from "./src/purchaseIdentity.js";
 import { verifyTransaction, verifyCreditTransaction, claimCreditTransaction, transferCreditTransaction, rebindCreditTransactions, linkTransactionIdentity, transferSubscriptionIdentity, claimSubscriptionPeriod, releaseSubscriptionPeriod, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
 import { revokeAppleAuthorizationCode, verifyAppleIdentityToken } from "./src/appleauth.js";
 import { isPrivacyDeletedDevice, purgeAppleAccount, purgeDeviceAccount, purgeStandaloneAccount } from "./src/accountDeletion.js";
@@ -1810,7 +1811,12 @@ async function validateTopupAccount(identity: string): Promise<PurchaseAccount> 
     tier: summary.tier,
     appleSynced: !!appleSub,
     email: maskedEmail(apple?.email || ""),
-    displayName: (appleSub ? apple?.name : "") || takiName || deviceOwnerName || `Account ${id}`,
+    displayName: resolvePurchaseDisplayName({
+      takiName,
+      appleName: appleSub ? apple?.name : "",
+      deviceOwnerName,
+      accountId: id
+    }),
     devices: devices.slice(0, 8)
   };
 }
