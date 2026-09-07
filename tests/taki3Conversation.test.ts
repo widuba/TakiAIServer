@@ -112,6 +112,8 @@ test("reminder commands keep the task when the time comes first", async () => {
     "Remind me tomorrow at 8 AM to renew my passport",
     "Set a reminder for tomorrow at 8 AM to renew my passport",
     "Tomorrow at 8 AM remind me to renew my passport",
+    "Tomorrow at 8 AM, remind me to renew my passport",
+    "Remind me tomorrow at 8 AM, to renew my passport",
     "At 8 AM tomorrow remind me to renew my passport",
     "Remind me to renew my passport tomorrow at 8 AM"
   ];

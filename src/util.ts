@@ -467,20 +467,26 @@ function reminderWhenPattern() {
 }
 
 /** True when a reminder's date/time lead comes before "remind me". */
+function reminderPhraseSeparator() {
+  return "(?:\\s*[,;:\\u2014\\u2013-]\\s*|\\s+)";
+}
+
 export function looksLikeLeadingTimedReminder(message: string) {
   const when = reminderWhenPattern();
-  return new RegExp(`^${when}\\s+(?:please\\s+)?remind\\s+me(?:\\s+(?:to|about|for))?\\s+\\S`, "i").test(String(message || "").trim());
+  const separator = reminderPhraseSeparator();
+  return new RegExp(`^${when}${separator}(?:please\\s+)?remind\\s+me(?:${separator}(?:to|about|for))?${separator}\\S`, "i").test(String(message || "").trim());
 }
 
 export function extractReminderTitle(message: string) {
   const when = reminderWhenPattern();
-  const leadingReminder = new RegExp(`^${when}\\s+(?:please\\s+)?remind\\s+me(?:\\s+(?:to|about|for))?\\s+`, "i");
-  const leadingWhen = new RegExp(`^${when}\\s*(?:to|about|for)?\\s+`, "i");
+  const separator = reminderPhraseSeparator();
+  const leadingReminder = new RegExp(`^${when}${separator}(?:please\\s+)?remind\\s+me(?:${separator}(?:to|about|for))?${separator}`, "i");
+  const leadingWhen = new RegExp(`^${when}${separator}(?:to|about|for)?${separator}`, "i");
   const trailingWhen = new RegExp(`\\s+${when}\\s*$`, "i");
   let title = String(message || "")
     .trim()
     .replace(leadingReminder, "")
-    .replace(/^(?:please\s+)?(?:remind me|(?:add|create|set|make)\s+(?:a\s+)?reminder)(?:\s+(?:to|about|for))?\s+/i, "")
+    .replace(/^(?:please\s+)?(?:remind me|(?:add|create|set|make)\s+(?:a\s+)?reminder)(?:\s*[,;:\u2014\u2013-]\s*|\s+)(?:(?:to|about|for)\s+)?/i, "")
     .replace(leadingWhen, "")
     .replace(/^(?:to)\s+/i, "")
     .replace(/\b(to|in|on)\s+(my\s+)?reminders\b/gi, "")

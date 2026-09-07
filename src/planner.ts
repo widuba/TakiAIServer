@@ -655,7 +655,7 @@ export function directCorePhoneAction(state: ConversationState, message = state.
     return actionPlan("I'll check your reminders.", action, { lastIntent: "reminder_search" });
   }
 
-  const reminderShape = /^(?:remind me(?:\s+(?:to|about|for))?|(?:add|create|set|make)\s+(?:a\s+)?reminder(?:\s+(?:to|about|for))?)\s+(.+)$/i.exec(text);
+  const reminderShape = /^(?:remind me|(?:add|create|set|make)\s+(?:a\s+)?reminder)(?:\s*[,;:\u2014\u2013-]\s*|\s+)(?:(?:to|about|for)\s+)?(.+)$/i.exec(text);
   // People also put the time first while speaking: "tomorrow at 8 remind me
   // to renew my passport". Keep that equivalent to the command-first form so
   // it remains deterministic when the provider is slow or unavailable.
