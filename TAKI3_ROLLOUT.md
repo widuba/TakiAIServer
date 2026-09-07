@@ -61,3 +61,7 @@ an on-device identification action when the compatibility brain serves the
 turn instead of being downgraded to a generic answer. The regression suite
 covers this path; the full server suite and 144-case action matrix remain
 green.
+
+The post-fix deterministic rerun passed 6,000/6,000 (p95 0.351 ms), the
+three-tier contract sweep passed 18,000/18,000 (p95 0.451 ms), and the
+long-chat audit passed 500/500 with 1,502 history turns (p95 1.428 ms).
