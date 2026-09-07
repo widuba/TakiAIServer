@@ -32,11 +32,14 @@ The 6,000-turn deterministic and structured-contract checks are available as:
 ```sh
 npm run eval:taki3-6000
 npm run eval:taki3-6000-contract
+npm run eval:taki3-6000-all-models
 npm run eval:taki3-long-chat
 ```
 
-The long-chat audit adds 500 varied turns with 1,500-history contexts,
-oversized turns, repeated corrections, voice bounds, and the strict answer
-contract. These checks do not certify vendor quality or live web grounding.
+The all-model contract sweep repeats the complete 6,000-case corpus across
+Dromos, Metron, and Sophos (18,000 fixture turns total). The long-chat audit
+adds 500 varied turns with 1,500-history contexts, oversized turns, repeated
+corrections, voice bounds, and the strict answer contract. These checks do not
+certify vendor quality or live web grounding.
 Promotion remains blocked until a real provider run has successful provider
 calls and reports quality, p95 latency, and measured usage.

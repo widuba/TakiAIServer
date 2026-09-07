@@ -10,6 +10,7 @@
  */
 
 import { writeFile } from "node:fs/promises";
+import { TAKI_MODELS, withTakiModel, type TakiModelKey } from "../src/ai.js";
 import { buildConversationState } from "../src/context.js";
 import { classifyTaki3Request, runTaki3Plan } from "../src/taki3.js";
 import { buildCorpus, type CorpusCase } from "./taki3Eval6000.js";
@@ -22,10 +23,11 @@ type ContractResult = {
   p50Ms: number;
   p95Ms: number;
   maxMs: number;
+  latencies: number[];
   failures: Array<{ id: string; expected: string; message: string; reasons: string[] }>;
 };
 
-function stateFor(item: CorpusCase) {
+function stateFor(item: CorpusCase, tier: TakiModelKey | null = null) {
   return buildConversationState(
     item.message,
     item.context,
@@ -34,7 +36,7 @@ function stateFor(item: CorpusCase) {
     [],
     { personality: "friendly", responseLength: "balanced" },
     item.voice,
-    "contract-" + item.id
+    `contract-${tier || "default"}-${item.id}`
   );
 }
 
@@ -89,35 +91,63 @@ function checkPlan(item: CorpusCase, plan: AssistantPlan | null): string[] {
   return [];
 }
 
-async function runContract(cases: CorpusCase[]): Promise<ContractResult> {
+async function runContract(cases: CorpusCase[], tier: TakiModelKey | null = null): Promise<ContractResult> {
   const times: number[] = [];
   const failures: ContractResult["failures"] = [];
   let calls = 0;
   for (const item of cases) {
-    const state = stateFor(item);
+    const state = stateFor(item, tier);
     const started = performance.now();
     try {
-      const plan = await runTaki3Plan(state, undefined, { generateContent: fixtureTaki3(item) });
+      const run = () => runTaki3Plan(state, undefined, { generateContent: fixtureTaki3(item) });
+      const plan = tier ? await withTakiModel(tier, run) : await run();
       const classification = classifyTaki3Request(state);
       if (classification.kind === "direct" || classification.kind === "research") calls += 1;
       const reasons = checkPlan(item, plan);
-      if (reasons.length) failures.push({ id: item.id, expected: item.kind, message: item.message, reasons });
+      if (reasons.length) failures.push({ id: tier ? `${tier}:${item.id}` : item.id, expected: item.kind, message: item.message, reasons });
     } catch (error) {
-      failures.push({ id: item.id, expected: item.kind, message: item.message, reasons: [String(error instanceof Error ? error.message : error)] });
+      failures.push({ id: tier ? `${tier}:${item.id}` : item.id, expected: item.kind, message: item.message, reasons: [String(error instanceof Error ? error.message : error)] });
     }
     times.push(performance.now() - started);
   }
-  return { passed: cases.length - failures.length, failed: failures.length, calls, p50Ms: percentile(times, 0.5), p95Ms: percentile(times, 0.95), maxMs: Math.max(...times), failures: failures.slice(0, 100) };
+  return { passed: cases.length - failures.length, failed: failures.length, calls, p50Ms: percentile(times, 0.5), p95Ms: percentile(times, 0.95), maxMs: Math.max(...times), latencies: times, failures: failures.slice(0, 100) };
 }
 
 async function main(): Promise<void> {
   const cases = buildCorpus();
-  const taki3 = await runContract(cases);
+  const allModels = /^(?:1|true|yes)$/i.test(String(process.env.TAKI_TAKI3_CONTRACT_ALL_MODELS || "").trim());
+  const tiers: Array<TakiModelKey | null> = allModels ? TAKI_MODELS.map((entry) => entry.key) : [null];
+  const perTier = [] as Array<{ tier: TakiModelKey | "default"; result: ContractResult }>;
+  for (const tier of tiers) perTier.push({ tier: tier || "default", result: await runContract(cases, tier) });
+  const taki3 = perTier.reduce<ContractResult>((aggregate, entry) => ({
+    passed: aggregate.passed + entry.result.passed,
+    failed: aggregate.failed + entry.result.failed,
+    calls: aggregate.calls + entry.result.calls,
+    p50Ms: 0,
+    p95Ms: 0,
+    maxMs: Math.max(aggregate.maxMs, entry.result.maxMs),
+    latencies: [...aggregate.latencies, ...entry.result.latencies],
+    failures: [...aggregate.failures, ...entry.result.failures].slice(0, 100)
+  }), { passed: 0, failed: 0, calls: 0, p50Ms: 0, p95Ms: 0, maxMs: 0, latencies: [], failures: [] });
+  const allLatencies = taki3.latencies;
+  const normalizedTaki3 = { ...taki3, p50Ms: percentile(allLatencies, 0.5), p95Ms: percentile(allLatencies, 0.95) };
+  const publicPerTier = perTier.map(({ tier, result }) => {
+    const { latencies: _latencies, ...publicResult } = result;
+    return { tier, result: publicResult };
+  });
   const outputPath = process.env.TAKI_TAKI3_CONTRACT_6000_OUTPUT || `/tmp/taki3-contract-6000-${Date.now()}.json`;
-  const summary = { corpus: cases.length, fixtureProvider: true, brain: "taki3", taki3 };
+  const summary = {
+    corpus: cases.length,
+    totalCases: cases.length * tiers.length,
+    fixtureProvider: true,
+    brain: "taki3",
+    tiers: tiers.map((tier) => tier || "default"),
+    ...(allModels ? { perTier: publicPerTier } : {}),
+    taki3: (({ latencies: _latencies, ...publicResult }) => publicResult)(normalizedTaki3)
+  };
   await writeFile(outputPath, JSON.stringify({ summary }, null, 2));
-  console.log(JSON.stringify({ ok: taki3.failed === 0, outputPath, summary }, null, 2));
-  if (taki3.failed) process.exitCode = 1;
+  console.log(JSON.stringify({ ok: normalizedTaki3.failed === 0, outputPath, summary }, null, 2));
+  if (normalizedTaki3.failed) process.exitCode = 1;
 }
 
 void main().catch((error) => {
