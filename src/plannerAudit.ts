@@ -400,10 +400,9 @@ export function auditPlannerOutput(plan: PlannerModelOutput, state: Conversation
     return makeIssue(state, plan, "recipient was not grounded in user context", "Who do you mean?");
   }
 
-  // The stricter body/date grounding is part of Brain v2's staged contract.
-  // Keep legacy planner behavior unchanged until v2 is deliberately enabled
-  // for a canary or full rollout.
-  const strictBrain = plan.brainVersion === "v2" || plan.brainVersion === "v3";
+  // The stricter body/date grounding is part of Taki 3.0's staged contract.
+  // Apply the same grounding checks to the canonical Taki 3.0 proposal.
+  const strictBrain = plan.brainVersion === "taki3";
   if (strictBrain && (plan.intent === "compose_message" || plan.intent === "compose_email") && a.body && !plan.researchQuery && !isBodyGrounded(a.body, state)) {
     return makeIssue(
       state,

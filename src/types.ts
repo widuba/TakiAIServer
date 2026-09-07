@@ -504,7 +504,7 @@ export type PlannerModelOutput = {
   answerMode?: "direct" | "research" | "clarify" | "refuse";
   answerReady?: boolean;
   normalizedMessage?: string;
-  brainVersion?: "v2" | "v3" | "v4";
+  brainVersion?: "taki3";
   brainSignals?: Record<string, unknown>;
 };
 

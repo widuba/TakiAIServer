@@ -2,7 +2,7 @@
 
 /**
  * Deterministic 6,000-turn regression sweep for the Taki 3.0 surface and its
- * two compatibility normalizers. This intentionally does not call a vendor: it tests the logic
+ * the canonical compatibility normalizer. This intentionally does not call a vendor: it tests the logic
  * that must be correct before provider quality can matter, and records the
  * exact cases that need a live-provider follow-up.
  */
@@ -11,12 +11,7 @@ import { writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { buildConversationState } from "../src/context.js";
 import { classifyTaki3Request } from "../src/taki3.js";
-import {
-  looksLikeSafetySensitiveRequest,
-  normalizeUserInput,
-  requiresCurrentResearch
-} from "../src/brainV2.js";
-import { normalizeBrainV3Input } from "../src/brainV3.js";
+import { normalizeTaki3Input } from "../src/taki3Compatibility.js";
 
 type ExpectedKind = "direct" | "research" | "delegate" | "safety" | "clarify";
 
@@ -202,9 +197,9 @@ function failureBreakdown(rows: Failure[]): Record<string, number> {
 
 function run(): void {
   const cases = buildCorpus();
-  const failures: Record<string, Failure[]> = { v2: [], v3: [], taki3: [] };
-  const timings: Record<string, number[]> = { v2: [], v3: [], taki3: [] };
-  const routeCounts: Record<string, Record<string, number>> = { v2: {}, v3: {}, taki3: {} };
+  const failures: Failure[] = [];
+  const timings: number[] = [];
+  const routeCounts: Record<string, number> = {};
 
   for (const item of cases) {
     const state = buildConversationState(
@@ -217,48 +212,23 @@ function run(): void {
       item.voice,
       "6000-" + item.id
     );
-
-    const v2Start = performance.now();
-    const v2Signals = normalizeUserInput(item.message);
-    const v2Elapsed = performance.now() - v2Start;
-    timings.v2.push(v2Elapsed);
-    const v2Reasons: string[] = [];
-    if (item.kind !== "clarify" && !v2Signals.normalizedText) v2Reasons.push("empty_normalized_text");
-    if (item.kind === "research" && !requiresCurrentResearch(item.message)) v2Reasons.push("missed_research");
-    if (item.kind === "safety" && !looksLikeSafetySensitiveRequest(item.message)) v2Reasons.push("missed_safety");
-    if (item.kind === "delegate" && v2Signals.speechAct !== "request") v2Reasons.push("missed_request_speech_act");
-    routeCounts.v2[v2Signals.speechAct] = (routeCounts.v2[v2Signals.speechAct] || 0) + 1;
-    if (v2Reasons.length) failures.v2.push({ id: item.id, expected: item.kind, message: item.message, reasons: v2Reasons });
-
-    const v3Start = performance.now();
-    const v3Signals = normalizeBrainV3Input(item.message, state);
-    const v3Elapsed = performance.now() - v3Start;
-    timings.v3.push(v3Elapsed);
-    const v3Reasons: string[] = [];
-    if (item.kind !== "clarify" && !v3Signals.normalizedText) v3Reasons.push("empty_normalized_text");
-    if (item.kind === "delegate" && v3Signals.speechAct !== "request") v3Reasons.push("missed_request_speech_act");
-    if (item.kind === "safety" && !looksLikeSafetySensitiveRequest(v3Signals.normalizedText)) v3Reasons.push("missed_safety");
-    routeCounts.v3[v3Signals.speechAct] = (routeCounts.v3[v3Signals.speechAct] || 0) + 1;
-    if (v3Reasons.length) failures.v3.push({ id: item.id, expected: item.kind, message: item.message, reasons: v3Reasons });
-
-    const taki3Start = performance.now();
-    const taki3Classification = classifyTaki3Request(state);
-    const taki3Elapsed = performance.now() - taki3Start;
-    timings.taki3.push(taki3Elapsed);
-    const taki3Reasons: string[] = [];
-    if (taki3Classification.kind !== item.kind) taki3Reasons.push("classified_as_" + taki3Classification.kind);
-    routeCounts.taki3[taki3Classification.kind] = (routeCounts.taki3[taki3Classification.kind] || 0) + 1;
-    if (taki3Reasons.length) failures.taki3.push({
+    const started = performance.now();
+    const signals = normalizeTaki3Input(item.message, state);
+    const classification = classifyTaki3Request(state);
+    timings.push(performance.now() - started);
+    routeCounts[classification.kind] = (routeCounts[classification.kind] || 0) + 1;
+    const reasons: string[] = [];
+    if (item.kind !== "clarify" && !signals.normalizedText) reasons.push("empty_normalized_text");
+    if (item.kind === "delegate" && signals.speechAct !== "request") reasons.push("missed_request_speech_act");
+    if (classification.kind !== item.kind) reasons.push("classified_as_" + classification.kind);
+    if (state.fullTranscriptText.length > (item.voice ? 14_000 : 28_000)) reasons.push("transcript_bound_exceeded");
+    if (reasons.length) failures.push({
       id: item.id,
       expected: item.kind,
-      actual: taki3Classification.kind,
+      actual: classification.kind,
       message: item.message,
-      reasons: taki3Reasons
+      reasons
     });
-
-    if (state.fullTranscriptText.length > (item.voice ? 14_000 : 28_000)) {
-      failures.v3.push({ id: item.id, expected: item.kind, message: item.message, reasons: ["transcript_bound_exceeded"] });
-    }
   }
 
   const summary = {
@@ -267,24 +237,20 @@ function run(): void {
       counts[item.kind] = (counts[item.kind] || 0) + 1;
       return counts;
     }, {} as Record<string, number>),
-    brains: Object.fromEntries(Object.entries(failures).map(([brain, rows]) => [
-      brain,
-      {
-        passed: cases.length - rows.length,
-        failed: rows.length,
-        p50Ms: percentile(timings[brain], 0.5),
-        p95Ms: percentile(timings[brain], 0.95),
-        maxMs: Math.max(...timings[brain]),
-        routeCounts: routeCounts[brain],
-        failureBreakdown: failureBreakdown(rows),
-        failures: rows.slice(0, 100)
-      }
-    ]))
+    brain: "taki3",
+    passed: cases.length - failures.length,
+    failed: failures.length,
+    p50Ms: percentile(timings, 0.5),
+    p95Ms: percentile(timings, 0.95),
+    maxMs: Math.max(...timings),
+    routeCounts,
+    failureBreakdown: failureBreakdown(failures),
+    failures: failures.slice(0, 100)
   };
-  const outputPath = process.env.TAKI_BRAIN_6000_OUTPUT || "/tmp/taki-brain-6000-" + Date.now() + ".json";
+  const outputPath = process.env.TAKI_TAKI3_6000_OUTPUT || "/tmp/taki3-6000-" + Date.now() + ".json";
   void writeFile(outputPath, JSON.stringify({ summary }, null, 2)).then(() => {
-    console.log(JSON.stringify({ ok: Object.values(failures).every((rows) => rows.length === 0), outputPath, summary }, null, 2));
-    if (Object.values(failures).some((rows) => rows.length)) process.exitCode = 1;
+    console.log(JSON.stringify({ ok: failures.length === 0, outputPath, summary }, null, 2));
+    if (failures.length > 0) process.exitCode = 1;
   });
 }
 

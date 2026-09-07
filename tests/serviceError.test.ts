@@ -80,7 +80,7 @@ test("Taki model selection is validated, scoped, and has a bounded fallback", as
   assert.deepEqual(fallbackModelCandidates("gpt-5.6-terra"), ["gpt-5.6-terra", "gpt-5.6-luna"]);
   assert.deepEqual(fallbackModelCandidates("gemini-3.6-flash"), ["gemini-3.6-flash", "gemini-3.5-flash"]);
   assert.deepEqual(fallbackModelCandidates("gemini-3.1-pro-preview"), ["gemini-3.1-pro-preview", "gemini-3.6-flash"]);
-  assert.deepEqual(providerCandidates("gemini-3.1-pro-preview", { config: { modelRole: "brain_v3" } }), [
+  assert.deepEqual(providerCandidates("gemini-3.1-pro-preview", { config: { modelRole: "taki3_specialist" } }), [
     { provider: "gemini", model: "gemini-3.1-pro-preview" }
   ]);
   assert.deepEqual(providerCandidates("gemini-3.6-flash", { config: { modelRole: "taki3" } }), [

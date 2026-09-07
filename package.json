@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "AI_PROVIDER=gemini OPENAI_API_KEY= GEMINI_API_KEY=test node --import tsx --test tests/*.test.ts",
-    "eval:brain-v3": "node --import tsx scripts/brainV3Eval.ts",
+    "eval:taki3-specialist": "node --import tsx scripts/taki3SpecialistEval.ts",
     "eval:taki3": "node --import tsx scripts/taki3Eval.ts",
     "eval:taki3-batch": "node --import tsx scripts/taki3BatchEval.ts",
     "eval:taki3-6000": "node --import tsx scripts/taki3Eval6000.ts",

@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import { generateContent, ACTIVE_AI_PROVIDER, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, TIME_ZONE, brainV3AuxEnabled } from "./ai.js";
+import { generateContent, ACTIVE_AI_PROVIDER, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, TIME_ZONE, taki3SpecialistsEnabled } from "./ai.js";
 import {
-  BRAIN_V3_FLIGHT_TRACKER_SCHEMA,
-  BRAIN_V3_PRODUCT_TRACKER_SCHEMA,
-  BRAIN_V3_SPORTS_TRACKER_SCHEMA,
-  runBrainV3Structured
-} from "./brainV3Specialists.js";
+  TAKI3_SPECIALIST_FLIGHT_TRACKER_SCHEMA,
+  TAKI3_SPECIALIST_PRODUCT_TRACKER_SCHEMA,
+  TAKI3_SPECIALIST_SPORTS_TRACKER_SCHEMA,
+  runTaki3SpecialistStructured
+} from "./taki3Specialists.js";
 import { parse as parseHtml } from "node-html-parser";
 import { fetchWithTimeout, readResponseJsonLimited, readResponseBodyLimited, safeParseJsonObject, withTimeout } from "./util.js";
 import { storeDelete, storeGet, storeSet } from "./store.js";
@@ -530,16 +530,16 @@ CRITICAL: Use ONLY a game from today or one currently live. NEVER report a game 
 Respond with ONLY compact JSON (no markdown, no code fences):
 {"eventDate":"YYYY-MM-DD","title":"<Away> vs <Home>","line1":"<awayAbbr> <awayScore> – <homeAbbr> <homeScore>","line2":"<who is leading, or 'Final' / 'Tied'>","status":"<period and clock like 'Q4 2:15', 'Top 5th', 'Final', or the scheduled start time if it hasn't started>","trend":"flat"}
 If it hasn't started yet, set line1 to the matchup abbreviations with no scores and status to the start time. If you can't find a game today, respond with exactly: null`;
-  if (brainV3AuxEnabled()) {
+  if (taki3SpecialistsEnabled()) {
     try {
-      const result = await runBrainV3Structured<{
+      const result = await runTaki3SpecialistStructured<{
         found: boolean;
         eventDate: string;
         title: string;
         line1: string;
         line2: string;
         status: string;
-      }>("sports_tracker", prompt, BRAIN_V3_SPORTS_TRACKER_SCHEMA, {
+      }>("sports_tracker", prompt, TAKI3_SPECIALIST_SPORTS_TRACKER_SCHEMA, {
         timeoutMs: TRACKER_TIMEOUT_MS,
         maxOutputTokens: 320,
         reasoning: "low",
@@ -563,7 +563,7 @@ If it hasn't started yet, set line1 to the matchup abbreviations with no scores 
         };
       }
     } catch (error) {
-      console.error("Brain v3 sports tracker error:", error);
+      console.error("Taki 3.0 compatibility sports tracker error:", error);
     }
   }
   try {
@@ -681,15 +681,15 @@ Find the current NEW retail price in USD for every product in this exact compari
 Use the manufacturer's official US store when available. Otherwise use a major authorized US retailer. Preserve the user's product order. For an underspecified product family, use the current base model and its starting price; do not silently substitute a different product. If you cannot verify every requested product, respond with exactly: null.
 Respond with ONLY compact JSON (no markdown, no code fences):
 {"title":"<short comparison title, max 30 chars>","line1":"<prices only in order, separated by ·, e.g. '$999 · $1,599 · $599'>","line2":"<short product labels in the same order, separated by ·, e.g. 'Air · Pro · mini'>","status":"<short source context, e.g. 'Apple US starting prices'>"}`;
-  if (brainV3AuxEnabled()) {
+  if (taki3SpecialistsEnabled()) {
     try {
-      const result = await runBrainV3Structured<{
+      const result = await runTaki3SpecialistStructured<{
         found: boolean;
         title: string;
         line1: string;
         line2: string;
         status: string;
-      }>("product_tracker", prompt, BRAIN_V3_PRODUCT_TRACKER_SCHEMA, {
+      }>("product_tracker", prompt, TAKI3_SPECIALIST_PRODUCT_TRACKER_SCHEMA, {
         timeoutMs: RESEARCH_TIMEOUT_MS,
         maxOutputTokens: 360,
         reasoning: "medium",
@@ -714,7 +714,7 @@ Respond with ONLY compact JSON (no markdown, no code fences):
         };
       }
     } catch (error) {
-      console.error("Brain v3 product tracker error:", error);
+      console.error("Taki 3.0 compatibility product tracker error:", error);
     }
   }
   try {
@@ -872,9 +872,9 @@ Respond with ONLY compact JSON (no markdown, no code fences):
  "trend":"<'up' if on time or landed on time, 'down' if delayed/cancelled, else 'flat'>"
 }
 Use the user's local timezone (${timeZone}). Always include the '|note' part. If you cannot identify this flight, respond with exactly: null`;
-  if (brainV3AuxEnabled()) {
+  if (taki3SpecialistsEnabled()) {
     try {
-      const result = await runBrainV3Structured<{
+      const result = await runTaki3SpecialistStructured<{
         found: boolean;
         title: string;
         dep: string;
@@ -883,7 +883,7 @@ Use the user's local timezone (${timeZone}). Always include the '|note' part. If
         arrColor: "green" | "yellow" | "red" | "";
         status: string;
         trend: "up" | "down" | "flat";
-      }>("flight_tracker", prompt, BRAIN_V3_FLIGHT_TRACKER_SCHEMA, {
+      }>("flight_tracker", prompt, TAKI3_SPECIALIST_FLIGHT_TRACKER_SCHEMA, {
         timeoutMs: TRACKER_TIMEOUT_MS,
         maxOutputTokens: 440,
         reasoning: "low",
@@ -908,7 +908,7 @@ Use the user's local timezone (${timeZone}). Always include the '|note' part. If
         };
       }
     } catch (error) {
-      console.error("Brain v3 flight tracker error:", error);
+      console.error("Taki 3.0 compatibility flight tracker error:", error);
     }
   }
   try {

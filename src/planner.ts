@@ -282,11 +282,11 @@ async function fastConversationalFallback(
 // Taki 3.0 keeps the established tool implementations and their final action
 // audit, but no longer selects a numbered model specialist for a customer turn.
 // The old flag can remain set during Render migration without re-enabling it.
-function brainV3CoreToolSelected(_state: ConversationState): boolean {
+function taki3CompatibilityToolSelected(_state: ConversationState): boolean {
   return false;
 }
 
-async function runBrainV3CoreWithCompatibility<T>(
+async function runTaki3CompatibilityCoreWithCompatibility<T>(
   coreSelected: boolean,
   coreCall: () => Promise<T>,
   compatibilityCall: () => Promise<T>
@@ -1164,12 +1164,12 @@ function hasStyle(v: MessageStyleVector): boolean {
 async function researchMessageBody(
   query: string,
   timeZone: string,
-  brainV3Core = false
+  taki3CompatibilityCore = false
 ): Promise<{ body: string; event: EventMemory | null; sources: AssistantPlan["sources"] }> {
   const looksEvent = /\b(game|games|match|matches|fixture|launch|race|fight|bout|concert|show|tournament|final|finals|premiere|kickoff|series|grand prix)\b/i.test(query);
 
   if (looksEvent) {
-    const v = await findVerifiedFutureEvent(query, timeZone, { brainV3Core });
+    const v = await findVerifiedFutureEvent(query, timeZone, { taki3CompatibilityCore });
     if (v.found && v.startDate) {
       const event: EventMemory = {
         title: cleanCalendarEventTitle(v.title || "Event"),
@@ -1188,7 +1188,7 @@ async function researchMessageBody(
   }
 
   // Non-event fact (weather, price, score, etc.) — use a concise grounded answer.
-  const res = await getStrictWebAnswer(query, { timeZone, brainV3Core });
+  const res = await getStrictWebAnswer(query, { timeZone, taki3CompatibilityCore });
   return { body: (res.spokenText || "").trim(), event: null, sources: res.sources || [] };
 }
 
@@ -1252,8 +1252,8 @@ export async function planShareRequest(state: ConversationState): Promise<Assist
     .trim();
   if (!query) return answerPlan("What would you like me to share?", { lastIntent: "share_content" });
 
-  const coreSelected = brainV3CoreToolSelected(state);
-  const researched = await runBrainV3CoreWithCompatibility(
+  const coreSelected = taki3CompatibilityToolSelected(state);
+  const researched = await runTaki3CompatibilityCoreWithCompatibility(
     coreSelected,
     () => researchMessageBody(query, state.timeZone, coreSelected),
     () => researchMessageBody(query, state.timeZone, false)
@@ -2021,7 +2021,7 @@ export async function planAssistantResponse(
       persona: state.userProfile,
       timeZone: state.timeZone,
       voiceMode: state.voiceMode,
-      brainV3Core: brainV3CoreToolSelected(state)
+      taki3CompatibilityCore: taki3CompatibilityToolSelected(state)
     });
     return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
   }
@@ -2183,7 +2183,7 @@ export async function planAssistantResponse(
       persona: state.userProfile,
       timeZone: state.timeZone,
       voiceMode: state.voiceMode,
-      brainV3Core: brainV3CoreToolSelected(state)
+      taki3CompatibilityCore: taki3CompatibilityToolSelected(state)
     });
     return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
   }
@@ -2221,7 +2221,7 @@ export async function planAssistantResponse(
       persona: state.userProfile,
       timeZone: state.timeZone,
       voiceMode: state.voiceMode,
-      brainV3Core: brainV3CoreToolSelected(state)
+      taki3CompatibilityCore: taki3CompatibilityToolSelected(state)
     });
     return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
   }
@@ -2233,7 +2233,7 @@ export async function planAssistantResponse(
       persona: state.userProfile,
       timeZone: state.timeZone,
       voiceMode: state.voiceMode,
-      brainV3Core: brainV3CoreToolSelected(state)
+      taki3CompatibilityCore: taki3CompatibilityToolSelected(state)
     });
     return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
   }
@@ -2251,11 +2251,11 @@ export async function planAssistantResponse(
 
     // "Add the next N games" -> look up N events and add them all at once.
     if (count > 1) {
-      const coreSelected = brainV3CoreToolSelected(state);
-      const verifiedList = await runBrainV3CoreWithCompatibility(
+      const coreSelected = taki3CompatibilityToolSelected(state);
+      const verifiedList = await runTaki3CompatibilityCoreWithCompatibility(
         coreSelected,
-        () => findVerifiedFutureEvents(query, count, state.timeZone, { brainV3Core: coreSelected }),
-        () => findVerifiedFutureEvents(query, count, state.timeZone, { brainV3Core: false })
+        () => findVerifiedFutureEvents(query, count, state.timeZone, { taki3CompatibilityCore: coreSelected }),
+        () => findVerifiedFutureEvents(query, count, state.timeZone, { taki3CompatibilityCore: false })
       );
       if (verifiedList.length > 1) {
         const events: EventMemory[] = verifiedList.map((v) => ({
@@ -2291,7 +2291,7 @@ export async function planAssistantResponse(
     }
 
     const verified = await findVerifiedFutureEvent(query, state.timeZone, {
-      brainV3Core: brainV3CoreToolSelected(state)
+      taki3CompatibilityCore: taki3CompatibilityToolSelected(state)
     });
     if (verified.found) {
       const event: EventMemory = {
@@ -2470,18 +2470,18 @@ export async function planAssistantResponse(
         persona: state.userProfile,
         timeZone: state.timeZone,
         voiceMode: state.voiceMode,
-        // If this compatibility switch is reached after a selected v3 route
-        // returned no plan, let the research utility use the same v3 grounded
+        // If this compatibility switch is reached after a selected Taki 3.0 route
+        // returned no plan, let the research utility use the same Taki 3.0 grounded
         // boundary while its own circuit is healthy. It remains false for
-        // legacy/v2 traffic and after a v3 failure has opened the circuit.
-        brainV3Core: brainV3CoreToolSelected(state)
+        // legacy fallback traffic and after a Taki 3.0 failure has opened the circuit.
+        taki3CompatibilityCore: taki3CompatibilityToolSelected(state)
       });
       return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
     }
 
     case "event_lookup": {
       const verified = await findVerifiedFutureEvent(plan.webQuery || state.message, state.timeZone, {
-        brainV3Core: brainV3CoreToolSelected(state)
+        taki3CompatibilityCore: taki3CompatibilityToolSelected(state)
       });
       if (!verified.found) {
         return answerPlan(verified.spokenText || verified.reason || "I could not verify that event right now.", {
@@ -3049,10 +3049,10 @@ export async function planAssistantResponse(
       // A staged answer pass has already produced a complete,
       // tone-aware answer. Do not send it through the legacy answer prompt a
       // second time (which would lose sarcasm/stutter context and add latency).
-      // A v2 refusal is also final: sending it through the legacy answer layer
+      // A Taki 3.0 refusal is also final: sending it through the legacy answer layer
       // would risk turning a protected-request refusal into an inconsistent
       // generic response on text turns.
-      if (plan.brainVersion === "v2" && inline && (plan.answerReady || plan.answerMode === "refuse")) {
+      if (plan.brainVersion === "taki3" && inline && (plan.answerReady || plan.answerMode === "refuse")) {
         return answerPlan(inline, { lastIntent: "answer_only" });
       }
       // For a real question/request, generate a strong, grounded answer

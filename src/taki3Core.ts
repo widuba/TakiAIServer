@@ -11,7 +11,7 @@ import {
 } from "./ai.js";
 import { taki3PromotionGateStatus } from "./taki3Promotion.js";
 import { answerRoutingFor, responseSatisfiesExplicitFormat, responseStyleForTakiModel } from "./tools.js";
-import { normalizeBrainV3Input } from "./brainV3.js";
+import { normalizeTaki3Input } from "./taki3Compatibility.js";
 import { capabilityPromptBlock } from "./capabilities.js";
 import { productKnowledgePromptBlock } from "./productKnowledge.js";
 import { GUARDRAILS, personaPromptBlock } from "./persona.js";
@@ -22,7 +22,7 @@ import { briefForVoice, extractJsonObject, withTimeout } from "./util.js";
 /*
  * Taki 3.0 conversational core
  *
- * v3 improved understanding by splitting one turn into several strict stages.
+ * Taki 3.0 improved understanding by splitting one turn into several strict stages.
  * That is valuable for actions, but it is wasteful for ordinary conversation:
  * a greeting, explanation, rewrite, or grounded fact answer should not pay for
  * a planner, a policy stage, and a second answer writer. Taki 3.0 is the conversational
@@ -383,7 +383,7 @@ export function classifyTaki3Request(state: ConversationState): Taki3Classificat
   const message = boundedText(state.message, MAX_TAKI3_MESSAGE_CHARS);
   let normalized = message;
   try {
-    normalized = boundedText(normalizeBrainV3Input(message, state).normalizedText, MAX_TAKI3_MESSAGE_CHARS) || message;
+    normalized = boundedText(normalizeTaki3Input(message, state).normalizedText, MAX_TAKI3_MESSAGE_CHARS) || message;
   } catch {
     // Speech cleanup is a quality hint. A malformed advisory field must never
     // block the ordinary answer path.

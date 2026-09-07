@@ -1,10 +1,10 @@
-import { brainV3StructuredRequest, generateContent, safetyConfig, ServiceError } from "./ai.js";
+import { taki3SpecialistStructuredRequest, generateContent, safetyConfig, ServiceError } from "./ai.js";
 import { extractJsonObject, withTimeout } from "./util.js";
 
 /**
- * Strict contracts for model calls that sit below the Brain v3 planner.
+ * Strict contracts for model calls that sit below the Taki 3.0 specialist planner.
  *
- * These are deliberately kept in a dependency-light module. The main Brain v3
+ * These are deliberately kept in a dependency-light module. The main Taki 3.0 specialist
  * imports device/web tools, so putting specialist contracts here avoids making
  * those tools import the whole planner and keeps the compatibility fallback
  * easy to exercise in tests.
@@ -12,14 +12,14 @@ import { extractJsonObject, withTimeout } from "./util.js";
 
 const NULLABLE_STRING = { type: ["string", "null"] } as const;
 
-export const BRAIN_V3_WEB_ANSWER_SCHEMA = {
+export const TAKI3_SPECIALIST_WEB_ANSWER_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: { answer: { type: "string" } },
   required: ["answer"]
 } as const;
 
-export const BRAIN_V3_VENUE_SCHEMA = {
+export const TAKI3_SPECIALIST_VENUE_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -29,14 +29,14 @@ export const BRAIN_V3_VENUE_SCHEMA = {
   required: ["found", "venue"]
 } as const;
 
-export const BRAIN_V3_EVENT_MATCH_SCHEMA = {
+export const TAKI3_SPECIALIST_EVENT_MATCH_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: { eventIndex: { type: "integer" } },
   required: ["eventIndex"]
 } as const;
 
-export const BRAIN_V3_ALARM_SCHEMA = {
+export const TAKI3_SPECIALIST_ALARM_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -50,7 +50,7 @@ export const BRAIN_V3_ALARM_SCHEMA = {
   required: ["valid", "hour", "minute", "ampmGiven", "dayOffset", "label"]
 } as const;
 
-export const BRAIN_V3_TIMER_SCHEMA = {
+export const TAKI3_SPECIALIST_TIMER_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -60,7 +60,7 @@ export const BRAIN_V3_TIMER_SCHEMA = {
   required: ["seconds", "label"]
 } as const;
 
-export const BRAIN_V3_MATH_SCHEMA = {
+export const TAKI3_SPECIALIST_MATH_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -70,14 +70,14 @@ export const BRAIN_V3_MATH_SCHEMA = {
   required: ["expr", "label"]
 } as const;
 
-export const BRAIN_V3_STYLE_SCHEMA = {
+export const TAKI3_SPECIALIST_STYLE_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: { text: { type: "string" } },
   required: ["text"]
 } as const;
 
-export const BRAIN_V3_EVENT_SCHEMA = {
+export const TAKI3_SPECIALIST_EVENT_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -92,7 +92,7 @@ export const BRAIN_V3_EVENT_SCHEMA = {
   required: ["found", "title", "localDate", "localTime", "location", "notes", "reason"]
 } as const;
 
-export const BRAIN_V3_EVENTS_SCHEMA = {
+export const TAKI3_SPECIALIST_EVENTS_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -115,7 +115,7 @@ export const BRAIN_V3_EVENTS_SCHEMA = {
   required: ["events"]
 } as const;
 
-export const BRAIN_V3_SPORTS_TRACKER_SCHEMA = {
+export const TAKI3_SPECIALIST_SPORTS_TRACKER_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -129,7 +129,7 @@ export const BRAIN_V3_SPORTS_TRACKER_SCHEMA = {
   required: ["found", "eventDate", "title", "line1", "line2", "status"]
 } as const;
 
-export const BRAIN_V3_PRODUCT_TRACKER_SCHEMA = {
+export const TAKI3_SPECIALIST_PRODUCT_TRACKER_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -142,7 +142,7 @@ export const BRAIN_V3_PRODUCT_TRACKER_SCHEMA = {
   required: ["found", "title", "line1", "line2", "status"]
 } as const;
 
-export const BRAIN_V3_FLIGHT_TRACKER_SCHEMA = {
+export const TAKI3_SPECIALIST_FLIGHT_TRACKER_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -158,7 +158,7 @@ export const BRAIN_V3_FLIGHT_TRACKER_SCHEMA = {
   required: ["found", "title", "dep", "arr", "depColor", "arrColor", "status", "trend"]
 } as const;
 
-export type BrainV3SpecialistOptions = {
+export type Taki3SpecialistOptions = {
   timeoutMs: number;
   maxOutputTokens?: number;
   reasoning?: "none" | "low" | "medium" | "high";
@@ -166,7 +166,7 @@ export type BrainV3SpecialistOptions = {
   [key: string]: unknown;
 };
 
-export type BrainV3StructuredGenerator = (args: any) => Promise<any>;
+export type Taki3SpecialistStructuredGenerator = (args: any) => Promise<any>;
 
 let specialistCircuitOpenUntil = 0;
 
@@ -184,16 +184,16 @@ function specialistFailureCooldownMs(error: unknown): number {
 }
 
 /** The auxiliary boundary must fail over quickly instead of retrying every surface. */
-export function brainV3SpecialistCircuitOpen(now = Date.now()): boolean {
+export function taki3SpecialistCircuitOpen(now = Date.now()): boolean {
   return specialistCircuitOpenUntil > now;
 }
 
-export function resetBrainV3SpecialistCircuit(): void {
+export function resetTaki3SpecialistCircuit(): void {
   specialistCircuitOpenUntil = 0;
 }
 
 /** Local defense-in-depth check for provider JSON, including nested objects. */
-export function brainV3SchemaMatches(value: unknown, schema: Record<string, any>): boolean {
+export function taki3SpecialistSchemaMatches(value: unknown, schema: Record<string, any>): boolean {
   const declaredTypes = Array.isArray(schema.type) ? schema.type : schema.type ? [schema.type] : [];
   if (declaredTypes.length) {
     const typeMatches = declaredTypes.some((type: unknown) => {
@@ -224,39 +224,39 @@ export function brainV3SchemaMatches(value: unknown, schema: Record<string, any>
     if (!required.every((key: unknown) => typeof key === "string" && Object.prototype.hasOwnProperty.call(value, key))) return false;
     if (schema.additionalProperties === false && Object.keys(value).some((key) => !Object.prototype.hasOwnProperty.call(properties, key))) return false;
     for (const [key, childSchema] of Object.entries(properties)) {
-      if (Object.prototype.hasOwnProperty.call(value, key) && !brainV3SchemaMatches((value as Record<string, unknown>)[key], childSchema)) return false;
+      if (Object.prototype.hasOwnProperty.call(value, key) && !taki3SpecialistSchemaMatches((value as Record<string, unknown>)[key], childSchema)) return false;
     }
   }
 
-  if (Array.isArray(value) && schema.items && !value.every((item) => brainV3SchemaMatches(item, schema.items))) return false;
+  if (Array.isArray(value) && schema.items && !value.every((item) => taki3SpecialistSchemaMatches(item, schema.items))) return false;
   return true;
 }
 
 function completeTopLevelObject(value: unknown, schema: Record<string, unknown>): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value) && brainV3SchemaMatches(value, schema as Record<string, any>);
+  return !!value && typeof value === "object" && !Array.isArray(value) && taki3SpecialistSchemaMatches(value, schema as Record<string, any>);
 }
 
-/** Execute one named strict v3 object request and return its provider response too. */
-export async function runBrainV3Structured<T>(
+/** Execute one named strict Taki 3.0 object request and return its provider response too. */
+export async function runTaki3SpecialistStructured<T>(
   name: string,
   contents: unknown,
   schema: Record<string, unknown>,
-  options: BrainV3SpecialistOptions,
-  generator: BrainV3StructuredGenerator = generateContent
+  options: Taki3SpecialistOptions,
+  generator: Taki3SpecialistStructuredGenerator = generateContent
 ): Promise<{ value: T; response: any }> {
-  if (brainV3SpecialistCircuitOpen()) throw new Error("brain_v3_specialist_circuit_open");
+  if (taki3SpecialistCircuitOpen()) throw new Error("taki3_specialist_circuit_open");
   const { timeoutMs, maxOutputTokens = 1_200, reasoning = "low", teen = false, ...config } = options;
-  const request = brainV3StructuredRequest(name, contents, schema, {
+  const request = taki3SpecialistStructuredRequest(name, contents, schema, {
     maxOutputTokens,
     openAIReasoningEffort: reasoning,
     ...config,
     ...safetyConfig(teen)
   });
   try {
-    const response = await withTimeout(generator(request), timeoutMs, `Brain v3 ${name}`);
+    const response = await withTimeout(generator(request), timeoutMs, `Taki 3.0 specialist ${name}`);
     const value = extractJsonObject(String(response?.text || ""));
     if (!completeTopLevelObject(value, schema)) {
-      throw new Error(`Brain v3 ${name} returned an incomplete or non-strict result`);
+      throw new Error(`Taki 3.0 specialist ${name} returned an incomplete or non-strict result`);
     }
     specialistCircuitOpenUntil = 0;
     return { value: value as T, response };

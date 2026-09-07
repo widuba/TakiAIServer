@@ -1,10 +1,10 @@
 import {
   PLANNER_MODEL,
-  brainV3AuxEnabled,
+  taki3SpecialistsEnabled,
   generateContent,
   safetyConfig
 } from "./ai.js";
-import { runBrainV3Structured } from "./brainV3Specialists.js";
+import { runTaki3SpecialistStructured } from "./taki3Specialists.js";
 import { extractJsonObject, withTimeout } from "./util.js";
 
 export type LearnedMemory = { text: string; category: string };
@@ -67,10 +67,10 @@ Rules:
   - If nothing qualifies, return empty arrays.`;
 
   try {
-    const v3 = brainV3AuxEnabled();
+    const specialistEnabled = taki3SpecialistsEnabled();
     let parsed: any;
-    if (v3) {
-      parsed = (await runBrainV3Structured<any>("memory", prompt, DURABLE_MEMORY_SCHEMA, {
+    if (specialistEnabled) {
+      parsed = (await runTaki3SpecialistStructured<any>("memory", prompt, DURABLE_MEMORY_SCHEMA, {
         timeoutMs: 9_000,
         maxOutputTokens: 900,
         reasoning: "low",

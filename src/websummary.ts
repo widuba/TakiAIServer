@@ -1,5 +1,5 @@
-import { brainV3AuxEnabled, generateContent, MAIN_MODEL } from "./ai.js";
-import { runBrainV3Structured } from "./brainV3Specialists.js";
+import { taki3SpecialistsEnabled, generateContent, MAIN_MODEL } from "./ai.js";
+import { runTaki3SpecialistStructured } from "./taki3Specialists.js";
 import { withTimeout } from "./util.js";
 import { fetchPublicUrl, readPublicResponseText, validatePublicHttpUrl } from "./urlSafety.js";
 import { GUARDRAILS, personaPromptBlock } from "./persona.js";
@@ -75,9 +75,9 @@ ${extra && extra.length > 3 ? `\nThe user also said: "${extra}" — address that
 PAGE (${url}):
 ${text}`;
   try {
-    const v3 = brainV3AuxEnabled();
-    if (v3) {
-      const result = await runBrainV3Structured<{ summary: string }>(
+    const specialistEnabled = taki3SpecialistsEnabled();
+    if (specialistEnabled) {
+      const result = await runTaki3SpecialistStructured<{ summary: string }>(
         "url_summary",
         `${prompt}\n\nReturn the final summary inside this JSON object only: {"summary":"..."}. Do not add any other keys.`,
         URL_SUMMARY_SCHEMA,

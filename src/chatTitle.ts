@@ -1,5 +1,5 @@
-import { brainV3AuxEnabled, generateContent, PLANNER_MODEL, safetyConfig } from "./ai.js";
-import { runBrainV3Structured } from "./brainV3Specialists.js";
+import { taki3SpecialistsEnabled, generateContent, PLANNER_MODEL, safetyConfig } from "./ai.js";
+import { runTaki3SpecialistStructured } from "./taki3Specialists.js";
 import { withTimeout } from "./util.js";
 
 export const CHAT_TITLE_SCHEMA = {
@@ -30,9 +30,9 @@ Name the activity or topic, not the user's intent phrasing.
 Example: "help me plan a vacation to Italy" -> Vacation Planning
 Example: "what laptop should I buy" -> Laptop Comparison
 User message: ${JSON.stringify(input)}`;
-    const v3 = brainV3AuxEnabled();
-    if (v3) {
-      const result = await runBrainV3Structured<{ title: string }>("chat_title", prompt, CHAT_TITLE_SCHEMA, {
+    const specialistEnabled = taki3SpecialistsEnabled();
+    if (specialistEnabled) {
+      const result = await runTaki3SpecialistStructured<{ title: string }>("chat_title", prompt, CHAT_TITLE_SCHEMA, {
         timeoutMs: 7_000,
         maxOutputTokens: 120,
         reasoning: "low",

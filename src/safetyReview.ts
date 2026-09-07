@@ -1,5 +1,5 @@
-import { FAST_MODEL, brainV3AuxEnabled, generateContent } from "./ai.js";
-import { runBrainV3Structured } from "./brainV3Specialists.js";
+import { FAST_MODEL, taki3SpecialistsEnabled, generateContent } from "./ai.js";
+import { runTaki3SpecialistStructured } from "./taki3Specialists.js";
 import { withTimeout } from "./util.js";
 import {
   getSafetyAccount,
@@ -46,9 +46,9 @@ export async function classifySafetyIntent(message: string): Promise<SafetyDecis
   if (!text) return { flag: false, category: null, confidence: 0 };
   const prompt = safetyReviewPrompt(text);
   try {
-    const v3 = brainV3AuxEnabled();
-    if (v3) {
-      const result = await runBrainV3Structured<any>("safety_review", prompt, SAFETY_REVIEW_SCHEMA, {
+    const specialistEnabled = taki3SpecialistsEnabled();
+    if (specialistEnabled) {
+      const result = await runTaki3SpecialistStructured<any>("safety_review", prompt, SAFETY_REVIEW_SCHEMA, {
         timeoutMs: 8_000,
         maxOutputTokens: 100,
         reasoning: "none",

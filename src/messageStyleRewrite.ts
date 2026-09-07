@@ -1,5 +1,5 @@
-import { brainV3AuxEnabled, generateContent, MAIN_MODEL, safetyConfig } from "./ai.js";
-import { BRAIN_V3_STYLE_SCHEMA, runBrainV3Structured } from "./brainV3Specialists.js";
+import { taki3SpecialistsEnabled, generateContent, MAIN_MODEL, safetyConfig } from "./ai.js";
+import { TAKI3_SPECIALIST_STYLE_SCHEMA, runTaki3SpecialistStructured } from "./taki3Specialists.js";
 import type { MessageStyleVector } from "./messageStyle.js";
 import { styleVectorToPromptHints } from "./messageStyle.js";
 import { withTimeout } from "./util.js";
@@ -84,19 +84,19 @@ Message (user data): ${promptData(body, 4_000)}`;
   };
 
   const provider = deps.generateContent || generateContent;
-  if (brainV3AuxEnabled(deps.env || process.env)) {
+  if (taki3SpecialistsEnabled(deps.env || process.env)) {
     try {
-      const result = await runBrainV3Structured<{ text: string }>(
+      const result = await runTaki3SpecialistStructured<{ text: string }>(
         "message_style_rewrite",
         `${prompt}\nFor this structured rewrite, put only the rewritten message in the required text field.`,
-        BRAIN_V3_STYLE_SCHEMA,
+        TAKI3_SPECIALIST_STYLE_SCHEMA,
         { timeoutMs: 7_000, maxOutputTokens: 320, reasoning: "low", teen: Boolean(teen) },
         provider
       );
       const out = cleanCandidate(result.value.text);
       if (out && rewritePreservesMessageContent(body, out)) return out;
     } catch (error) {
-      console.error("Brain v3 message style rewrite error:", error);
+      console.error("Taki 3.0 compatibility message style rewrite error:", error);
     }
   }
 

@@ -1,5 +1,5 @@
 /*
- * Provider-backed Brain v3 gate.
+ * Provider-backed Taki 3.0 compatibility gate.
  *
  * This is intentionally a direct staging/maintenance harness, not an API route. It uses a
  * synthetic device id, never charges an account, never executes a native
@@ -7,36 +7,36 @@
  * The explicit confirmation prevents an accidental run from a production
  * shell. Run it only with a staging provider project and quota:
  *
- *   TAKI_BRAIN_V3_EVAL_CONFIRM=staging \
- *   TAKI_BRAIN_V3_STAGING_PROVIDER=openai \
- *   TAKI_BRAIN_V3_STAGING_API_KEY=... npm run eval:brain-v3
+ *   TAKI_TAKI3_SPECIALIST_EVAL_CONFIRM=staging \
+ *   TAKI_TAKI3_SPECIALIST_STAGING_PROVIDER=openai \
+ *   TAKI_TAKI3_SPECIALIST_STAGING_API_KEY=... npm run eval:taki3-specialist
  *
  * A planned maintenance run may explicitly reuse the existing backend key by
- * setting TAKI_BRAIN_V3_EVAL_CONFIRM=maintenance and
- * TAKI_BRAIN_V3_EVAL_USE_EXISTING_KEY=1. This does not relax the production
+ * setting TAKI_TAKI3_SPECIALIST_EVAL_CONFIRM=maintenance and
+ * TAKI_TAKI3_SPECIALIST_EVAL_USE_EXISTING_KEY=1. This does not relax the production
  * rollout gate; it only changes which credential the isolated evaluator may
  * use when a separate staging project is unavailable.
  *
- * Add TAKI_BRAIN_V3_EVAL_REAL_WEB=1 for the opt-in current-fact case that uses
+ * Add TAKI_TAKI3_SPECIALIST_EVAL_REAL_WEB=1 for the opt-in current-fact case that uses
  * the provider's real web-search path. The default corpus uses a deterministic
  * fixture so the core gate is repeatable and cannot accidentally create
- * uncontrolled web traffic. Add TAKI_BRAIN_V3_EVAL_AUX=1 to run the strict
+ * uncontrolled web traffic. Add TAKI_TAKI3_SPECIALIST_EVAL_AUX=1 to run the strict
  * provider contract corpus for every promoted auxiliary surface as well.
  */
 
 import type { AssistantPlan, ConversationState } from "../src/types.js";
-import type { BrainV3StageName, BrainV3StageSnapshots } from "../src/brainV3.js";
+import type { Taki3CompatibilityStageName, Taki3CompatibilityStageSnapshots } from "../src/taki3Compatibility.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import dotenv from "dotenv";
 import {
-  BRAIN_V3_PROMOTION_EVIDENCE_TTL_MS,
-  BRAIN_V3_PROMOTION_EVIDENCE_VERSION,
-  BRAIN_V3_PROMOTION_MIN_AUXILIARY_CASES,
-  BRAIN_V3_PROMOTION_MIN_CORE_CASES,
-  brainV3WorktreeClean,
-  encodeBrainV3PromotionEvidence
-} from "../src/brainV3Promotion.js";
+  TAKI3_SPECIALIST_PROMOTION_EVIDENCE_TTL_MS,
+  TAKI3_SPECIALIST_PROMOTION_EVIDENCE_VERSION,
+  TAKI3_SPECIALIST_PROMOTION_MIN_AUXILIARY_CASES,
+  TAKI3_SPECIALIST_PROMOTION_MIN_CORE_CASES,
+  taki3CompatibilityWorktreeClean,
+  encodeTaki3CompatibilityPromotionEvidence
+} from "../src/taki3SpecialistPromotion.js";
 
 // Load local environment markers before the production refusal check, but do
 // not import the AI client until the explicit staging credential has passed.
@@ -82,22 +82,22 @@ async function runDeterministicPromotionGate(): Promise<DeterministicGateSummary
   const testEnv = { ...process.env };
   // The deterministic child must not inherit any rollout or staging marker
   // from the shell that launched promotion. This keeps its result independent
-  // of operator state and prevents a copied production flag from selecting v3.
+  // of operator state and prevents a copied production flag from selecting the specialist path.
   for (const key of Object.keys(testEnv)) {
-    if (key.startsWith("TAKI_BRAIN_V3_")) delete testEnv[key];
+    if (key.startsWith("TAKI_TAKI3_SPECIALIST_")) delete testEnv[key];
   }
   for (const key of ["OPENAI_API_KEY", "OPENAI_ORG_ID", "OPENAI_PROJECT_ID", "OPENAI_BASE_URL"]) {
     delete testEnv[key];
   }
   // Keep these sentinels defined so dotenv cannot refill a local rollout flag
   // or provider credential while the child process is booting.
-  testEnv.TAKI_BRAIN_V3_MODE = "disabled";
-  testEnv.TAKI_BRAIN_V3_AUX_MODE = "disabled";
-  testEnv.TAKI_BRAIN_V3_READY = "";
-  testEnv.TAKI_BRAIN_V3_PERCENT = "0";
-  testEnv.TAKI_BRAIN_V3_SHADOW_PERCENT = "0";
-  testEnv.TAKI_BRAIN_V3_PROMOTION_EVIDENCE = "";
-  testEnv.TAKI_BRAIN_V3_RELEASE_ID = "";
+  testEnv.TAKI_TAKI3_SPECIALIST_MODE = "disabled";
+  testEnv.TAKI_TAKI3_SPECIALIST_AUX_MODE = "disabled";
+  testEnv.TAKI_TAKI3_SPECIALIST_READY = "";
+  testEnv.TAKI_TAKI3_SPECIALIST_PERCENT = "0";
+  testEnv.TAKI_TAKI3_SPECIALIST_SHADOW_PERCENT = "0";
+  testEnv.TAKI_TAKI3_SPECIALIST_PROMOTION_EVIDENCE = "";
+  testEnv.TAKI_TAKI3_SPECIALIST_RELEASE_ID = "";
   testEnv.OPENAI_API_KEY = "";
   testEnv.OPENAI_ORG_ID = "";
   testEnv.OPENAI_PROJECT_ID = "";
@@ -134,7 +134,7 @@ async function currentGitRevision(): Promise<{ revision: string; clean: boolean 
     const revisionResult = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), maxBuffer: 10_000 });
     const statusResult = await execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: process.cwd(), maxBuffer: 10_000 });
     const revision = String(revisionResult.stdout || "").trim();
-    return revision ? { revision, clean: brainV3WorktreeClean(statusResult.stdout) } : null;
+    return revision ? { revision, clean: taki3CompatibilityWorktreeClean(statusResult.stdout) } : null;
   } catch {
     return null;
   }
@@ -148,7 +148,7 @@ type EvalCase = {
   maxLatencyMs?: number;
   requiresUnderstanding?: boolean;
   expect: (plan: AssistantPlan) => string[];
-  expectStages?: (stages: Partial<BrainV3StageSnapshots>) => string[];
+  expectStages?: (stages: Partial<Taki3CompatibilityStageSnapshots>) => string[];
 };
 
 type AuxiliaryEvalCase = {
@@ -160,10 +160,10 @@ type AuxiliaryEvalCase = {
   validate: (value: any, response: any) => string[];
 };
 
-let brainV3GenericRefusalImpl: ((text: string) => boolean) | null = null;
+let taki3CompatibilityGenericRefusalImpl: ((text: string) => boolean) | null = null;
 
 function genericRefusal(text: string): boolean {
-  return brainV3GenericRefusalImpl ? brainV3GenericRefusalImpl(text) : false;
+  return taki3CompatibilityGenericRefusalImpl ? taki3CompatibilityGenericRefusalImpl(text) : false;
 }
 
 function hasAppendedGenericRefusal(text: string): boolean {
@@ -198,18 +198,18 @@ function includes(text: string, pattern: RegExp, reason: string): string[] {
   return pattern.test(text) ? [] : [reason];
 }
 
-function stageCheck<T extends BrainV3StageName>(
-  stages: Partial<BrainV3StageSnapshots>,
+function stageCheck<T extends Taki3CompatibilityStageName>(
+  stages: Partial<Taki3CompatibilityStageSnapshots>,
   stage: T,
-  predicate: (snapshot: BrainV3StageSnapshots[T]) => boolean,
+  predicate: (snapshot: Taki3CompatibilityStageSnapshots[T]) => boolean,
   reason: string
 ): string[] {
   const snapshot = stages[stage];
-  return snapshot && predicate(snapshot as BrainV3StageSnapshots[T]) ? [] : [reason];
+  return snapshot && predicate(snapshot as Taki3CompatibilityStageSnapshots[T]) ? [] : [reason];
 }
 
 function stageContract(
-  stages: Partial<BrainV3StageSnapshots>,
+  stages: Partial<Taki3CompatibilityStageSnapshots>,
   requiresUnderstanding: boolean
 ): string[] {
   return [
@@ -220,13 +220,13 @@ function stageContract(
 }
 
 function semanticStages(
-  stages: Partial<BrainV3StageSnapshots>,
+  stages: Partial<Taki3CompatibilityStageSnapshots>,
   expected: {
-    sarcasm?: BrainV3StageSnapshots["signals"]["sarcasm"] | BrainV3StageSnapshots["signals"]["sarcasm"][];
-    tone?: BrainV3StageSnapshots["signals"]["tone"];
+    sarcasm?: Taki3CompatibilityStageSnapshots["signals"]["sarcasm"] | Taki3CompatibilityStageSnapshots["signals"]["sarcasm"][];
+    tone?: Taki3CompatibilityStageSnapshots["signals"]["tone"];
     language?: string;
     disfluencyDetected?: boolean;
-    speechAct?: BrainV3StageSnapshots["signals"]["speechAct"];
+    speechAct?: Taki3CompatibilityStageSnapshots["signals"]["speechAct"];
   },
   prefix: string
 ): string[] {
@@ -243,8 +243,8 @@ function semanticStages(
 }
 
 function understandingIntent(
-  stages: Partial<BrainV3StageSnapshots>,
-  intent: BrainV3StageSnapshots["understanding"]["intent"],
+  stages: Partial<Taki3CompatibilityStageSnapshots>,
+  intent: Taki3CompatibilityStageSnapshots["understanding"]["intent"],
   prefix: string
 ): string[] {
   return [
@@ -254,7 +254,7 @@ function understandingIntent(
 }
 
 function notDefinitelySarcastic(
-  stages: Partial<BrainV3StageSnapshots>,
+  stages: Partial<Taki3CompatibilityStageSnapshots>,
   prefix: string
 ): string[] {
   return [
@@ -275,7 +275,7 @@ function stateFor(
     undefined,
     undefined,
     Boolean(item.voice),
-    `brain-v3-staging-${item.id}`,
+    `taki3-specialist-staging-${item.id}`,
     undefined,
     item.voice ? { transcriptionConfidence: 0.61, transcriptionSource: "device" } : undefined
   );
@@ -883,7 +883,7 @@ async function runAuxiliaryProviderGate(
     safetyReview,
     websummary
   ] = await Promise.all([
-    import("../src/brainV3Specialists.js"),
+    import("../src/taki3Specialists.js"),
     import("../src/cooking.js"),
     import("../src/dayplan.js"),
     import("../src/userMemory.js"),
@@ -973,7 +973,7 @@ async function runAuxiliaryProviderGate(
       id: "aux-venue",
       name: "venue_fast",
       contents: "Extract the venue from this supplied event data. Event title: Summer Jazz. Venue: Prospect Park Bandshell. Return found=true and the exact venue name; do not invent a different venue.",
-      schema: schema(specialists.BRAIN_V3_VENUE_SCHEMA),
+      schema: schema(specialists.TAKI3_SPECIALIST_VENUE_SCHEMA),
       options: { timeoutMs: 9_000, maxOutputTokens: 120, reasoning: "low" },
       validate: (value) => [
         ...(value?.found === true ? [] : ["venue_not_found"]),
@@ -984,7 +984,7 @@ async function runAuxiliaryProviderGate(
       id: "aux-event-match",
       name: "event_match",
       contents: "Choose the matching event index for the requested event. Requested: New York vs Boston on September 4. Candidates: index 0 = New York vs Boston on September 3; index 1 = New York vs Boston on September 4; index 2 = Miami vs Boston on September 4. Return only the object with eventIndex 1.",
-      schema: schema(specialists.BRAIN_V3_EVENT_MATCH_SCHEMA),
+      schema: schema(specialists.TAKI3_SPECIALIST_EVENT_MATCH_SCHEMA),
       options: { timeoutMs: 9_000, maxOutputTokens: 80, reasoning: "low" },
       validate: (value) => value?.eventIndex === 1 ? [] : ["event_match_wrong_index"]
     },
@@ -992,7 +992,7 @@ async function runAuxiliaryProviderGate(
       id: "aux-alarm",
       name: "alarm_parse",
       contents: "Parse this alarm request: Set an alarm tomorrow at 7:30 AM labeled school. Return valid=true, hour 7, minute 30, ampmGiven=true, dayOffset=1, label school.",
-      schema: schema(specialists.BRAIN_V3_ALARM_SCHEMA),
+      schema: schema(specialists.TAKI3_SPECIALIST_ALARM_SCHEMA),
       options: { timeoutMs: 9_000, maxOutputTokens: 120, reasoning: "low" },
       validate: (value) => value?.valid === true && value?.hour === 7 && value?.minute === 30 && value?.dayOffset === 1
         ? [] : ["alarm_fields_not_preserved"]
@@ -1001,7 +1001,7 @@ async function runAuxiliaryProviderGate(
       id: "aux-timer",
       name: "timer_parse",
       contents: "Parse this timer request: Start a 90-second timer for tea. Return seconds 90 and label tea.",
-      schema: schema(specialists.BRAIN_V3_TIMER_SCHEMA),
+      schema: schema(specialists.TAKI3_SPECIALIST_TIMER_SCHEMA),
       options: { timeoutMs: 9_000, maxOutputTokens: 100, reasoning: "low" },
       validate: (value) => value?.seconds === 90 && /tea/i.test(String(value?.label || "")) ? [] : ["timer_fields_not_preserved"]
     },
@@ -1009,7 +1009,7 @@ async function runAuxiliaryProviderGate(
       id: "aux-math",
       name: "math_translate",
       contents: "Translate this calculation into a safe JavaScript expression using only numbers and permitted Math functions: What is 17 percent of 240? Return a non-null expression and a short label.",
-      schema: schema(specialists.BRAIN_V3_MATH_SCHEMA),
+      schema: schema(specialists.TAKI3_SPECIALIST_MATH_SCHEMA),
       options: { timeoutMs: 9_000, maxOutputTokens: 140, reasoning: "low" },
       validate: (value) => {
         const expr = String(value?.expr || "");
@@ -1022,16 +1022,16 @@ async function runAuxiliaryProviderGate(
       id: "aux-style",
       name: "message_style_rewrite",
       contents: "Rewrite this message in a friendly casual style while preserving its exact fact and time: I will be late to the 5:30 meeting.",
-      schema: schema(specialists.BRAIN_V3_STYLE_SCHEMA),
+      schema: schema(specialists.TAKI3_SPECIALIST_STYLE_SCHEMA),
       options: { timeoutMs: 9_000, maxOutputTokens: 180, reasoning: "low", temperature: 0.2 },
-      validate: (value) => specialists.brainV3SchemaMatches(value, specialists.BRAIN_V3_STYLE_SCHEMA) && /late|5:30|five thirty/i.test(String(value?.text || ""))
+      validate: (value) => specialists.taki3SpecialistSchemaMatches(value, specialists.TAKI3_SPECIALIST_STYLE_SCHEMA) && /late|5:30|five thirty/i.test(String(value?.text || ""))
         ? [] : ["style_rewrite_lost_fact"]
     },
     {
       id: "aux-events",
       name: "events_extract",
       contents: "Extract the two supplied future events into the required object: 'Dentist on 2026-09-04 at 09:00 in Boston' and 'Lunch on 2026-09-05 at 12:00 in Cambridge'. Do not invent more events.",
-      schema: schema(specialists.BRAIN_V3_EVENTS_SCHEMA),
+      schema: schema(specialists.TAKI3_SPECIALIST_EVENTS_SCHEMA),
       options: { timeoutMs: 12_000, maxOutputTokens: 500, reasoning: "low" },
       validate: (value) => Array.isArray(value?.events) && value.events.length === 2 && value.events.every((item: any) => item?.title && item?.localDate && item?.localTime)
         ? [] : ["events_not_extracted"]
@@ -1040,7 +1040,7 @@ async function runAuxiliaryProviderGate(
       id: "aux-sports-tracker",
       name: "sports_tracker",
       contents: "Return a strict tracker snapshot for the supplied fixture: Boston Celtics vs New York Knicks, eventDate 2026-09-04, scheduled with no score. Use found=true, a non-empty title, line1, line2, and status.",
-      schema: schema(specialists.BRAIN_V3_SPORTS_TRACKER_SCHEMA),
+      schema: schema(specialists.TAKI3_SPECIALIST_SPORTS_TRACKER_SCHEMA),
       options: { timeoutMs: 12_000, maxOutputTokens: 220, reasoning: "low" },
       validate: (value) => value?.found === true && value?.eventDate === "2026-09-04" && value?.title && value?.line1 && value?.status
         ? [] : ["sports_tracker_contract_failed"]
@@ -1049,7 +1049,7 @@ async function runAuxiliaryProviderGate(
       id: "aux-product-tracker",
       name: "product_tracker",
       contents: "Return a strict product-price tracker snapshot for this supplied fixture: Example Laptop, starting price $999, source context Example Store. Use found=true and preserve the price in line1.",
-      schema: schema(specialists.BRAIN_V3_PRODUCT_TRACKER_SCHEMA),
+      schema: schema(specialists.TAKI3_SPECIALIST_PRODUCT_TRACKER_SCHEMA),
       options: { timeoutMs: 12_000, maxOutputTokens: 220, reasoning: "low" },
       validate: (value) => value?.found === true && /(?:\$\s*999|999)/.test(String(value?.line1 || "")) && value?.title && value?.status
         ? [] : ["product_tracker_contract_failed"]
@@ -1058,7 +1058,7 @@ async function runAuxiliaryProviderGate(
       id: "aux-flight-tracker",
       name: "flight_tracker",
       contents: "Return a strict tracker snapshot for this supplied fixture: UA328, Denver to Honolulu, scheduled 6:00p departure and 9:45p arrival, on time. Use found=true, depColor and arrColor green, trend up, and preserve the flight code in the title.",
-      schema: schema(specialists.BRAIN_V3_FLIGHT_TRACKER_SCHEMA),
+      schema: schema(specialists.TAKI3_SPECIALIST_FLIGHT_TRACKER_SCHEMA),
       options: { timeoutMs: 12_000, maxOutputTokens: 260, reasoning: "low" },
       validate: (value) => value?.found === true && /UA328/i.test(String(value?.title || "")) && value?.depColor === "green" && value?.arrColor === "green" && value?.trend === "up"
         ? [] : ["flight_tracker_contract_failed"]
@@ -1067,7 +1067,7 @@ async function runAuxiliaryProviderGate(
       id: "aux-web-answer",
       name: "web_answer",
       contents: "Answer this grounded synthetic question using only the supplied source fact: Source fact: Canberra is the capital of Australia. Question: What is Australia's capital? Return a concise answer object.",
-      schema: schema(specialists.BRAIN_V3_WEB_ANSWER_SCHEMA),
+      schema: schema(specialists.TAKI3_SPECIALIST_WEB_ANSWER_SCHEMA),
       options: { timeoutMs: 12_000, maxOutputTokens: 180, reasoning: "low" },
       validate: (value) => /canberra/i.test(String(value?.answer || "")) ? [] : ["web_answer_misses_source"]
     },
@@ -1075,7 +1075,7 @@ async function runAuxiliaryProviderGate(
       id: "aux-event",
       name: "event_extract",
       contents: "Extract one supplied event into the required object: 'Dentist appointment on 2026-09-04 at 09:00 in Boston'. Set found=true and preserve the date, time, title, and location.",
-      schema: schema(specialists.BRAIN_V3_EVENT_SCHEMA),
+      schema: schema(specialists.TAKI3_SPECIALIST_EVENT_SCHEMA),
       options: { timeoutMs: 12_000, maxOutputTokens: 260, reasoning: "low" },
       validate: (value) => value?.found === true && /2026-09-04/.test(String(value?.localDate || "")) && /09:00|9:00/.test(String(value?.localTime || ""))
         ? [] : ["event_contract_failed"]
@@ -1085,13 +1085,13 @@ async function runAuxiliaryProviderGate(
   const failures: Array<{ id: string; reasons: string[] }> = [];
   const latencies: number[] = [];
   for (const item of cases) {
-    specialists.resetBrainV3SpecialistCircuit();
+    specialists.resetTaki3SpecialistCircuit();
     const started = Date.now();
     const reasons: string[] = [];
     let value: any = null;
     let response: any = null;
     try {
-      const result = await specialists.runBrainV3Structured<any>(
+      const result = await specialists.runTaki3SpecialistStructured<any>(
         item.name,
         item.contents,
         item.schema,
@@ -1126,14 +1126,14 @@ async function main(): Promise<number> {
   const productionMarker = [process.env.NODE_ENV, process.env.TAKI_ENV, process.env.APP_ENV]
     .some((value) => /^(?:production|prod)$/i.test(String(value || "").trim()));
   if (productionMarker) {
-    console.error("Brain v3 provider evaluation refuses to run with a production environment marker.");
+    console.error("Taki 3.0 compatibility provider evaluation refuses to run with a production environment marker.");
     return 2;
   }
-  const confirmation = String(process.env.TAKI_BRAIN_V3_EVAL_CONFIRM || "").trim().toLocaleLowerCase();
-  const useExistingKey = String(process.env.TAKI_BRAIN_V3_EVAL_USE_EXISTING_KEY || "").trim() === "1";
+  const confirmation = String(process.env.TAKI_TAKI3_SPECIALIST_EVAL_CONFIRM || "").trim().toLocaleLowerCase();
+  const useExistingKey = String(process.env.TAKI_TAKI3_SPECIALIST_EVAL_USE_EXISTING_KEY || "").trim() === "1";
   const maintenanceKeyApproved = confirmation === "maintenance" && useExistingKey;
   if (confirmation !== "staging" && !maintenanceKeyApproved) {
-    console.error("Brain v3 provider evaluation requires TAKI_BRAIN_V3_EVAL_CONFIRM=staging, or explicit maintenance confirmation with TAKI_BRAIN_V3_EVAL_USE_EXISTING_KEY=1.");
+    console.error("Taki 3.0 compatibility provider evaluation requires TAKI_TAKI3_SPECIALIST_EVAL_CONFIRM=staging, or explicit maintenance confirmation with TAKI_TAKI3_SPECIALIST_EVAL_USE_EXISTING_KEY=1.");
     return 2;
   }
 
@@ -1141,10 +1141,10 @@ async function main(): Promise<number> {
   // become the evaluator credential by accident. The staging key is explicit,
   // isolated to this process, and the other provider is disabled before any
   // application module initializes its clients or fallback candidates.
-  const stagingProvider = String(process.env.TAKI_BRAIN_V3_STAGING_PROVIDER || "").trim().toLocaleLowerCase();
-  const stagingKey = String(process.env.TAKI_BRAIN_V3_STAGING_API_KEY || "").trim();
+  const stagingProvider = String(process.env.TAKI_TAKI3_SPECIALIST_STAGING_PROVIDER || "").trim().toLocaleLowerCase();
+  const stagingKey = String(process.env.TAKI_TAKI3_SPECIALIST_STAGING_API_KEY || "").trim();
   if (!((stagingProvider === "openai" || stagingProvider === "gemini") && stagingKey)) {
-    console.error("Brain v3 provider evaluation requires TAKI_BRAIN_V3_STAGING_PROVIDER=openai|gemini and TAKI_BRAIN_V3_STAGING_API_KEY.");
+    console.error("Taki 3.0 compatibility provider evaluation requires TAKI_TAKI3_SPECIALIST_STAGING_PROVIDER=openai|gemini and TAKI_TAKI3_SPECIALIST_STAGING_API_KEY.");
     return 2;
   }
   const inheritedOpenAIKey = String(process.env.OPENAI_API_KEY || "").trim();
@@ -1154,31 +1154,31 @@ async function main(): Promise<number> {
     || (stagingProvider === "gemini" && inheritedGeminiKey && inheritedGeminiKey === stagingKey)
   ) {
     if (!maintenanceKeyApproved) {
-      console.error("Brain v3 provider evaluation requires a staging key distinct from the inherited generic provider key.");
+      console.error("Taki 3.0 compatibility provider evaluation requires a staging key distinct from the inherited generic provider key.");
       return 2;
     }
-    console.error("Brain v3 maintenance evaluation explicitly reuses the existing backend provider key; production rollout still requires a passing promotion gate.");
+    console.error("Taki 3.0 compatibility maintenance evaluation explicitly reuses the existing backend provider key; production rollout still requires a passing promotion gate.");
   }
-  const realWebFlag = String(process.env.TAKI_BRAIN_V3_EVAL_REAL_WEB || "").trim();
+  const realWebFlag = String(process.env.TAKI_TAKI3_SPECIALIST_EVAL_REAL_WEB || "").trim();
   if (realWebFlag && realWebFlag !== "1") {
-    console.error("TAKI_BRAIN_V3_EVAL_REAL_WEB must be unset or exactly 1.");
+    console.error("TAKI_TAKI3_SPECIALIST_EVAL_REAL_WEB must be unset or exactly 1.");
     return 2;
   }
   const realWeb = realWebFlag === "1";
-  const auxiliaryFlag = String(process.env.TAKI_BRAIN_V3_EVAL_AUX || "").trim();
+  const auxiliaryFlag = String(process.env.TAKI_TAKI3_SPECIALIST_EVAL_AUX || "").trim();
   if (auxiliaryFlag && auxiliaryFlag !== "1") {
-    console.error("TAKI_BRAIN_V3_EVAL_AUX must be unset or exactly 1.");
+    console.error("TAKI_TAKI3_SPECIALIST_EVAL_AUX must be unset or exactly 1.");
     return 2;
   }
   const auxiliary = auxiliaryFlag === "1";
-  const promotionFlag = String(process.env.TAKI_BRAIN_V3_EVAL_PROMOTION || "").trim();
+  const promotionFlag = String(process.env.TAKI_TAKI3_SPECIALIST_EVAL_PROMOTION || "").trim();
   if (promotionFlag && promotionFlag !== "1") {
-    console.error("TAKI_BRAIN_V3_EVAL_PROMOTION must be unset or exactly 1.");
+    console.error("TAKI_TAKI3_SPECIALIST_EVAL_PROMOTION must be unset or exactly 1.");
     return 2;
   }
   const promotion = promotionFlag === "1";
   if (promotion && (!auxiliary || !realWeb)) {
-    console.error("Brain v3 promotion evidence requires both TAKI_BRAIN_V3_EVAL_AUX=1 and TAKI_BRAIN_V3_EVAL_REAL_WEB=1.");
+    console.error("Taki 3.0 compatibility promotion evidence requires both TAKI_TAKI3_SPECIALIST_EVAL_AUX=1 and TAKI_TAKI3_SPECIALIST_EVAL_REAL_WEB=1.");
     return 2;
   }
   let releaseId = "";
@@ -1186,18 +1186,18 @@ async function main(): Promise<number> {
   if (promotion) {
     const revision = await currentGitRevision();
     if (!revision?.clean) {
-      console.error("Brain v3 promotion evidence requires a clean committed worktree.");
+      console.error("Taki 3.0 compatibility promotion evidence requires a clean committed worktree.");
       return 2;
     }
-    const requestedReleaseId = String(process.env.TAKI_BRAIN_V3_EVAL_RELEASE_ID || "").trim();
+    const requestedReleaseId = String(process.env.TAKI_TAKI3_SPECIALIST_EVAL_RELEASE_ID || "").trim();
     if (requestedReleaseId && requestedReleaseId !== revision.revision) {
-      console.error("TAKI_BRAIN_V3_EVAL_RELEASE_ID must match the current committed revision.");
+      console.error("TAKI_TAKI3_SPECIALIST_EVAL_RELEASE_ID must match the current committed revision.");
       return 2;
     }
     releaseId = revision.revision;
     deterministic = await runDeterministicPromotionGate();
     if (!deterministic.passed) {
-      console.error("Brain v3 promotion evidence requires passing typecheck and the complete deterministic test suite.");
+      console.error("Taki 3.0 compatibility promotion evidence requires passing typecheck and the complete deterministic test suite.");
       return 2;
     }
   }
@@ -1205,20 +1205,20 @@ async function main(): Promise<number> {
   // The optional real-web boundary is imported only in a staging process. Core
   // real-web-only runs use shadow mode; the auxiliary contract run uses active
   // mode solely inside this isolated evaluator, never in the deployed service.
-  process.env.TAKI_BRAIN_V3_MODE = auxiliary ? "active" : realWeb ? "shadow" : "disabled";
-  process.env.TAKI_BRAIN_V3_READY = auxiliary ? "1" : "";
-  process.env.TAKI_BRAIN_V3_AUX_MODE = auxiliary ? "active" : "disabled";
-  process.env.TAKI_BRAIN_V3_PROMOTION_EVIDENCE = "";
-  process.env.TAKI_BRAIN_V3_RELEASE_ID = "";
+  process.env.TAKI_TAKI3_SPECIALIST_MODE = auxiliary ? "active" : realWeb ? "shadow" : "disabled";
+  process.env.TAKI_TAKI3_SPECIALIST_READY = auxiliary ? "1" : "";
+  process.env.TAKI_TAKI3_SPECIALIST_AUX_MODE = auxiliary ? "active" : "disabled";
+  process.env.TAKI_TAKI3_SPECIALIST_PROMOTION_EVIDENCE = "";
+  process.env.TAKI_TAKI3_SPECIALIST_RELEASE_ID = "";
   if (stagingProvider === "openai") {
     process.env.OPENAI_API_KEY = stagingKey;
     process.env.GEMINI_API_KEY = "";
     // Do not inherit organization/project/base-URL routing from the shell that
     // launched this command. The explicit staging names are the only values
     // allowed to select an OpenAI account or endpoint for this run.
-    process.env.OPENAI_ORG_ID = String(process.env.TAKI_BRAIN_V3_STAGING_ORG_ID || "").trim();
-    process.env.OPENAI_PROJECT_ID = String(process.env.TAKI_BRAIN_V3_STAGING_PROJECT_ID || "").trim();
-    process.env.OPENAI_BASE_URL = String(process.env.TAKI_BRAIN_V3_STAGING_BASE_URL || "https://api.openai.com/v1").trim();
+    process.env.OPENAI_ORG_ID = String(process.env.TAKI_TAKI3_SPECIALIST_STAGING_ORG_ID || "").trim();
+    process.env.OPENAI_PROJECT_ID = String(process.env.TAKI_TAKI3_SPECIALIST_STAGING_PROJECT_ID || "").trim();
+    process.env.OPENAI_BASE_URL = String(process.env.TAKI_TAKI3_SPECIALIST_STAGING_BASE_URL || "https://api.openai.com/v1").trim();
   } else {
     process.env.GEMINI_API_KEY = stagingKey;
     process.env.OPENAI_API_KEY = "";
@@ -1227,34 +1227,34 @@ async function main(): Promise<number> {
     process.env.OPENAI_BASE_URL = "https://api.openai.com/v1";
   }
 
-  const [{ ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL, BRAIN_V3_MODELS, TAKI_MODELS, brainV3AuxEnabled, brainV3CoreEnabled, generateContent, generateContentStream, withTakiModel }, { buildConversationState }, { brainV3GenericRefusal, normalizeBrainV3RolloutMode, runBrainV3Plan, shouldShadowBrainV3, shouldUseBrainV3 }] = await Promise.all([
+  const [{ ACTIVE_AI_PROVIDER, TAKI3_SPECIALIST_MODEL, TAKI3_SPECIALIST_MODELS, TAKI_MODELS, taki3SpecialistsEnabled, taki3CompatibilityEnabled, generateContent, generateContentStream, withTakiModel }, { buildConversationState }, { taki3CompatibilityGenericRefusal, normalizeTaki3CompatibilityRolloutMode, runTaki3CompatibilityPlan, shouldShadowTaki3Compatibility, shouldUseTaki3Compatibility }] = await Promise.all([
     import("../src/ai.js"),
     import("../src/context.js"),
-    import("../src/brainV3.js")
+    import("../src/taki3Compatibility.js")
   ]);
-  brainV3GenericRefusalImpl = brainV3GenericRefusal;
+  taki3CompatibilityGenericRefusalImpl = taki3CompatibilityGenericRefusal;
 
   // Rehearse the operator's one-step rollback against the actual selector
-  // functions. This must prove that disabling v3 cannot leave core, auxiliary,
+  // functions. This must prove that disabling Taki 3.0 cannot leave core, auxiliary,
   // canary, or shadow traffic selected in the current process.
   const rollbackKeys = [
-    "TAKI_BRAIN_V3_MODE", "TAKI_BRAIN_V3_AUX_MODE", "TAKI_BRAIN_V3_READY",
-    "TAKI_BRAIN_V3_PROMOTION_EVIDENCE", "TAKI_BRAIN_V3_RELEASE_ID"
+    "TAKI_TAKI3_SPECIALIST_MODE", "TAKI_TAKI3_SPECIALIST_AUX_MODE", "TAKI_TAKI3_SPECIALIST_READY",
+    "TAKI_TAKI3_SPECIALIST_PROMOTION_EVIDENCE", "TAKI_TAKI3_SPECIALIST_RELEASE_ID"
   ] as const;
   const rollbackSnapshot = Object.fromEntries(rollbackKeys.map((key) => [key, process.env[key]]));
   let rollbackPassed = false;
   try {
-    process.env.TAKI_BRAIN_V3_MODE = "disabled";
-    process.env.TAKI_BRAIN_V3_AUX_MODE = "active";
-    process.env.TAKI_BRAIN_V3_READY = "1";
-    process.env.TAKI_BRAIN_V3_PROMOTION_EVIDENCE = "intentionally-cleared";
-    process.env.TAKI_BRAIN_V3_RELEASE_ID = "intentionally-cleared";
-    const rollbackState = { deviceId: "brain-v3-rollback-rehearsal" };
-    rollbackPassed = normalizeBrainV3RolloutMode() === "disabled"
-      && !brainV3CoreEnabled()
-      && !brainV3AuxEnabled()
-      && !shouldUseBrainV3(rollbackState)
-      && !shouldShadowBrainV3(rollbackState);
+    process.env.TAKI_TAKI3_SPECIALIST_MODE = "disabled";
+    process.env.TAKI_TAKI3_SPECIALIST_AUX_MODE = "active";
+    process.env.TAKI_TAKI3_SPECIALIST_READY = "1";
+    process.env.TAKI_TAKI3_SPECIALIST_PROMOTION_EVIDENCE = "intentionally-cleared";
+    process.env.TAKI_TAKI3_SPECIALIST_RELEASE_ID = "intentionally-cleared";
+    const rollbackState = { deviceId: "taki3-specialist-rollback-rehearsal" };
+    rollbackPassed = normalizeTaki3CompatibilityRolloutMode() === "disabled"
+      && !taki3CompatibilityEnabled()
+      && !taki3SpecialistsEnabled()
+      && !shouldUseTaki3Compatibility(rollbackState)
+      && !shouldShadowTaki3Compatibility(rollbackState);
   } finally {
     for (const key of rollbackKeys) {
       const value = rollbackSnapshot[key];
@@ -1263,11 +1263,11 @@ async function main(): Promise<number> {
     }
   }
   if (!rollbackPassed) {
-    console.error("Brain v3 rollback rehearsal failed.");
+    console.error("Taki 3.0 compatibility rollback rehearsal failed.");
     return 1;
   }
 
-  const stagingSources = [{ title: "Staging verification fixture", url: "https://example.com/brain-v3-staging" }];
+  const stagingSources = [{ title: "Staging verification fixture", url: "https://example.com/taki3-specialist-staging" }];
   let getStagingWebAnswer: (...args: any[]) => Promise<any> = async () => ({
     spokenText: "The staging research tool returned a verified fixture.",
     sources: stagingSources
@@ -1276,7 +1276,7 @@ async function main(): Promise<number> {
     const { getStrictWebAnswer } = await import("../src/tools.js");
     getStagingWebAnswer = (query: string, options: Record<string, unknown>) => getStrictWebAnswer(query, {
       ...options,
-      brainV3Core: true
+      taki3CompatibilityCore: true
     });
   }
   const baseDeps = {
@@ -1295,22 +1295,22 @@ async function main(): Promise<number> {
   const failures: Array<{ id: string; reasons: string[] }> = [];
   const latencies: number[] = [];
   // The final answer honors the selected customer tier, so each core case must
-  // pass under every tier. Understanding and policy still use BRAIN_V3_MODEL;
+  // pass under every tier. Understanding and policy still use TAKI3_SPECIALIST_MODEL;
   // this loop additionally verifies every answer model before promotion.
   for (const tier of TAKI_MODELS) {
     for (const item of CASES) {
       const started = Date.now();
-      const observed: Partial<BrainV3StageSnapshots> = {};
+      const observed: Partial<Taki3CompatibilityStageSnapshots> = {};
       const deps = {
         ...baseDeps,
-        observeStage: (stage: BrainV3StageName, snapshot: BrainV3StageSnapshots[BrainV3StageName]) => {
+        observeStage: (stage: Taki3CompatibilityStageName, snapshot: Taki3CompatibilityStageSnapshots[Taki3CompatibilityStageName]) => {
           observed[stage] = snapshot as never;
         }
       };
       let plan: AssistantPlan | null = null;
       const reasons: string[] = [];
       try {
-        plan = await withTakiModel(tier.key, () => runBrainV3Plan(stateFor(buildConversationState, item), undefined, deps));
+        plan = await withTakiModel(tier.key, () => runTaki3CompatibilityPlan(stateFor(buildConversationState, item), undefined, deps));
         reasons.push(...item.expect(plan));
         reasons.push(...stageContract(observed, item.requiresUnderstanding !== false));
         if (item.expectStages) reasons.push(...item.expectStages(observed));
@@ -1350,7 +1350,7 @@ async function main(): Promise<number> {
   console.log(JSON.stringify({
     type: "summary",
     provider: ACTIVE_AI_PROVIDER,
-    model: BRAIN_V3_MODEL,
+    model: TAKI3_SPECIALIST_MODEL,
     realWeb,
     promotion,
     total: totalCases,
@@ -1365,15 +1365,15 @@ async function main(): Promise<number> {
   if (allFailures.length) return 1;
   if (promotion && deterministic) {
     const issuedAt = new Date().toISOString();
-    const expiresAt = new Date(Date.now() + BRAIN_V3_PROMOTION_EVIDENCE_TTL_MS).toISOString();
+    const expiresAt = new Date(Date.now() + TAKI3_SPECIALIST_PROMOTION_EVIDENCE_TTL_MS).toISOString();
     const evidence = {
-      format: "taki-brain-v3-promotion" as const,
-      version: BRAIN_V3_PROMOTION_EVIDENCE_VERSION,
+      format: "taki3-specialist-promotion" as const,
+      version: TAKI3_SPECIALIST_PROMOTION_EVIDENCE_VERSION,
       releaseId,
       provider: ACTIVE_AI_PROVIDER,
-      model: BRAIN_V3_MODEL,
+      model: TAKI3_SPECIALIST_MODEL,
       core: { passed: true as const, total: coreCaseTotal, failed: 0 as const },
-      models: [...BRAIN_V3_MODELS],
+      models: [...TAKI3_SPECIALIST_MODELS],
       auxiliary: { passed: true as const, total: auxiliarySummary.total, failed: 0 as const },
       realWeb: { passed: true as const },
       deterministic: {
@@ -1389,8 +1389,8 @@ async function main(): Promise<number> {
       issuedAt,
       expiresAt
     };
-    if (evidence.core.total < BRAIN_V3_PROMOTION_MIN_CORE_CASES || evidence.auxiliary.total < BRAIN_V3_PROMOTION_MIN_AUXILIARY_CASES) {
-      console.error("Brain v3 promotion corpus is smaller than the required minimum.");
+    if (evidence.core.total < TAKI3_SPECIALIST_PROMOTION_MIN_CORE_CASES || evidence.auxiliary.total < TAKI3_SPECIALIST_PROMOTION_MIN_AUXILIARY_CASES) {
+      console.error("Taki 3.0 compatibility promotion corpus is smaller than the required minimum.");
       return 2;
     }
     console.log(JSON.stringify({
@@ -1401,7 +1401,7 @@ async function main(): Promise<number> {
       provider: evidence.provider,
       model: evidence.model,
       expiresAt: evidence.expiresAt,
-      token: encodeBrainV3PromotionEvidence(evidence)
+      token: encodeTaki3CompatibilityPromotionEvidence(evidence)
     }));
   }
   return 0;

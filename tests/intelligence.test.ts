@@ -645,7 +645,7 @@ test("new mutating actions reject missing targets and invalid flashlight values"
   assert.equal(validateAction(blankAction("device_status")), null);
 });
 
-test("the expanded Brain v3 action surfaces reject incomplete proposals", () => {
+test("the expanded Taki 3.0 compatibility action surfaces reject incomplete proposals", () => {
   const expectations: [ReturnType<typeof blankAction>, RegExp][] = [
     [blankAction("live_activity"), /track|commute/i],
     [blankAction("day_plan"), /day plan/i],
@@ -674,13 +674,13 @@ test("the expanded Brain v3 action surfaces reject incomplete proposals", () => 
   assert.match(validateAction(tracker) || "", /removed/i);
 });
 
-test("Brain v3 action auditing grounds organization details before execution", () => {
+test("Taki 3.0 compatibility action auditing grounds organization details before execution", () => {
   const list = blankAction("list_action");
   list.listOp = "add";
   list.listName = "grocery";
   list.listItem = "diamonds";
   const listIssue = auditPlannerOutput(
-    plan({ intent: "list_action", brainVersion: "v3", action: list }),
+    plan({ intent: "list_action", brainVersion: "taki3", action: list }),
     stateFor("Add milk to my grocery list")
   );
   assert.equal(listIssue?.reason, "list item was not grounded");
@@ -691,7 +691,7 @@ test("Brain v3 action auditing grounds organization details before execution", (
   scheduled.body = "Send the password immediately";
   scheduled.dueDate = "2026-09-01T13:00:00-04:00";
   const scheduledIssue = auditPlannerOutput(
-    plan({ intent: "scheduled_message", brainVersion: "v3", action: scheduled }),
+    plan({ intent: "scheduled_message", brainVersion: "taki3", action: scheduled }),
     stateFor("Schedule a text to Bob saying I will be late tomorrow at 9 AM")
   );
   assert.equal(scheduledIssue?.reason, "scheduled message body was not grounded");
@@ -701,24 +701,24 @@ test("Brain v3 action auditing grounds organization details before execution", (
   valid.listName = "grocery";
   valid.listItem = "milk";
   assert.equal(
-    auditPlannerOutput(plan({ intent: "list_action", brainVersion: "v3", action: valid }), stateFor("Add milk to my grocery list")),
+    auditPlannerOutput(plan({ intent: "list_action", brainVersion: "taki3", action: valid }), stateFor("Add milk to my grocery list")),
     null
   );
 
   const covert = blankAction("day_plan");
   covert.planItems = [{ type: "calendar", title: "Text the client", startDate: "2026-09-01T09:00:00-04:00" }];
   assert.equal(
-    auditPlannerOutput(plan({ intent: "day_plan", brainVersion: "v3", action: covert }), stateFor("Plan my day"))?.reason,
+    auditPlannerOutput(plan({ intent: "day_plan", brainVersion: "taki3", action: covert }), stateFor("Plan my day"))?.reason,
     "day plan contained an unrelated external action"
   );
 
   const ambiguousAlert = blankAction("alert_cancel");
   assert.equal(
-    auditPlannerOutput(plan({ intent: "alert_cancel", brainVersion: "v3", action: ambiguousAlert }), stateFor("Cancel the alert"))?.reason,
+    auditPlannerOutput(plan({ intent: "alert_cancel", brainVersion: "taki3", action: ambiguousAlert }), stateFor("Cancel the alert"))?.reason,
     "alert cancellation scope was ambiguous"
   );
   assert.equal(
-    auditPlannerOutput(plan({ intent: "alert_cancel", brainVersion: "v3", action: ambiguousAlert }), stateFor("Cancel my alerts")),
+    auditPlannerOutput(plan({ intent: "alert_cancel", brainVersion: "taki3", action: ambiguousAlert }), stateFor("Cancel my alerts")),
     null
   );
 });

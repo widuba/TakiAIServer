@@ -1,5 +1,5 @@
-import { brainV3AuxEnabled, generateContent, MAIN_MODEL } from "./ai.js";
-import { runBrainV3Structured } from "./brainV3Specialists.js";
+import { taki3SpecialistsEnabled, generateContent, MAIN_MODEL } from "./ai.js";
+import { runTaki3SpecialistStructured } from "./taki3Specialists.js";
 import { withTimeout } from "./util.js";
 import { fetchPublicUrl, readPublicResponseText, validatePublicHttpUrl } from "./urlSafety.js";
 import { GUARDRAILS } from "./persona.js";
@@ -99,10 +99,10 @@ Rules:
 - Ingredients: real quantities, ≤ 20 items.
   - Be accurate and safe (proper cook temps for meat). If the request is not actually food, return {"title":""}.`;
   try {
-    const v3 = brainV3AuxEnabled();
+    const specialistEnabled = taki3SpecialistsEnabled();
     let resolved: any;
-    if (v3) {
-      resolved = (await runBrainV3Structured<any>("recipe", prompt, RECIPE_SCHEMA, {
+    if (specialistEnabled) {
+      resolved = (await runTaki3SpecialistStructured<any>("recipe", prompt, RECIPE_SCHEMA, {
         timeoutMs: 22_000,
         maxOutputTokens: 2_400,
         reasoning: "low",
@@ -282,9 +282,9 @@ Return ONLY compact JSON:
 {"title":"<dish name>","servings":"<e.g. 4 servings>","totalTime":"<e.g. 35 min>","ingredients":["<qty + item>", ...],"steps":[{"instruction":"<one clear action>","timerMin":<minutes ONLY for a hands-off wait, otherwise null>}]}
 If the page has no real recipe, return {"title":""}.`;
   try {
-    const v3 = brainV3AuxEnabled();
-    if (v3) {
-      const result = await runBrainV3Structured<any>("recipe_extract", prompt, RECIPE_SCHEMA, {
+    const specialistEnabled = taki3SpecialistsEnabled();
+    if (specialistEnabled) {
+      const result = await runTaki3SpecialistStructured<any>("recipe_extract", prompt, RECIPE_SCHEMA, {
         timeoutMs: 22_000,
         maxOutputTokens: 2_400,
         reasoning: "low",

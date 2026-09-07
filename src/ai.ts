@@ -8,7 +8,7 @@ import {
   OpenAIHTTPError,
   UnsupportedOpenAIInputError
 } from "./openaiProvider.js";
-import { brainV3PromotionGateStatus } from "./brainV3Promotion.js";
+import { taki3SpecialistPromotionGateStatus } from "./taki3SpecialistPromotion.js";
 
 dotenv.config();
 
@@ -231,7 +231,7 @@ export function modelForRequest(args: any): string {
   // model roles and contracts. Do not
   // silently replace it with the legacy planner model just because its output
   // is JSON; the role is what makes the replacement independently tunable.
-  if (args?.config?.modelRole === "taki3" || args?.config?.modelRole === "brain_v3" || args?.config?.modelRole === "brain_v4") {
+  if (args?.config?.modelRole === "taki3" || args?.config?.modelRole === "taki3_specialist") {
     return String(args?.model || MAIN_MODEL);
   }
   // Model choice controls answer depth, latency, and the usual token price. It
@@ -366,9 +366,9 @@ function geminiFallbackFor(openAIModel: string): string {
 
 export function providerCandidates(primary: string, args: any = {}): ProviderCandidate[] {
   // Taki 3.0 promotion evidence is provider- and model-bound. Do not silently
-  // move an evaluated v3 request to the legacy alternate provider: the planner
+  // move an evaluated Taki 3.0 request to the legacy alternate provider: the planner
   // owns the compatibility fallback after this single promoted attempt fails.
-  if (args?.config?.modelRole === "taki3" || args?.config?.modelRole === "brain_v3" || args?.config?.modelRole === "brain_v4") {
+  if (args?.config?.modelRole === "taki3" || args?.config?.modelRole === "taki3_specialist") {
     return [{ provider: ACTIVE_AI_PROVIDER, model: primary }];
   }
   if (/^gpt-/i.test(primary)) {
@@ -497,58 +497,60 @@ export const PLANNER_MODEL = ACTIVE_AI_PROVIDER === "openai"
 export const MAIN_MODEL = ACTIVE_AI_PROVIDER === "openai"
   ? openAIModelForTaki("taki_2_1")
   : currentModel(process.env.GEMINI_MODEL, "gemini-3.6-flash");
-// Brain v3 is deliberately separate from the legacy planner and answer roles.
+// Taki 3.0 compatibility is deliberately separate from the legacy planner and answer roles.
 // It can be tuned in staging without changing customer-facing model selection.
-export const BRAIN_V3_MODEL = ACTIVE_AI_PROVIDER === "openai"
-  ? currentModel(process.env.OPENAI_BRAIN_V3_MODEL, openAIModelForTaki("taki_2_1_reasoning"))
-  : currentModel(process.env.GEMINI_BRAIN_V3_MODEL, "gemini-3.1-pro-preview");
-// Promotion evidence must cover every provider model that the v3 pipeline can
+export const TAKI3_SPECIALIST_MODEL = ACTIVE_AI_PROVIDER === "openai"
+  ? currentModel(process.env.OPENAI_TAKI3_SPECIALIST_MODEL, openAIModelForTaki("taki_2_1_reasoning"))
+  : currentModel(process.env.GEMINI_TAKI3_SPECIALIST_MODEL, "gemini-3.1-pro-preview");
+// Promotion evidence must cover every provider model that the Taki 3.0 pipeline can
 // actually use: the dedicated understanding/specialist model plus each
 // customer-facing answer tier. Keeping this set explicit prevents a valid
 // token for one tier from silently authorizing an untested tier.
-export const BRAIN_V3_MODELS = Array.from(new Set([
-  BRAIN_V3_MODEL,
+export const TAKI3_SPECIALIST_MODELS = Array.from(new Set([
+  TAKI3_SPECIALIST_MODEL,
   ...TAKI_MODELS.map((entry) => entry.providerModel)
 ]));
+export const TAKI3_COMPATIBILITY_MODEL = TAKI3_SPECIALIST_MODEL;
+export const TAKI3_COMPATIBILITY_MODELS = TAKI3_SPECIALIST_MODELS;
 
 /**
- * Core v3 is selected per request by the planner. This process-level helper
+ * Core Taki 3.0 is selected per request by the planner. This process-level helper
  * only answers whether the deployed environment permits a selected request to
  * use the core pipeline; it deliberately does not include device bucketing.
- * The planner still calls shouldUseBrainV3(state) before passing brainV3Core.
+ * The planner still calls shouldUseTaki3Compatibility(state) before passing taki3CompatibilityCore.
  *
  * Shadow is the one exception to the promotion-evidence requirement: its detached,
  * discarded run must exercise the same strict research path as a promoted
  * request so staging evidence is meaningful. The planner never passes
- * brainV3Core for customer traffic while mode is shadow.
+ * taki3CompatibilityCore for customer traffic while mode is shadow.
  */
-export function brainV3CoreEnabled(env: ModelEnvironment = process.env): boolean {
-  const coreMode = String(env.TAKI_BRAIN_V3_MODE || "disabled").trim().toLowerCase();
+export function taki3CompatibilityEnabled(env: ModelEnvironment = process.env): boolean {
+  const coreMode = String(env.TAKI_TAKI3_SPECIALIST_MODE || "disabled").trim().toLowerCase();
   if (coreMode === "shadow") return true;
-  const maintenanceOverride = /^(?:1|true|yes|maintenance)$/i.test(String(env.TAKI_BRAIN_V3_MAINTENANCE_OVERRIDE || "").trim())
-    && /^(?:1|true|yes)$/i.test(String(env.TAKI_BRAIN_V3_READY || "").trim())
-    && /^[A-Za-z0-9._-]{7,128}$/.test(String(env.TAKI_BRAIN_V3_RELEASE_ID || "").trim());
-  return (brainV3PromotionGateStatus(env, ACTIVE_AI_PROVIDER, BRAIN_V3_MODEL, Date.now(), BRAIN_V3_MODELS).ready || maintenanceOverride)
-    && (coreMode === "active" || coreMode === "canary" || coreMode === "v3");
+  const maintenanceOverride = /^(?:1|true|yes|maintenance)$/i.test(String(env.TAKI_TAKI3_SPECIALIST_MAINTENANCE_OVERRIDE || "").trim())
+    && /^(?:1|true|yes)$/i.test(String(env.TAKI_TAKI3_SPECIALIST_READY || "").trim())
+    && /^[A-Za-z0-9._-]{7,128}$/.test(String(env.TAKI_TAKI3_SPECIALIST_RELEASE_ID || "").trim());
+  return (taki3SpecialistPromotionGateStatus(env, ACTIVE_AI_PROVIDER, TAKI3_SPECIALIST_MODEL, Date.now(), TAKI3_SPECIALIST_MODELS).ready || maintenanceOverride)
+    && (coreMode === "active" || coreMode === "canary");
 }
 
 /**
  * Auxiliary model surfaces (memory, recipes, day plans, summaries, titles, and
  * contextual review) have their own
  * promotion gate. They must not silently change just because the main brain
- * is in shadow or a partial canary. Enable this only after the core v3 ramp is
+ * is in shadow or a partial canary. Enable this only after the core Taki 3.0 ramp is
  * fully active and its provider-backed evaluation has passed.
  */
-export function brainV3AuxEnabled(env: ModelEnvironment = process.env): boolean {
-  const coreMode = String(env.TAKI_BRAIN_V3_MODE || "disabled").trim().toLowerCase();
-  const auxMode = String(env.TAKI_BRAIN_V3_AUX_MODE || "disabled").trim().toLowerCase();
-  return brainV3CoreEnabled(env)
-    && (coreMode === "active" || coreMode === "v3")
-    && (auxMode === "active" || auxMode === "v3");
+export function taki3SpecialistsEnabled(env: ModelEnvironment = process.env): boolean {
+  const coreMode = String(env.TAKI_TAKI3_SPECIALIST_MODE || "disabled").trim().toLowerCase();
+  const auxMode = String(env.TAKI_TAKI3_SPECIALIST_AUX_MODE || "disabled").trim().toLowerCase();
+  return taki3CompatibilityEnabled(env)
+    && (coreMode === "active")
+    && auxMode === "active";
 }
 
-/** Build the one versioned strict-JSON request shape shared by v3 auxiliaries. */
-export function brainV3StructuredRequest(
+/** Build the one versioned strict-JSON request shape shared by Taki 3.0 auxiliary surfaces. */
+export function taki3SpecialistStructuredRequest(
   name: string,
   contents: unknown,
   schema: Record<string, unknown>,
@@ -556,14 +558,14 @@ export function brainV3StructuredRequest(
 ): any {
   const safeName = String(name || "surface").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 48) || "surface";
   return {
-    model: BRAIN_V3_MODEL,
+    model: TAKI3_SPECIALIST_MODEL,
     contents,
     config: {
       ...options,
-      modelRole: "brain_v3",
+      modelRole: "taki3_specialist",
       responseMimeType: "application/json",
       responseJsonSchema: schema,
-      responseJsonSchemaName: `taki_brain_v3_${safeName}`
+      responseJsonSchemaName: `taki3_specialist_${safeName}`
     }
   };
 }

@@ -36,8 +36,8 @@ test("Taki 3.0 owns rollout controls and remains rollback-compatible", () => {
   assert.equal(normalizeTaki3RolloutMode({ TAKI_TAKI3_MODE: "active" }), "disabled");
   assert.equal(shouldUseTaki3({ deviceId: "12345678" }, { TAKI_TAKI3_MODE: "disabled" }), false);
   assert.equal(shouldShadowTaki3({ TAKI_TAKI3_MODE: "shadow", TAKI_TAKI3_SHADOW_PERCENT: "100" }), true);
-  assert.equal(normalizeTaki3RolloutMode({ TAKI_BRAIN_V4_MODE: "active", TAKI_BRAIN_V4_SHADOW_PERCENT: "100" }), "shadow");
-  assert.equal(shouldShadowTaki3({ TAKI_BRAIN_V4_MODE: "shadow", TAKI_BRAIN_V4_SHADOW_PERCENT: "100" }), false);
+  assert.equal(normalizeTaki3RolloutMode({ TAKI_OLD_BRAIN_MODE: "active", TAKI_OLD_BRAIN_SHADOW_PERCENT: "100" }), "shadow");
+  assert.equal(shouldShadowTaki3({ TAKI_OLD_BRAIN_MODE: "shadow", TAKI_OLD_BRAIN_SHADOW_PERCENT: "100" }), false);
 });
 
 test("Taki 3.0 preserves a typed provider outage after one attempt", async () => {

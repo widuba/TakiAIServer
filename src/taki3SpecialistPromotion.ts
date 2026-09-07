@@ -1,5 +1,5 @@
 /**
- * Machine-checkable promotion evidence for Brain v3.
+ * Machine-checkable promotion evidence for Taki 3.0 specialist.
  *
  * The rollout flag is intentionally not sufficient on its own. A promotion
  * token is produced only by the staging evaluator after the deterministic
@@ -8,18 +8,18 @@
  * account data, or provider credentials.
  */
 
-export const BRAIN_V3_PROMOTION_EVIDENCE_FORMAT = "taki-brain-v3-promotion" as const;
-export const BRAIN_V3_PROMOTION_EVIDENCE_VERSION = 2 as const;
-export const BRAIN_V3_PROMOTION_EVIDENCE_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
+export const TAKI3_SPECIALIST_PROMOTION_EVIDENCE_FORMAT = "taki3-specialist-promotion" as const;
+export const TAKI3_SPECIALIST_PROMOTION_EVIDENCE_VERSION = 2 as const;
+export const TAKI3_SPECIALIST_PROMOTION_EVIDENCE_TTL_MS = 7 * 24 * 60 * 60 * 1_000;
 // The provider corpus is required for all three customer-facing response
 // tiers. The dedicated understanding model is exercised by each run as well.
-export const BRAIN_V3_PROMOTION_MIN_CORE_CASES = 52 * 3;
-export const BRAIN_V3_PROMOTION_MIN_AUXILIARY_CASES = 18;
-export const BRAIN_V3_PROMOTION_MIN_DETERMINISTIC_TESTS = 300;
+export const TAKI3_SPECIALIST_PROMOTION_MIN_CORE_CASES = 52 * 3;
+export const TAKI3_SPECIALIST_PROMOTION_MIN_AUXILIARY_CASES = 18;
+export const TAKI3_SPECIALIST_PROMOTION_MIN_DETERMINISTIC_TESTS = 300;
 
-export type BrainV3PromotionEvidence = {
-  format: typeof BRAIN_V3_PROMOTION_EVIDENCE_FORMAT;
-  version: typeof BRAIN_V3_PROMOTION_EVIDENCE_VERSION;
+export type Taki3SpecialistPromotionEvidence = {
+  format: typeof TAKI3_SPECIALIST_PROMOTION_EVIDENCE_FORMAT;
+  version: typeof TAKI3_SPECIALIST_PROMOTION_EVIDENCE_VERSION;
   releaseId: string;
   provider: "openai" | "gemini";
   model: string;
@@ -41,7 +41,7 @@ export type BrainV3PromotionEvidence = {
   expiresAt: string;
 };
 
-export type BrainV3PromotionGateStatus = {
+export type Taki3SpecialistPromotionGateStatus = {
   ready: boolean;
   reason:
     | "ready"
@@ -83,9 +83,11 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 /** A promotion release must contain no tracked or untracked worktree changes. */
-export function brainV3WorktreeClean(statusOutput: unknown): boolean {
+export function taki3SpecialistWorktreeClean(statusOutput: unknown): boolean {
   return !String(statusOutput || "").trim();
 }
+
+export const taki3CompatibilityWorktreeClean = taki3SpecialistWorktreeClean;
 
 function passedSuite(value: unknown, minimumCases: number): boolean {
   const suite = asRecord(value);
@@ -111,33 +113,35 @@ function decodeEvidence(value: string): Record<string, unknown> | null {
   }
 }
 
-export function encodeBrainV3PromotionEvidence(evidence: BrainV3PromotionEvidence): string {
+export function encodeTaki3SpecialistPromotionEvidence(evidence: Taki3SpecialistPromotionEvidence): string {
   return Buffer.from(JSON.stringify(evidence), "utf8").toString("base64url");
 }
 
-export function brainV3PromotionGateStatus(
+export const encodeTaki3CompatibilityPromotionEvidence = encodeTaki3SpecialistPromotionEvidence;
+
+export function taki3SpecialistPromotionGateStatus(
   env: PromotionEnvironment = process.env,
   expectedProvider?: string,
   expectedModel?: string,
   now = Date.now(),
   expectedModels?: readonly string[]
-): BrainV3PromotionGateStatus {
-  const releaseId = String(env.TAKI_BRAIN_V3_RELEASE_ID || "").trim() || null;
-  const token = String(env.TAKI_BRAIN_V3_PROMOTION_EVIDENCE || "").trim();
-  const base = (reason: BrainV3PromotionGateStatus["reason"], evidence?: Record<string, unknown>): BrainV3PromotionGateStatus => ({
+): Taki3SpecialistPromotionGateStatus {
+  const releaseId = String(env.TAKI_TAKI3_SPECIALIST_RELEASE_ID || "").trim() || null;
+  const token = String(env.TAKI_TAKI3_SPECIALIST_PROMOTION_EVIDENCE || "").trim();
+  const base = (reason: Taki3SpecialistPromotionGateStatus["reason"], evidence?: Record<string, unknown>): Taki3SpecialistPromotionGateStatus => ({
     ready: false,
     reason,
     releaseId,
     expiresAt: typeof evidence?.expiresAt === "string" ? evidence.expiresAt : null
   });
 
-  if (!isTruthy(env.TAKI_BRAIN_V3_READY)) return base("readiness_flag_missing");
+  if (!isTruthy(env.TAKI_TAKI3_SPECIALIST_READY)) return base("readiness_flag_missing");
   if (!releaseId || !validReleaseId(releaseId)) return base("release_id_missing");
   if (!token) return base("evidence_missing");
 
   const evidence = decodeEvidence(token);
   if (!evidence) return base("evidence_malformed");
-  if (evidence.format !== BRAIN_V3_PROMOTION_EVIDENCE_FORMAT || evidence.version !== BRAIN_V3_PROMOTION_EVIDENCE_VERSION) {
+  if (evidence.format !== TAKI3_SPECIALIST_PROMOTION_EVIDENCE_FORMAT || evidence.version !== TAKI3_SPECIALIST_PROMOTION_EVIDENCE_VERSION) {
     return base("evidence_version_mismatch", evidence);
   }
   if (evidence.releaseId !== releaseId) return base("release_mismatch", evidence);
@@ -151,8 +155,8 @@ export function brainV3PromotionGateStatus(
     || evidenceModels.some((model) => !requiredModels.includes(model)))) {
     return base("models_mismatch", evidence);
   }
-  if (!passedSuite(evidence.core, BRAIN_V3_PROMOTION_MIN_CORE_CASES)) return base("core_gate_missing", evidence);
-  if (!passedSuite(evidence.auxiliary, BRAIN_V3_PROMOTION_MIN_AUXILIARY_CASES)) return base("auxiliary_gate_missing", evidence);
+  if (!passedSuite(evidence.core, TAKI3_SPECIALIST_PROMOTION_MIN_CORE_CASES)) return base("core_gate_missing", evidence);
+  if (!passedSuite(evidence.auxiliary, TAKI3_SPECIALIST_PROMOTION_MIN_AUXILIARY_CASES)) return base("auxiliary_gate_missing", evidence);
   if (asRecord(evidence.realWeb)?.passed !== true) return base("real_web_gate_missing", evidence);
 
   const deterministic = asRecord(evidence.deterministic);
@@ -160,7 +164,7 @@ export function brainV3PromotionGateStatus(
     deterministic?.passed !== true
     || deterministic.typecheckPassed !== true
     || !Number.isSafeInteger(deterministic.testCount)
-    || Number(deterministic.testCount) < BRAIN_V3_PROMOTION_MIN_DETERMINISTIC_TESTS
+    || Number(deterministic.testCount) < TAKI3_SPECIALIST_PROMOTION_MIN_DETERMINISTIC_TESTS
     || deterministic.failed !== 0
     || deterministic.cancelled !== 0
     || deterministic.skipped !== 0
@@ -175,7 +179,7 @@ export function brainV3PromotionGateStatus(
     || !Number.isFinite(expiresAt)
     || issuedAt > now + 5 * 60_000
     || expiresAt <= issuedAt
-    || expiresAt - issuedAt > BRAIN_V3_PROMOTION_EVIDENCE_TTL_MS + 60_000
+    || expiresAt - issuedAt > TAKI3_SPECIALIST_PROMOTION_EVIDENCE_TTL_MS + 60_000
   ) return base("evidence_time_invalid", evidence);
   if (expiresAt <= now) return base("evidence_expired", evidence);
 

@@ -5,9 +5,9 @@ ordinary conversation and current-fact answers through one strict answer
 contract, while deterministic device routes and the compatibility action
 compiler retain the native confirmation and validation rules.
 
-The server exposes only `taki3` in `/health`. The old numbered brain modules
-are internal compatibility code for specialized action and extraction paths;
-they are not separate customer traffic surfaces.
+The server exposes only `taki3` in `/health`. Compatibility code for
+specialized action and extraction paths is part of the same Taki 3.0 boundary;
+it is not a separate traffic surface.
 
 The canonical rollout variables are:
 

@@ -1,16 +1,16 @@
-import { generateContent, generateContentStream, activeTakiModelInfo, brainV3AuxEnabled, brainV3CoreEnabled, withTakiModel, FAST_MODEL, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, LIST_RESEARCH_TIMEOUT_MS, TIME_ZONE, safetyConfig, ServiceError } from "./ai.js";
+import { generateContent, generateContentStream, activeTakiModelInfo, taki3SpecialistsEnabled, taki3CompatibilityEnabled, withTakiModel, FAST_MODEL, MAIN_MODEL, RESEARCH_MODEL, RESEARCH_TIMEOUT_MS, LIST_RESEARCH_TIMEOUT_MS, TIME_ZONE, safetyConfig, ServiceError } from "./ai.js";
 import {
-  BRAIN_V3_ALARM_SCHEMA,
-  BRAIN_V3_EVENT_MATCH_SCHEMA,
-  BRAIN_V3_EVENT_SCHEMA,
-  BRAIN_V3_EVENTS_SCHEMA,
-  BRAIN_V3_MATH_SCHEMA,
-  BRAIN_V3_STYLE_SCHEMA,
-  BRAIN_V3_TIMER_SCHEMA,
-  BRAIN_V3_VENUE_SCHEMA,
-  BRAIN_V3_WEB_ANSWER_SCHEMA,
-  runBrainV3Structured
-} from "./brainV3Specialists.js";
+  TAKI3_SPECIALIST_ALARM_SCHEMA,
+  TAKI3_SPECIALIST_EVENT_MATCH_SCHEMA,
+  TAKI3_SPECIALIST_EVENT_SCHEMA,
+  TAKI3_SPECIALIST_EVENTS_SCHEMA,
+  TAKI3_SPECIALIST_MATH_SCHEMA,
+  TAKI3_SPECIALIST_STYLE_SCHEMA,
+  TAKI3_SPECIALIST_TIMER_SCHEMA,
+  TAKI3_SPECIALIST_VENUE_SCHEMA,
+  TAKI3_SPECIALIST_WEB_ANSWER_SCHEMA,
+  runTaki3SpecialistStructured
+} from "./taki3Specialists.js";
 import { personaPromptBlock, characterDirective, GUARDRAILS } from "./persona.js";
 import { capabilityPromptBlock } from "./capabilities.js";
 import { productKnowledgePromptBlock } from "./productKnowledge.js";
@@ -390,26 +390,26 @@ Rules:
     return line;
   };
 
-  // Auxiliary v3 owns this narrow inference when explicitly promoted. The
+  // Auxiliary Taki 3.0 owns this narrow inference when explicitly promoted. The
   // established two-pass Gemini path remains below as a reversible fallback.
-  if (brainV3AuxEnabled()) {
+  if (taki3SpecialistsEnabled()) {
     try {
-      const result = await runBrainV3Structured<{ found: boolean; venue: string }>(
+      const result = await runTaki3SpecialistStructured<{ found: boolean; venue: string }>(
         "venue_fast",
         prompt,
-        BRAIN_V3_VENUE_SCHEMA,
+        TAKI3_SPECIALIST_VENUE_SCHEMA,
         { timeoutMs: 9_000, maxOutputTokens: 240, reasoning: "low" }
       );
       const venue = result.value.found ? usableVenue(result.value.venue) : null;
       if (venue) return venue;
     } catch (error) {
-      console.error("Brain v3 venue inference (fast) error:", error);
+      console.error("Taki 3.0 compatibility venue inference (fast) error:", error);
     }
     try {
-      const result = await runBrainV3Structured<{ found: boolean; venue: string }>(
+      const result = await runTaki3SpecialistStructured<{ found: boolean; venue: string }>(
         "venue_search",
         prompt,
-        BRAIN_V3_VENUE_SCHEMA,
+        TAKI3_SPECIALIST_VENUE_SCHEMA,
         {
           timeoutMs: RESEARCH_TIMEOUT_MS,
           maxOutputTokens: 240,
@@ -420,7 +420,7 @@ Rules:
       const venue = result.value.found ? usableVenue(result.value.venue) : null;
       if (venue) return venue;
     } catch (error) {
-      console.error("Brain v3 venue inference (search) error:", error);
+      console.error("Taki 3.0 compatibility venue inference (search) error:", error);
     }
   }
 
@@ -579,18 +579,18 @@ Pick the ONE event that genuinely matches their reference. Reason about:
 
 Reply with ONLY the index number of the genuine match, or -1 if none. No other text.`;
 
-  if (brainV3AuxEnabled()) {
+  if (taki3SpecialistsEnabled()) {
     try {
-      const result = await runBrainV3Structured<{ eventIndex: number }>(
+      const result = await runTaki3SpecialistStructured<{ eventIndex: number }>(
         "event_match",
         prompt,
-        BRAIN_V3_EVENT_MATCH_SCHEMA,
+        TAKI3_SPECIALIST_EVENT_MATCH_SCHEMA,
         { timeoutMs: 9_000, maxOutputTokens: 80, reasoning: "low" }
       );
       const index = Number(result.value.eventIndex);
       if (Number.isInteger(index) && (index === -1 || (index >= 0 && index < events.length))) return index;
     } catch (error) {
-      console.error("Brain v3 event match error:", error);
+      console.error("Taki 3.0 compatibility event match error:", error);
     }
   }
 
@@ -707,27 +707,27 @@ Rules:
 Reply with ONLY JSON: {"valid":true,"hour":<0-23>,"minute":<0-59>,"ampmGiven":<true|false>,"dayOffset":<0-7>,"label":"..."}
 If you cannot determine a time at all, reply {"valid":false}.`;
 
-  if (brainV3AuxEnabled()) {
+  if (taki3SpecialistsEnabled()) {
     try {
-      const result = await runBrainV3Structured<{
+      const result = await runTaki3SpecialistStructured<{
         valid: boolean;
         hour: number;
         minute: number;
         ampmGiven: boolean;
         dayOffset: number;
         label: string;
-      }>("alarm_parse", prompt, BRAIN_V3_ALARM_SCHEMA, { timeoutMs: 9_000, maxOutputTokens: 180, reasoning: "low" });
+      }>("alarm_parse", prompt, TAKI3_SPECIALIST_ALARM_SCHEMA, { timeoutMs: 9_000, maxOutputTokens: 180, reasoning: "low" });
       const obj = result.value;
       if (obj.valid === false) return null;
       if (!Number.isInteger(obj.hour) || obj.hour < 0 || obj.hour > 23
         || !Number.isInteger(obj.minute) || obj.minute < 0 || obj.minute > 59
         || !Number.isInteger(obj.dayOffset) || obj.dayOffset < 0 || obj.dayOffset > 7) {
-        throw new Error("Brain v3 alarm result was outside the time bounds");
+        throw new Error("Taki 3.0 compatibility alarm result was outside the time bounds");
       }
       const todayYmd = ymdInTimeZone(new Date(now), tz);
       const baseYmd = addDaysToYmd(todayYmd, obj.dayOffset);
       let ms = Date.parse(isoFromYmdTime(baseYmd, obj.hour, obj.minute, tz));
-      if (!Number.isFinite(ms)) throw new Error("Brain v3 alarm result had an invalid local time");
+      if (!Number.isFinite(ms)) throw new Error("Taki 3.0 compatibility alarm result had an invalid local time");
       const explicitAmPm = obj.ampmGiven === true
         || /\b(am|pm|a\.m|p\.m|noon|midnight|morning|afternoon|evening|tonight)\b/i.test(message)
         || /\bin\s+\d+\s*(min|minute|hour|hr)/i.test(message);
@@ -736,7 +736,7 @@ If you cannot determine a time at all, reply {"valid":false}.`;
       while (ms <= now + 1000 && guard++ < 4) ms += stepMs;
       return { iso: new Date(ms).toISOString(), label: String(obj.label || "").trim().slice(0, 40) };
     } catch (error) {
-      console.error("Brain v3 alarm parse error:", error);
+      console.error("Taki 3.0 compatibility alarm parse error:", error);
     }
   }
 
@@ -824,12 +824,12 @@ Message: "${message}"
 Reply with ONLY JSON: {"seconds":<positive integer>,"label":"..."}.
 If no duration is given, reply {"seconds":0}.`;
 
-  if (brainV3AuxEnabled()) {
+  if (taki3SpecialistsEnabled()) {
     try {
-      const result = await runBrainV3Structured<{ seconds: number; label: string }>(
+      const result = await runTaki3SpecialistStructured<{ seconds: number; label: string }>(
         "timer_parse",
         prompt,
-        BRAIN_V3_TIMER_SCHEMA,
+        TAKI3_SPECIALIST_TIMER_SCHEMA,
         { timeoutMs: 9_000, maxOutputTokens: 120, reasoning: "low" }
       );
       const seconds = Number(result.value.seconds);
@@ -838,7 +838,7 @@ If no duration is given, reply {"seconds":0}.`;
       }
       if (seconds === 0) return null;
     } catch (error) {
-      console.error("Brain v3 timer parse error:", error);
+      console.error("Taki 3.0 compatibility timer parse error:", error);
     }
   }
 
@@ -945,18 +945,18 @@ Reply ONLY JSON: {"expr":"<expression>","label":"<short phrase>"}  — or {"expr
     return Number.isInteger(val) ? `That's ${num}.` : `That's about ${num}.`;
   };
 
-  if (brainV3AuxEnabled()) {
+  if (taki3SpecialistsEnabled()) {
     try {
-      const result = await runBrainV3Structured<{ expr: string | null; label: string }>(
+      const result = await runTaki3SpecialistStructured<{ expr: string | null; label: string }>(
         "math_translate",
         prompt,
-        BRAIN_V3_MATH_SCHEMA,
+        TAKI3_SPECIALIST_MATH_SCHEMA,
         { timeoutMs: 8_000, maxOutputTokens: 180, reasoning: "low" }
       );
       const rendered = renderMathResult(result.value);
       if (rendered || result.value.expr === null) return rendered;
     } catch (error) {
-      console.error("Brain v3 math translation error:", error);
+      console.error("Taki 3.0 compatibility math translation error:", error);
     }
   }
 
@@ -2564,8 +2564,8 @@ export async function getStrictWebAnswer(
   opts: {
     allowPrediction?: boolean;
     allowRecommendation?: boolean;
-    /** Set only by an already-selected Brain v3 core request. */
-    brainV3Core?: boolean;
+    /** Set only by an already-selected Taki 3.0 compatibility core request. */
+    taki3CompatibilityCore?: boolean;
     persona?: UserPersona;
     timeZone?: string;
     voiceMode?: boolean;
@@ -2576,16 +2576,16 @@ export async function getStrictWebAnswer(
   const persona = personaPromptBlock(opts.persona);
   const selectedModel = activeTakiModelInfo();
   const responseStyle = responseStyleForTakiModel(selectedModel.key);
-  // Generic web answers are part of the core brain. Auxiliary v3 promotion is
+  // Generic web answers are part of the core brain. Auxiliary Taki 3.0 promotion is
   // still accepted for callers that use this tool outside the core planner.
   // The explicit core flag is paired with the environment readiness check so a
-  // direct utility call cannot accidentally turn v3 on while the rollout is off.
-  const coreV3 = opts.brainV3Core === true && brainV3CoreEnabled();
+  // direct utility call cannot accidentally turn Taki 3.0 on while the rollout is off.
+  const coreTaki3 = opts.taki3CompatibilityCore === true && taki3CompatibilityEnabled();
   // An explicit false is the planner's compatibility signal after a selected
   // core request failed. It must win over the auxiliary flag; otherwise an
   // active deployment with auxiliary surfaces enabled could immediately issue
-  // a second v3 research request while pretending to have fallen back.
-  const v3 = opts.brainV3Core === false ? false : brainV3AuxEnabled() || coreV3;
+  // a second Taki 3.0 research request while pretending to have fallen back.
+  const specialistPathEnabled = opts.taki3CompatibilityCore === false ? false : taki3SpecialistsEnabled() || coreTaki3;
   const depthDirective = opts.voiceMode ? responseStyle.voiceDirective : responseStyle.textDirective;
   const tz = opts.timeZone && isValidTimeZone(opts.timeZone) ? opts.timeZone : "";
   const tzRule = tz
@@ -2687,11 +2687,11 @@ for current titles, scores, release dates, and streaming availability.
 CURRENT EDITORIAL EVIDENCE:
 ${currentEvidence.evidence}
 `;
-        const directResult = v3
-          ? await runBrainV3Structured<{ answer: string }>(
+        const directResult = specialistPathEnabled
+          ? await runTaki3SpecialistStructured<{ answer: string }>(
               "recommendation_synthesis",
               evidencePrompt,
-              BRAIN_V3_WEB_ANSWER_SCHEMA,
+              TAKI3_SPECIALIST_WEB_ANSWER_SCHEMA,
               {
                 timeoutMs: opts.voiceMode ? 11_000 : 14_000,
                 maxOutputTokens: opts.voiceMode ? responseStyle.voiceMaxOutputTokens : responseStyle.textMaxOutputTokens,
@@ -2717,7 +2717,7 @@ ${currentEvidence.evidence}
                 "Current recommendation synthesis"
               )
             };
-        const directAnswer = v3
+        const directAnswer = specialistPathEnabled
           ? String((directResult as any).value?.answer || "").trim()
           : String((directResult as any).response?.text || "").trim();
         if (directAnswer) {
@@ -2728,10 +2728,10 @@ ${currentEvidence.evidence}
       // The normal grounded provider path below remains available if a direct
       // editorial source changes markup, goes offline, or synthesis times out.
       console.error("Fast current recommendation error:", error);
-      // A selected core request must surface the failed v3 attempt to the
+      // A selected core request must surface the failed Taki 3.0 attempt to the
       // planner. Otherwise the second provider call below can make a failed
       // rollout look healthy and defeat the bounded core circuit.
-      if (coreV3) throw error;
+      if (coreTaki3) throw error;
     }
   }
 
@@ -2775,12 +2775,12 @@ ${currentEvidence.evidence}
       "Web answer"
     );
     let responseResult: any;
-    if (v3) {
+    if (specialistPathEnabled) {
       try {
-        responseResult = await runBrainV3Structured<{ answer: string }>(
+        responseResult = await runTaki3SpecialistStructured<{ answer: string }>(
           allowPrediction ? "web_prediction" : allowRecommendation ? "web_recommendation" : "web_fact",
           researchPrompt,
-          BRAIN_V3_WEB_ANSWER_SCHEMA,
+          TAKI3_SPECIALIST_WEB_ANSWER_SCHEMA,
           {
             timeoutMs: overallTimeoutMs,
             maxOutputTokens: opts.voiceMode ? responseStyle.voiceMaxOutputTokens : responseStyle.textMaxOutputTokens,
@@ -2795,18 +2795,18 @@ ${currentEvidence.evidence}
           }
         );
       } catch (error) {
-        console.error("Brain v3 web answer failed; using compatibility path:", error);
+        console.error("Taki 3.0 compatibility web answer failed; using compatibility path:", error);
         // Core traffic is already inside the planner's compatibility boundary.
-        // Let it fall back once there so the v3 circuit and promotion metrics
-        // record the failure instead of counting legacy prose as v3 success.
-        if (coreV3) throw error;
+        // Let it fall back once there so the Taki 3.0 circuit and promotion metrics
+        // record the failure instead of counting legacy prose as Taki 3.0 success.
+        if (coreTaki3) throw error;
         responseResult = { response: await legacyWebResponse() };
       }
     } else {
       responseResult = { response: await legacyWebResponse() };
     }
     const response: any = (responseResult as any).response;
-    const answer = v3 && (responseResult as any).value
+    const answer = specialistPathEnabled && (responseResult as any).value
       ? String((responseResult as any).value?.answer || "").trim()
       : String(response?.text || "").trim();
     const grounding = getGroundingSourceCount(response);
@@ -2840,7 +2840,7 @@ ${currentEvidence.evidence}
     return { spokenText: answer, action: null, sources };
   } catch (error) {
     console.error("Strict web error:", error);
-    if (coreV3) throw error;
+    if (coreTaki3) throw error;
     return {
       spokenText: allowPrediction
         ? "I couldn't find any predictions or odds for that right now."
@@ -2873,19 +2873,19 @@ Character: ${directive}
 
 Message: ${clean}`;
 
-  if (brainV3AuxEnabled()) {
+  if (taki3SpecialistsEnabled()) {
     try {
-      const result = await runBrainV3Structured<{ text: string }>(
+      const result = await runTaki3SpecialistStructured<{ text: string }>(
         "style_confirmation",
         prompt,
-        BRAIN_V3_STYLE_SCHEMA,
+        TAKI3_SPECIALIST_STYLE_SCHEMA,
         { timeoutMs: 7_000, maxOutputTokens: voiceMode ? 180 : 320, reasoning: "low", teen: Boolean(persona?.teen) }
       );
       let out = String(result.value.text || "").trim();
       out = out.replace(/^["'“”]+|["'“”]+$/g, "").split(/\r?\n/)[0].trim();
       return out || clean;
     } catch (error) {
-      console.error("Brain v3 style confirmation error:", error);
+      console.error("Taki 3.0 compatibility style confirmation error:", error);
     }
   }
 
@@ -2921,7 +2921,7 @@ export type VerifiedEventResult = {
   sources?: { title: string; url: string }[];
 };
 
-async function researchCurrentEventAnswer(eventQuery: string, userTz: string, useBrainV3Core = false) {
+async function researchCurrentEventAnswer(eventQuery: string, userTz: string, useTaki3CompatibilityCore = false) {
   const localNow = nowInTimeZone(userTz);
   const prompt = `
 You are a current-information research assistant for an iPhone personal assistant.
@@ -2947,12 +2947,12 @@ Rules:
   - If you genuinely cannot find any matching upcoming event, say you cannot verify it.
   - Keep the answer concise.
 `;
-  if (useBrainV3Core && brainV3CoreEnabled()) {
+  if (useTaki3CompatibilityCore && taki3CompatibilityEnabled()) {
     try {
-      const result = await runBrainV3Structured<{ answer: string }>(
+      const result = await runTaki3SpecialistStructured<{ answer: string }>(
         "event_research",
         prompt,
-        BRAIN_V3_WEB_ANSWER_SCHEMA,
+        TAKI3_SPECIALIST_WEB_ANSWER_SCHEMA,
         {
           timeoutMs: RESEARCH_TIMEOUT_MS,
           maxOutputTokens: 1_200,
@@ -2965,8 +2965,8 @@ Rules:
       );
       return { text: String(result.value.answer || "").trim(), sources: getGroundingSources(result.response) };
     } catch (error) {
-      console.error("Brain v3 current event research failed:", error);
-      if (useBrainV3Core && brainV3CoreEnabled()) throw error;
+      console.error("Taki 3.0 compatibility current event research failed:", error);
+      if (useTaki3CompatibilityCore && taki3CompatibilityEnabled()) throw error;
     }
   }
   try {
@@ -2994,7 +2994,7 @@ Rules:
 // Like researchCurrentEventAnswer, but asks for a LIST of the next N events
 // (for "add the next 3 games"). The single-event prompt above forces one event,
 // so multi needs its own list-oriented research pass.
-async function researchUpcomingEventsAnswer(eventQuery: string, count: number, userTz: string, useBrainV3Core = false) {
+async function researchUpcomingEventsAnswer(eventQuery: string, count: number, userTz: string, useTaki3CompatibilityCore = false) {
   const localNow = nowInTimeZone(userTz);
   const prompt = `
 You are a current-information research assistant for an iPhone personal assistant.
@@ -3014,12 +3014,12 @@ Rules:
 - Number them 1., 2., 3., … up to ${count}. If you can verify fewer, list as many as you can.
   - Do not include past/completed events. Keep each line concise.
 `;
-  if (useBrainV3Core && brainV3CoreEnabled()) {
+  if (useTaki3CompatibilityCore && taki3CompatibilityEnabled()) {
     try {
-      const result = await runBrainV3Structured<{ answer: string }>(
+      const result = await runTaki3SpecialistStructured<{ answer: string }>(
         "upcoming_events_research",
         prompt,
-        BRAIN_V3_WEB_ANSWER_SCHEMA,
+        TAKI3_SPECIALIST_WEB_ANSWER_SCHEMA,
         {
           timeoutMs: LIST_RESEARCH_TIMEOUT_MS,
           maxOutputTokens: 1_800,
@@ -3032,8 +3032,8 @@ Rules:
       );
       return { text: String(result.value.answer || "").trim(), sources: getGroundingSources(result.response) };
     } catch (error) {
-      console.error("Brain v3 upcoming events research failed:", error);
-      if (useBrainV3Core && brainV3CoreEnabled()) throw error;
+      console.error("Taki 3.0 compatibility upcoming events research failed:", error);
+      if (useTaki3CompatibilityCore && taki3CompatibilityEnabled()) throw error;
     }
   }
   try {
@@ -3074,7 +3074,7 @@ async function extractFutureEventFromResearch(
   eventQuery: string,
   researchText: string,
   fallbackTz: string,
-  useBrainV3Core = false
+  useTaki3CompatibilityCore = false
 ): Promise<VerifiedEventResult> {
   const localNow = nowInTimeZone(fallbackTz);
   const todayLocal = ymdInTimeZone(new Date(), fallbackTz);
@@ -3112,9 +3112,9 @@ ${EVENT_TIME_RULES}
 - Do not invent a time the research answer does not provide.
 `;
 
-  if (useBrainV3Core && brainV3CoreEnabled()) {
+  if (useTaki3CompatibilityCore && taki3CompatibilityEnabled()) {
     try {
-      const result = await runBrainV3Structured<{
+      const result = await runTaki3SpecialistStructured<{
         found: boolean;
         title: string;
         localDate: string;
@@ -3122,7 +3122,7 @@ ${EVENT_TIME_RULES}
         location: string;
         notes: string;
         reason: string;
-      }>("future_event_extract", prompt, BRAIN_V3_EVENT_SCHEMA, {
+      }>("future_event_extract", prompt, TAKI3_SPECIALIST_EVENT_SCHEMA, {
         timeoutMs: 10_000,
         maxOutputTokens: 700,
         reasoning: "low",
@@ -3131,7 +3131,7 @@ ${EVENT_TIME_RULES}
       const parsed = result.value;
       if (!parsed.found) return { found: false, spokenText: researchText, reason: parsed.reason || "Could not extract an exact future date and time." };
       const times = isoFromLocalParts(parsed.localDate, parsed.localTime, fallbackTz, fallbackTz);
-      if (!times) throw new Error("Brain v3 future event had an invalid local time");
+      if (!times) throw new Error("Taki 3.0 compatibility future event had an invalid local time");
       const startMs = Date.parse(times.startDate);
       const FINISHED_GRACE_MS = 3.5 * 60 * 60 * 1000;
       if (startMs < Date.now() - FINISHED_GRACE_MS) {
@@ -3148,8 +3148,8 @@ ${EVENT_TIME_RULES}
         reason: ""
       };
     } catch (error) {
-      console.error("Brain v3 future event extraction failed:", error);
-      if (useBrainV3Core && brainV3CoreEnabled()) throw error;
+      console.error("Taki 3.0 compatibility future event extraction failed:", error);
+      if (useTaki3CompatibilityCore && taki3CompatibilityEnabled()) throw error;
     }
   }
 
@@ -3203,7 +3203,7 @@ ${EVENT_TIME_RULES}
 export async function findVerifiedFutureEvent(
   eventQuery: string,
   fallbackTz: string = TIME_ZONE,
-  opts: { brainV3Core?: boolean } = {}
+  opts: { taki3CompatibilityCore?: boolean } = {}
 ): Promise<VerifiedEventResult> {
   // MLB's schedule feed is the authoritative source for Braves games. Use it
   // before general web research so “add the next Braves game” is deterministic
@@ -3215,12 +3215,12 @@ export async function findVerifiedFutureEvent(
   // One (slow, accurate) grounded research pass, then up to two cheap extraction
   // passes over that same text. Re-researching with the accurate model would
   // risk the overall request budget, and a single grounded pass is reliable.
-  const useBrainV3Core = opts.brainV3Core === true;
-  const research = await researchCurrentEventAnswer(eventQuery, fallbackTz, useBrainV3Core);
+  const useTaki3CompatibilityCore = opts.taki3CompatibilityCore === true;
+  const research = await researchCurrentEventAnswer(eventQuery, fallbackTz, useTaki3CompatibilityCore);
   if (!research.text || !research.sources.length) return { found: false, reason: "No linkable current information found.", sources: research.sources };
   let last: VerifiedEventResult = { found: false };
   for (let attempt = 0; attempt < 2; attempt++) {
-    const result = await extractFutureEventFromResearch(eventQuery, research.text, fallbackTz, useBrainV3Core);
+    const result = await extractFutureEventFromResearch(eventQuery, research.text, fallbackTz, useTaki3CompatibilityCore);
     if (result.found) return { ...result, sources: research.sources };
     last = { ...result, sources: research.sources };
   }
@@ -3273,7 +3273,7 @@ async function extractFutureEventsFromResearch(
   researchText: string,
   count: number,
   fallbackTz: string,
-  useBrainV3Core = false
+  useTaki3CompatibilityCore = false
 ): Promise<VerifiedEventResult[]> {
   const localNow = nowInTimeZone(fallbackTz);
   const todayLocal = ymdInTimeZone(new Date(), fallbackTz);
@@ -3300,11 +3300,11 @@ ${EVENT_TIME_RULES}
 - Up to ${count} events; fewer is fine. Never invent dates/times.
 `;
 
-  if (useBrainV3Core && brainV3CoreEnabled()) {
+  if (useTaki3CompatibilityCore && taki3CompatibilityEnabled()) {
     try {
-      const result = await runBrainV3Structured<{
+      const result = await runTaki3SpecialistStructured<{
         events: Array<{ title: string; localDate: string; localTime: string; location: string; notes: string }>
-      }>("future_events_extract", prompt, BRAIN_V3_EVENTS_SCHEMA, {
+      }>("future_events_extract", prompt, TAKI3_SPECIALIST_EVENTS_SCHEMA, {
         timeoutMs: 12_000,
         maxOutputTokens: 1_200,
         reasoning: "low",
@@ -3332,8 +3332,8 @@ ${EVENT_TIME_RULES}
       }
       return out;
     } catch (error) {
-      console.error("Brain v3 multi-event extraction failed:", error);
-      if (useBrainV3Core && brainV3CoreEnabled()) throw error;
+      console.error("Taki 3.0 compatibility multi-event extraction failed:", error);
+      if (useTaki3CompatibilityCore && taki3CompatibilityEnabled()) throw error;
     }
   }
 
@@ -3382,7 +3382,7 @@ export async function findVerifiedFutureEvents(
   eventQuery: string,
   count: number,
   fallbackTz: string = TIME_ZONE,
-  opts: { brainV3Core?: boolean } = {}
+  opts: { taki3CompatibilityCore?: boolean } = {}
 ): Promise<VerifiedEventResult[]> {
   const n = Math.max(1, Math.min(count, 6));
   if (/\b(?:atlanta\s+)?braves\b/i.test(eventQuery)) {
@@ -3392,11 +3392,11 @@ export async function findVerifiedFutureEvents(
   // One (slow) grounded research pass, then up to two cheap extraction passes
   // that REUSE that text — so a single extraction hiccup doesn't cost another
   // 14s of web research and blow the request budget.
-  const useBrainV3Core = opts.brainV3Core === true;
-  const research = await researchUpcomingEventsAnswer(eventQuery, n, fallbackTz, useBrainV3Core);
+  const useTaki3CompatibilityCore = opts.taki3CompatibilityCore === true;
+  const research = await researchUpcomingEventsAnswer(eventQuery, n, fallbackTz, useTaki3CompatibilityCore);
   if (!research.text || !research.sources.length) return [];
   // Single extraction pass — the list research already used most of the budget.
-  const events = await extractFutureEventsFromResearch(eventQuery, research.text, n, fallbackTz, useBrainV3Core);
+  const events = await extractFutureEventsFromResearch(eventQuery, research.text, n, fallbackTz, useTaki3CompatibilityCore);
   return events.map((event) => ({ ...event, sources: research.sources }));
 }
 
@@ -3825,10 +3825,10 @@ ${tz ? `The user's local time is ${nowInTimeZone(tz)}.\n` : ""}Question: "${q}"
 - If you genuinely can't tell what something is, say so honestly rather than guessing.
 - Plain text only — no markdown. Match the personality AND its intensity above (plain at low intensity, loud at high).`;
 
-  if (brainV3AuxEnabled()) {
+  if (taki3SpecialistsEnabled()) {
     try {
-      const { runBrainV3MultimodalAnswer } = await import("./brainV3.js");
-      return await runBrainV3MultimodalAnswer(
+      const { runTaki3CompatibilityMultimodalAnswer } = await import("./taki3Compatibility.js");
+      return await runTaki3CompatibilityMultimodalAnswer(
         [{ inlineData: { mimeType: mimeType || "image/jpeg", data: base64 } }],
         q,
         { persona, timeZone, voiceMode }
@@ -3836,7 +3836,7 @@ ${tz ? `The user's local time is ${nowInTimeZone(tz)}.\n` : ""}Question: "${q}"
     } catch (error) {
       // Keep the existing multimodal path as a reversible compatibility
       // fallback during auxiliary rollout and on provider/input failures.
-      console.error("Brain v3 vision answer failed; using compatibility path:", error);
+      console.error("Taki 3.0 compatibility vision answer failed; using compatibility path:", error);
     }
   }
 
@@ -3960,19 +3960,19 @@ ${tz ? `The user's local time is ${nowInTimeZone(tz)}.\n` : ""}Question: "${q}"
 - Plain text only. Do not claim that an attachment or generated file was created.${voiceMode ? " Keep it to complete short spoken sentences with no markdown or URLs." : ""}
 - Match the configured personality without sacrificing accuracy.` });
 
-  if (brainV3AuxEnabled()) {
+  if (taki3SpecialistsEnabled()) {
     try {
-      const { runBrainV3MultimodalAnswer } = await import("./brainV3.js");
-      const text = await runBrainV3MultimodalAnswer(
+      const { runTaki3CompatibilityMultimodalAnswer } = await import("./taki3Compatibility.js");
+      const text = await runTaki3CompatibilityMultimodalAnswer(
         parts.slice(0, -1),
         q,
         { persona, timeZone, voiceMode, useUrlContext: needsURLContext }
       );
       return { text, sources };
     } catch (error) {
-      // Reuse the established attachment adapter if the gated v3 path cannot
+      // Reuse the established attachment adapter if the gated Taki 3.0 path cannot
       // handle a provider-specific input (for example a public video URL).
-      console.error("Brain v3 attachment answer failed; using compatibility path:", error);
+      console.error("Taki 3.0 compatibility attachment answer failed; using compatibility path:", error);
     }
   }
 

@@ -1,5 +1,5 @@
-import { brainV3AuxEnabled, generateContent, MAIN_MODEL } from "./ai.js";
-import { runBrainV3Structured } from "./brainV3Specialists.js";
+import { taki3SpecialistsEnabled, generateContent, MAIN_MODEL } from "./ai.js";
+import { runTaki3SpecialistStructured } from "./taki3Specialists.js";
 import { isoFromYmdTime, withTimeout } from "./util.js";
 
 /* ============================================================================
@@ -56,7 +56,7 @@ function localDateParts(value: unknown): { ymd: string; hour: number; minute: nu
   return { ymd: `${match[1]}-${match[2]}-${match[3]}`, hour, minute, second };
 }
 
-/** Strict v3 boundary for generated schedules; legacy callers keep their old parser. */
+/** Strict Taki 3.0 boundary for generated schedules; legacy callers keep their old parser. */
 export function normalizeDayPlanObject(
   value: unknown,
   nowIso: string,
@@ -111,10 +111,10 @@ Rules:
 - startDate is LOCAL time (no timezone suffix). Keep titles short (≤ 5 words). Always include durationMin: an integer for events and null for alarms.
   - Make it sensible and balanced (include breaks/meals where natural).`;
   try {
-    const v3 = brainV3AuxEnabled();
+    const specialistEnabled = taki3SpecialistsEnabled();
     let obj: any;
-    if (v3) {
-      obj = (await runBrainV3Structured<any>("day_plan", prompt, DAY_PLAN_SCHEMA, {
+    if (specialistEnabled) {
+      obj = (await runTaki3SpecialistStructured<any>("day_plan", prompt, DAY_PLAN_SCHEMA, {
         timeoutMs: 20_000,
         maxOutputTokens: 1_800,
         reasoning: "low",
@@ -129,7 +129,7 @@ Rules:
       } as any), 20_000, "Day plan");
       obj = JSON.parse((res.text || "{}").trim());
     }
-    if (v3) return normalizeDayPlanObject(obj, nowIso, timeZone);
+    if (specialistEnabled) return normalizeDayPlanObject(obj, nowIso, timeZone);
     if (!obj || !Array.isArray(obj.items)) return null;
     const items: PlanItem[] = obj.items
       .filter((it: any) => it && it.title && it.startDate && (it.type === "alarm" || it.type === "event"))

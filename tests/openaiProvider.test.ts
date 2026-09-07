@@ -10,7 +10,7 @@ import {
 } from "../src/openaiProvider.js";
 import { prepareGeminiRequest } from "../src/ai.js";
 import { buildConversationState } from "../src/context.js";
-import { runBrainV3Plan } from "../src/brainV3.js";
+import { runTaki3CompatibilityPlan } from "../src/taki3Compatibility.js";
 
 test("Gemini-shaped text, JSON, search, reasoning, and limits map to Responses", () => {
   const request = buildOpenAIRequest({
@@ -36,7 +36,7 @@ test("Gemini-shaped text, JSON, search, reasoning, and limits map to Responses",
   assert.equal(terraRequest.reasoning.effort, "medium");
 });
 
-test("Brain v3 JSON stages use strict Responses Structured Outputs", () => {
+test("Taki 3.0 compatibility JSON stages use strict Responses Structured Outputs", () => {
   const schema = {
     type: "object",
     additionalProperties: false,
@@ -46,17 +46,17 @@ test("Brain v3 JSON stages use strict Responses Structured Outputs", () => {
   const request = buildOpenAIRequest({
     contents: "Classify this turn.",
     config: {
-      modelRole: "brain_v3",
+      modelRole: "taki3_specialist",
       responseMimeType: "application/json",
       responseJsonSchema: schema,
-      responseJsonSchemaName: "taki_brain_v3_policy"
+      responseJsonSchemaName: "taki3_specialist_policy"
     }
   }, "gpt-5.5");
 
   assert.deepEqual(request.text, {
     format: {
       type: "json_schema",
-      name: "taki_brain_v3_policy",
+      name: "taki3_specialist_policy",
       strict: true,
       schema
     }
@@ -93,7 +93,7 @@ test("Taki 3.0 keeps its selected answer model while using strict Responses JSON
   });
 });
 
-test("Brain v3 runs end to end through the Responses adapter contract", async () => {
+test("Taki 3.0 compatibility runs end to end through the Responses adapter contract", async () => {
   const requestBodies: any[] = [];
   const requestHeaders: HeadersInit[] = [];
   const understanding = {
@@ -126,9 +126,9 @@ test("Brain v3 runs end to end through the Responses adapter contract", async ()
     safeAlternative: ""
   };
   const responses: Record<string, unknown> = {
-    taki_brain_v3_understanding: understanding,
-    taki_brain_v3_policy: policy,
-    taki_brain_v3_answer: { answer: "Leaves change color as chlorophyll breaks down and other pigments become visible." }
+    taki3_specialist_understanding: understanding,
+    taki3_specialist_policy: policy,
+    taki3_specialist_answer: { answer: "Leaves change color as chlorophyll breaks down and other pigments become visible." }
   };
   const fetchImpl = async (_input: RequestInfo | URL, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body || "{}"));
@@ -151,7 +151,7 @@ test("Brain v3 runs end to end through the Responses adapter contract", async ()
     fetchImpl as typeof fetch
   );
 
-  const result = await runBrainV3Plan(
+  const result = await runTaki3CompatibilityPlan(
     buildConversationState("C c can you explain why leaves change color?", "", undefined, "America/New_York", undefined, undefined, false, "adapter-contract"),
     undefined,
     { generateContent: generateThroughResponses }
@@ -161,7 +161,7 @@ test("Brain v3 runs end to end through the Responses adapter contract", async ()
   assert.equal(result.action, null);
   assert.deepEqual(
     requestBodies.map((body) => body.text?.format?.name),
-    ["taki_brain_v3_understanding", "taki_brain_v3_policy", "taki_brain_v3_answer"]
+    ["taki3_specialist_understanding", "taki3_specialist_policy", "taki3_specialist_answer"]
   );
   for (const body of requestBodies) {
     assert.equal(body.store, false);
@@ -173,13 +173,13 @@ test("Brain v3 runs end to end through the Responses adapter contract", async ()
   assert.match(String((requestHeaders[0] as any).Authorization || (requestHeaders[0] as any).authorization || ""), /Bearer staging-contract-test-key/);
 });
 
-test("Brain v3 adapter metadata never leaks into Gemini config", () => {
+test("Taki 3.0 compatibility adapter metadata never leaks into Gemini config", () => {
   const request = prepareGeminiRequest({
     model: "gemini-3.1-pro-preview",
     contents: "Classify this turn.",
     config: {
-      modelRole: "brain_v3",
-      responseJsonSchemaName: "taki_brain_v3_policy",
+      modelRole: "taki3_specialist",
+      responseJsonSchemaName: "taki3_specialist_policy",
       openAIReasoningEffort: "low",
       responseMimeType: "application/json",
       responseJsonSchema: { type: "object" }
