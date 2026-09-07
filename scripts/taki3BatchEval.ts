@@ -370,7 +370,7 @@ async function main(): Promise<void> {
     }
 
     if (item.expectedKind === "delegate" || item.expectedKind === "safety" || item.expectedKind === "clarify") {
-      if (!dryRun && plan !== null) reasons.push("expected_no_v4_plan");
+      if (!dryRun && plan !== null) reasons.push("unexpected_provider_plan");
     } else if (!dryRun) {
       if (!plan) reasons.push("missing_plan");
       if (plan?.action) reasons.push("unexpected_action");
