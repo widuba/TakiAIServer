@@ -280,7 +280,8 @@ test("Taki 3.0 compatibility accepts natural action leads across supported surfa
     ["Share the trail closes at sunset", "share_content", { shareKind: "text", shareText: "The trail closes at sunset" }],
     ["Get directions to Amicalola Falls", "maps_directions", { mapsDestination: "Amicalola Falls" }],
     ["Set a reminder to call Mom tomorrow at 9 AM", "reminder_create", { title: "call Mom" }],
-    ["Skip this song", "music_control", { musicAction: "next" }]
+    ["Skip this song", "music_control", { musicAction: "next" }],
+    ["What song is playing right now?", "identify_song", {}]
   ] as const;
   for (const [message, type, fields] of cases) {
     const stages = fakeStages({

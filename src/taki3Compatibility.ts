@@ -1419,7 +1419,7 @@ function requestedActionShape(signals: Taki3CompatibilitySignals): boolean {
 
 const TAKI3_COMPATIBILITY_READ_ACTION_TYPES = new Set([
   "calendar_search", "reminder_search", "personal_search", "contact_search", "health_query", "health_trend",
-  "photos_show", "photos_search", "action_history", "device_status"
+  "photos_show", "photos_search", "action_history", "device_status", "identify_song"
 ]);
 
 const TAKI3_COMPATIBILITY_ACTION_CUES: Record<string, RegExp> = {
@@ -1541,6 +1541,12 @@ function modelActionHasUserCue(actionType: string, text: string): boolean {
           || /\b(?:how much|how many)\s+(?:(?:battery|charge|storage)\b|(?:of\s+)?(?:my\s+)?(?:battery|charge|storage)\b)|\bdo i have\b.{0,40}\b(?:battery|charge|storage)\b/.test(value);
         return !isBareDefinitionQuestion(value, "(?:phone|device|iphone|battery|storage)") && deviceTopic && statusFrame;
       }
+      case "identify_song":
+        // Song recognition is an on-device read. Questions such as "What song
+        // is playing?" must authorize the action even though they are not
+        // imperative commands and therefore do not have an action lead.
+        return /\b(?:song|music|track|playing|tune)\b/.test(value)
+          && /\b(?:what|which|identify|recognize|name|playing|listen|hear)\b/.test(value);
       default: return false;
     }
   }
