@@ -113,7 +113,6 @@ import {
 } from "./messageStyle.js";
 import type { MessageAnalysis, MessageStyleVector } from "./messageStyle.js";
 import { restyleMessageBody } from "./messageStyleRewrite.js";
-import { brainV3CanAttempt, noteBrainV3Failure, shouldUseBrainV3 } from "./brainV3.js";
 import { noteTaki3Failure, noteTaki3Success, runTaki3Plan, runTaki3Shadow, shouldShadowTaki3, shouldUseTaki3, taki3CanAttempt } from "./taki3.js";
 import { runUnmetered } from "./metering.js";
 import {
@@ -256,12 +255,11 @@ async function taki3FreeformPlan(
   }
 }
 
-// Dedicated tools called by the compatibility planner can still participate in
-// a selected v3 request. The circuit check matters here: after a v3 failure the
-// same turn must not immediately issue a second v3 specialist request before
-// falling back to the established implementation.
-function brainV3CoreToolSelected(state: ConversationState): boolean {
-  return shouldUseBrainV3(state) && brainV3CanAttempt();
+// Taki 3.0 keeps the established tool implementations and their final action
+// audit, but no longer selects a numbered model specialist for a customer turn.
+// The old flag can remain set during Render migration without re-enabling it.
+function brainV3CoreToolSelected(_state: ConversationState): boolean {
+  return false;
 }
 
 async function runBrainV3CoreWithCompatibility<T>(
@@ -277,7 +275,6 @@ async function runBrainV3CoreWithCompatibility<T>(
     // through the compatibility specialist first. Preserve their one-request fallback,
     // while making the failed core attempt visible to the same circuit and
     // rollout metrics used by the model-driven path.
-    noteBrainV3Failure(error);
     return compatibilityCall();
   }
 }
