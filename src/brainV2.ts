@@ -647,13 +647,20 @@ function inferLanguage(text: string): string {
 
 function inferSpeechAct(text: string): ConversationalSignals["speechAct"] {
   const m = text.toLocaleLowerCase().trim();
+  const routingText = m
+    .replace(/^(?:(?:hey|hi|hello|please|quickly|okay|ok)\s*,?\s*)+/i, "")
+    .trim();
   if (/^(?:no|nah|that's wrong|that is wrong|i meant|correction|actually)\b/.test(m)) return "correction";
-  if (/^(?:hi|hello|hey|thanks|thank you|good morning|good night|bye|goodbye)\b/.test(m)) return "social";
   // Interrogative wording can still be an executable request: "Could you
   // text Chris ...?" must not be downgraded to a knowledge question.
   if (/^(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:call|phone|text|message|email|mail|add|put|set|open|show|find|search|play|turn|make|draft|write|tell|remind|schedule|navigate|take|give|look|check|send|remove|delete|create|save|start|stop|change|update|log|track|record)(?:ing)?\b/i.test(text)
+    || /^(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:call|phone|text|message|email|mail|add|put|set|open|show|find|search|play|turn|make|draft|write|tell|remind|schedule|navigate|take|give|look|check|send|remove|delete|create|save|start|stop|change|update|log|track|record)(?:ing)?\b/i.test(routingText)
     || /^(?:do|would|could)\s+you\s+mind\s+(?:please\s+)?(?:call|phone|text|message|email|mail|add|put|set|open|show|find|search|play|turn|make|draft|write|tell|remind|schedule|navigate|take|give|look|check|send|remove|delete|create|save|start|stop|change|update|log|track|record)(?:ing)?\b/i.test(text)
     || /\b(?:i need you to|i want you to|i'd like you to|help me)\s+(?:call|text|message|email|add|put|set|open|show|find|search|play|turn|write|remind|schedule|navigate|send|remove|delete|create|save|change|update|log|track|record)\b/i.test(text)) return "request";
+  // A greeting can introduce an executable request ("Hey, open Settings").
+  // Check it after the request forms above so the social prefix does not hide
+  // the action from the planner.
+  if (/^(?:hi|hello|hey|thanks|thank you|good morning|good night|bye|goodbye)\b/.test(m)) return "social";
   if (text.includes("?") || /^(?:what|why|how|who|when|where|which|can|could|would|is|are|do|does|did)\b/i.test(text)) return "question";
   if (/^(?:please\s+)?(?:call|text|message|email|add|put|set|open|show|find|search|play|turn|make|draft|write|tell|remind|schedule|navigate|take|give|look|check|send|remove|delete|create|save|start|stop|change|update|log|track|record)\b/i.test(text)
     || /\b(?:i need|i want|i'd like|help me|can you|could you|would you)\b/i.test(text)) return "request";
@@ -1284,6 +1291,11 @@ export function looksLikeSafetySensitiveRequest(text: string): boolean {
     || /\b(?:want|plan|going|trying|thinking about|considering)\s+to\s+(?:die|kill|hurt|harm)\b/i.test(value);
   const selfHarmSupport = /\b(?:help|support|stop|prevent|avoid|cope|recover|protect|keep(?:\s+me)?\s+safe|safety|hotline|crisis|counsel)\b.{0,90}\b(?:suicid|self[- ]?harm|kill(?:ing)?\s+myself|hurt(?:ing)?\s+myself|harm(?:ing)?\s+myself|end(?:ing)?\s+my\s+life)\b/i.test(value);
   const selfHarm = selfHarmShape && !selfHarmSupport;
+  const stalkingAbuse = /\b(?:how(?:\s+(?:do|can))?|tell me how|help me|want to|plan to|without being detected)\b.{0,120}\bstalk(?:ing)?\b/i.test(value)
+    && !/\b(?:prevent|recognize|escape|report|stop|protect|safety|safe)\b/i.test(value);
+  const emergencyMedication = /\b(?:what|which|how much|what dosage|what dose|how many)\b.{0,100}\b(?:dose|dosage|take|medication|medicine|pill|drug)s?\b.{0,100}\b(?:chest pain|can't breathe|cannot breathe|shortness of breath|heart attack)\b/i.test(value)
+    || /\b(?:dose|dosage|take|medication|medicine|pill|drug)s?\b.{0,120}\b(?:chest pain|can't breathe|cannot breathe|shortness of breath|heart attack)\b/i.test(value)
+    || /\b(?:chest pain|can't breathe|cannot breathe|shortness of breath|heart attack)\b.{0,120}\b(?:dose|dosage|take|medication|medicine|pill|drug)s?\b/i.test(value);
   const violenceShape = /\b(?:how\s+to|help me|want to|plan to|make|build|buy|obtain|use|attack|kill|hurt|harm|murder|shoot|stab|poison)\b.{0,100}\b(?:someone|him|her|them|people|a person|weapon|bomb|explosive|poison)\b/i.test(value)
     || /\b(?:weapon|bomb|explosive)\b.{0,80}\b(?:make|build|buy|obtain|use|plant|detonate|attack)\b/i.test(value);
   const benignSafetyDiscussion = /\b(?:bomb|explosive)\s+(?:shelter|squad|disposal|threat(?:\s+response)?|detection|history)\b|\b(?:weapon|firearm|gun|knife)s?\s+(?:safely|safety|storage|training|law|laws|history|for\s+self[- ]?defen[cs]e|for\s+protection|defen[cs]e|protection)\b|\b(?:self[- ]?defen[cs]e|defend\s+myself|protect\s+myself|personal\s+safety)\b/i.test(value);
@@ -1310,7 +1322,7 @@ export function looksLikeSafetySensitiveRequest(text: string): boolean {
   const promptExtraction = /\b(?:ignore (?:all|your|the) (?:rules|instructions)|disregard (?:all|your|the) (?:rules|instructions)|override (?:your|the) (?:rules|instructions))\b/i.test(value)
     || (promptExtractionVerb.test(value) && new RegExp(`\\b(?:your|this assistant'?s|the assistant'?s|the)\\s+${promptTarget}\\b`, "i").test(value) && !generalPromptDiscussion)
     || (promptExtractionVerb.test(value) && new RegExp(`\\b${promptTarget}\\b`, "i").test(value) && !generalPromptDiscussion && !/\b(?:how\s+to|write|create|design|example|examples|explain)\b/i.test(value));
-  return selfHarm || violence || exploitation || cyberAbuse || drugAbuse || privacyAbuse || promptExtraction;
+  return selfHarm || stalkingAbuse || emergencyMedication || violence || exploitation || cyberAbuse || drugAbuse || privacyAbuse || promptExtraction;
 }
 
 function safetyResponseFor(text: string): string {

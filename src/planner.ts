@@ -113,9 +113,8 @@ import {
 } from "./messageStyle.js";
 import type { MessageAnalysis, MessageStyleVector } from "./messageStyle.js";
 import { restyleMessageBody } from "./messageStyleRewrite.js";
-import { runBrainV2Planner, runBrainV2Shadow, shouldShadowBrainV2, shouldUseBrainV2 } from "./brainV2.js";
-import { brainV3CanAttempt, noteBrainV3Failure, noteBrainV3Success, runBrainV3Plan, runBrainV3Shadow, shouldShadowBrainV3, shouldUseBrainV3 } from "./brainV3.js";
-import { brainV4CanAttempt, noteBrainV4Failure, noteBrainV4Success, runBrainV4Plan, runBrainV4Shadow, shouldShadowBrainV4, shouldUseBrainV4 } from "./brainV4.js";
+import { brainV3CanAttempt, noteBrainV3Failure, shouldUseBrainV3 } from "./brainV3.js";
+import { noteTaki3Failure, noteTaki3Success, runTaki3Plan, runTaki3Shadow, shouldShadowTaki3, shouldUseTaki3, taki3CanAttempt } from "./taki3.js";
 import { runUnmetered } from "./metering.js";
 import {
   addDaysToYmd,
@@ -138,9 +137,8 @@ import {
  * planAssistantResponse is the single brain. It:
  *   1. handles a couple of unambiguous deterministic answer tools,
  *   2. completes a pending clarification deterministically when possible,
- *   3. otherwise gives eligible conversational turns to Brain v4's single-call
- *      answer core, then asks the selected understanding planner (Brain v2 when
- *      its rollout gate is on, the legacy planner otherwise) for a structured plan,
+ *   3. otherwise gives eligible conversational turns to Taki 3.0's single-call
+ *      answer core, then uses the established action compiler for a structured plan,
  *   4. routes the plan to tools / actions / clarifications,
  *   5. attaches structured memory (event / contact / place / pending).
  *
@@ -150,6 +148,11 @@ import {
 
 function answerPlan(spokenText: string, patch: MemoryPatch = {}, sources: AssistantPlan["sources"] = [], confidence?: number): AssistantPlan {
   return { spokenText, action: null, sources, confidence, memoryPatch: { pendingClarification: null, ...patch }, needsExecution: false };
+}
+
+function isHardProviderFailure(error: unknown): error is ServiceError {
+  return error instanceof ServiceError
+    && ["ai_quota", "ai_auth", "ai_timeout", "ai_unavailable"].includes(error.kind);
 }
 
 // A genuine question / request (deserves a strong, grounded answer) vs. trivial
@@ -227,132 +230,28 @@ function actionsPlan(
 }
 
 /**
- * Give Brain v2 ownership of free-form turns even when a legacy fast-path would
- * otherwise call getGeneralAnswer directly. Deterministic device actions remain
- * ahead of this helper; it only returns conversational/research plans and never
- * executes a model-proposed side effect by itself.
- */
-async function brainV2FreeformPlan(
-  state: ConversationState,
-  onStableVoiceText?: (text: string) => void | Promise<void>
-): Promise<AssistantPlan | null> {
-  if (!shouldUseBrainV2(state)) return null;
-  try {
-    const plan = await runBrainV2Planner(state, onStableVoiceText);
-    if (plan.needsClarification || plan.intent === "clarify") {
-      const question = plan.clarifyingQuestion || plan.spokenText || "Can you clarify what you want me to do?";
-      return clarifyPlan(question, {
-        intent: String(plan.action?.type || "clarify"),
-        missing: plan.missing.length ? plan.missing : ["details"],
-        draftAction: plan.action || null,
-        question,
-        createdAt: state.nowIso
-      });
-    }
-    const inline = String(plan.spokenText || "").trim();
-    if (plan.intent === "answer_only" && inline && (plan.answerReady || plan.answerMode === "refuse")) {
-      return answerPlan(inline, { lastIntent: "answer_only" });
-    }
-    if (plan.intent === "event_lookup") {
-      const verified = await findVerifiedFutureEvent(plan.webQuery || state.message, state.timeZone);
-      if (!verified.found) return answerPlan(verified.spokenText || "I couldn't verify that event right now.", { lastIntent: "event_lookup" }, verified.sources);
-      const event: EventMemory = {
-        title: cleanCalendarEventTitle(verified.title || "Event"),
-        startDate: verified.startDate!,
-        endDate: verified.endDate || verified.startDate!,
-        location: verified.location || undefined,
-        notes: verified.notes || undefined,
-        source: "web",
-        confidence: 0.9
-      };
-      if (plan.wantsCalendar) return actionPlan("", eventToCalendarAction(event), { lastMentionedEvent: event, lastIntent: "calendar_create" }, null, verified.sources);
-      const when = formatEventDateTime(event.startDate, state.timeZone);
-      return answerPlan(when ? `${event.title} is on ${when}${event.location ? ` at ${event.location}` : ""}.` : verified.spokenText || `The next one is ${event.title}.`, { lastMentionedEvent: event, lastIntent: "event_lookup" }, verified.sources);
-    }
-    if (plan.intent === "web_search" || plan.answerMode === "research") {
-      const res = await getStrictWebAnswer(plan.webQuery || state.message, {
-        allowPrediction: looksLikePredictionQuestion(state.message),
-        allowRecommendation: looksLikeCurrentRecommendationQuestion(state.message),
-        persona: state.userProfile,
-        timeZone: state.timeZone,
-        voiceMode: state.voiceMode
-      });
-      return answerPlan(res.spokenText, { lastIntent: "web_search" }, res.sources);
-    }
-    // An action proposal is intentionally left to the normal planner below.
-    // This helper is used in answer-only fast paths where executing it here
-    // could bypass the existing device-side validation contract.
-    return null;
-  } catch (error) {
-    // A canary-quality issue must not break a legacy fast path. The central
-    // planner still has the typed provider fallback and final action audit.
-    if (!(error instanceof ServiceError)) console.warn("Brain v2 free-form fallback:", error);
-    return null;
-  }
-}
-
-/**
- * Brain v3 is an opt-in replacement for the model-owned path. Deterministic
- * device features remain ahead of this helper so an active v3 can improve
- * understanding without changing the native capability contract.
- */
-async function brainV3FreeformPlan(
-  state: ConversationState,
-  onStableVoiceText?: (text: string) => void | Promise<void>
-): Promise<AssistantPlan | null> {
-  if (!shouldUseBrainV3(state) || !brainV3CanAttempt()) return null;
-  try {
-    const plan = await runBrainV3Plan(state, onStableVoiceText);
-    noteBrainV3Success();
-    return plan;
-  } catch (error) {
-    noteBrainV3Failure(error);
-    // Canary failures are compatibility failures, not user-facing refusals.
-    // Let the existing path answer the same turn and keep the v3 gate reversible.
-    console.error("Brain v3 failed; using the compatibility planner:", error);
-    return null;
-  }
-}
-
-/**
- * Current-fact routes already made a deterministic decision that live evidence
- * is required. A v3 answer without linkable sources is therefore not a valid
- * result for those routes, even if its prose looks plausible. Open the bounded
- * v3 circuit on that contract failure so the compatibility fallback does not
- * immediately issue another v3 attempt in the same turn.
- */
-async function brainV3GroundedFreeformPlan(
-  state: ConversationState,
-  onStableVoiceText?: (text: string) => void | Promise<void>
-): Promise<AssistantPlan | null> {
-  const plan = await brainV3FreeformPlan(state, onStableVoiceText);
-  if (!plan) return null;
-  if (Array.isArray(plan.sources) && plan.sources.length > 0) return plan;
-  noteBrainV3Failure(new Error("brain_v3_missing_grounding"));
-  return null;
-}
-
-/**
- * Brain v4 owns only conversational answers. Device/account actions, safety
- * requests, and ambiguous follow-ups return null from the v4 core and continue
- * through the established planner/compiler below. This keeps the v4 rollout
+ * Taki 3.0 owns conversational answers. Device/account actions, safety
+ * requests, and ambiguous follow-ups return null from the answer core and
+ * continue through the established planner/compiler below. This keeps the
+ * Taki 3.0 rollout
  * additive: a failed or misclassified answer cannot bypass an action audit.
  */
-async function brainV4FreeformPlan(
+async function taki3FreeformPlan(
   state: ConversationState,
   onStableVoiceText?: (text: string) => void | Promise<void>
 ): Promise<AssistantPlan | null> {
-  if (!shouldUseBrainV4(state) || !brainV4CanAttempt()) return null;
+  if (!shouldUseTaki3(state) || !taki3CanAttempt()) return null;
   try {
-    const plan = await runBrainV4Plan(state, onStableVoiceText);
-    noteBrainV4Success();
+    const plan = await runTaki3Plan(state, onStableVoiceText);
+    noteTaki3Success();
     return plan;
   } catch (error) {
-    noteBrainV4Failure(error);
-    // v4 is a quality/latency optimization, never a single point of failure.
-    // The same turn immediately uses the existing v3/v2/legacy compatibility
-    // path, while the bounded circuit prevents repeated provider waits.
-    console.error("Brain v4 failed; using the compatibility planner:", error);
+    noteTaki3Failure(error);
+    // A provider outage is already a typed user-facing service failure. Do not
+    // spend more latency and credits cascading into several older planners.
+    // Ordinary contract/quality failures remain eligible for compatibility.
+    if (error instanceof ServiceError && ["ai_quota", "ai_auth", "ai_timeout", "ai_unavailable"].includes(error.kind)) throw error;
+    console.error("Taki 3.0 answer core failed; using the compatibility planner:", error);
     return null;
   }
 }
@@ -375,7 +274,7 @@ async function runBrainV3CoreWithCompatibility<T>(
   } catch (error) {
     if (!coreSelected) throw error;
     // Deterministic routes such as Share and multi-event Calendar do not pass
-    // through brainV3FreeformPlan first. Preserve their one-request fallback,
+    // through the compatibility specialist first. Preserve their one-request fallback,
     // while making the failed core attempt visible to the same circuit and
     // rollout metrics used by the model-driven path.
     noteBrainV3Failure(error);
@@ -1422,17 +1321,12 @@ export async function planAssistantResponse(
     return answerPlan(productAnswer, { lastIntent: "answer_only" });
   }
 
-  // v3 shadowing is detached from the live response path. Its provider work is
-  // unmetered for the user, and its result is never used by this request.
-  if (shouldShadowBrainV3(state)) {
-    void runUnmetered(() => runBrainV3Shadow(state)).then((shadow) => {
-      if (shadow.ok === false) console.warn("Brain v3 shadow evaluation failed:", shadow.error);
-    }).catch((error) => console.warn("Brain v3 shadow evaluation error:", error));
-  }
-  if (shouldShadowBrainV4(state)) {
-    void runUnmetered(() => runBrainV4Shadow(state)).then((shadow) => {
-      if (shadow.ok === false) console.warn("Brain v4 shadow evaluation failed:", shadow.error);
-    }).catch((error) => console.warn("Brain v4 shadow evaluation error:", error));
+  // Taki 3.0 shadowing is detached from the live response path. Its provider
+  // work is unmetered for the user, and its result is never used by this turn.
+  if (shouldShadowTaki3(state)) {
+    void runUnmetered(() => runTaki3Shadow(state)).then((shadow) => {
+      if (shadow.ok === false) console.warn("Taki 3.0 shadow evaluation failed:", shadow.error);
+    }).catch((error) => console.warn("Taki 3.0 shadow evaluation error:", error));
   }
 
   // Writing assistance, transformations of text already supplied in the turn,
@@ -1444,12 +1338,8 @@ export async function planAssistantResponse(
     || looksLikeInlineTransformationRequest(state.message)
     || looksLikeEmotionalSupportRequest(state.message)
   ) {
-    const brainV4Plan = await brainV4FreeformPlan(state, onStableVoiceText);
-    if (brainV4Plan) return brainV4Plan;
-    const brainV3Plan = await brainV3FreeformPlan(state, onStableVoiceText);
-    if (brainV3Plan) return brainV3Plan;
-    const brainPlan = await brainV2FreeformPlan(state, onStableVoiceText);
-    if (brainPlan) return brainPlan;
+    const taki3Plan = await taki3FreeformPlan(state, onStableVoiceText);
+    if (taki3Plan) return taki3Plan;
     const supportGuidance = emotionalSupportGuidanceFor(state.message);
     if (supportGuidance) return answerPlan(supportGuidance, { lastIntent: "answer_only" });
     const answer = await getGeneralAnswer(state, onStableVoiceText);
@@ -1461,12 +1351,8 @@ export async function planAssistantResponse(
   // answer paths the full transcript before action parsing gets a chance to
   // interpret the leading words as a reminder command.
   if (looksLikeConversationRecallRequest(state.message)) {
-    const brainV4Plan = await brainV4FreeformPlan(state, onStableVoiceText);
-    if (brainV4Plan) return brainV4Plan;
-    const brainV3Plan = await brainV3FreeformPlan(state, onStableVoiceText);
-    if (brainV3Plan) return brainV3Plan;
-    const brainPlan = await brainV2FreeformPlan(state, onStableVoiceText);
-    if (brainPlan) return brainPlan;
+    const taki3Plan = await taki3FreeformPlan(state, onStableVoiceText);
+    if (taki3Plan) return taki3Plan;
     const answer = await getGeneralAnswer(state, onStableVoiceText);
     return answerPlan(answer.text, { lastIntent: "answer_only" }, answer.sources);
   }
@@ -2093,10 +1979,8 @@ export async function planAssistantResponse(
         return answerPlan(`${snap.title} — ${snap.status}.${dep}${arr}`.trim(), { lastIntent: "web_search" }, snap.sources);
       }
     }
-    const brainV4Plan = await brainV4FreeformPlan(state, onStableVoiceText);
-    if (brainV4Plan) return brainV4Plan;
-    const brainV3Plan = await brainV3FreeformPlan(state, onStableVoiceText);
-    if (brainV3Plan) return brainV3Plan;
+    const taki3Plan = await taki3FreeformPlan(state, onStableVoiceText);
+    if (taki3Plan) return taki3Plan;
     const res = await getStrictWebAnswer(state.message, {
       persona: state.userProfile,
       timeZone: state.timeZone,
@@ -2256,10 +2140,8 @@ export async function planAssistantResponse(
   // analysts). Route them straight to a grounded prediction answer so they are
   // never refused as "unverifiable."
   if (looksLikePredictionQuestion(state.message)) {
-    const brainV4Plan = await brainV4FreeformPlan(state, onStableVoiceText);
-    if (brainV4Plan) return brainV4Plan;
-    const brainV3Plan = await brainV3GroundedFreeformPlan(state, onStableVoiceText);
-    if (brainV3Plan) return brainV3Plan;
+    const taki3Plan = await taki3FreeformPlan(state, onStableVoiceText);
+    if (taki3Plan) return taki3Plan;
     const res = await getStrictWebAnswer(state.message, {
       allowPrediction: true,
       persona: state.userProfile,
@@ -2296,10 +2178,8 @@ export async function planAssistantResponse(
   // deliberately precedes generic live-fact routing so recommendation intent
   // wins if a sentence also contains words such as "current" or "release."
   if (!isActionCommand && looksLikeCurrentRecommendationQuestion(state.message)) {
-    const brainV4Plan = await brainV4FreeformPlan(state, onStableVoiceText);
-    if (brainV4Plan) return brainV4Plan;
-    const brainV3Plan = await brainV3GroundedFreeformPlan(state, onStableVoiceText);
-    if (brainV3Plan) return brainV3Plan;
+    const taki3Plan = await taki3FreeformPlan(state, onStableVoiceText);
+    if (taki3Plan) return taki3Plan;
     const res = await getStrictWebAnswer(state.message, {
       allowRecommendation: true,
       persona: state.userProfile,
@@ -2311,10 +2191,8 @@ export async function planAssistantResponse(
   }
 
   if (!isActionCommand && (looksLikeFreshFactQuestion(state.message) || looksLikeLiveInfoQuestion(state.message))) {
-    const brainV4Plan = await brainV4FreeformPlan(state, onStableVoiceText);
-    if (brainV4Plan) return brainV4Plan;
-    const brainV3Plan = await brainV3GroundedFreeformPlan(state, onStableVoiceText);
-    if (brainV3Plan) return brainV3Plan;
+    const taki3Plan = await taki3FreeformPlan(state, onStableVoiceText);
+    if (taki3Plan) return taki3Plan;
     const res = await getStrictWebAnswer(state.message, {
       persona: state.userProfile,
       timeZone: state.timeZone,
@@ -2376,8 +2254,6 @@ export async function planAssistantResponse(
       return answerPlan("I couldn't find those events to add to your calendar yet.", { lastIntent: "event_lookup" });
     }
 
-    const brainV3Plan = await brainV3GroundedFreeformPlan(state, onStableVoiceText);
-    if (brainV3Plan) return brainV3Plan;
     const verified = await findVerifiedFutureEvent(query, state.timeZone, {
       brainV3Core: brainV3CoreToolSelected(state)
     });
@@ -2406,16 +2282,12 @@ export async function planAssistantResponse(
   // researched result can feed the requested device action.
   const explicitWebSearchNeedsAction = /\b(?:text|message|email|call|add|put|schedule|save|create|remind|directions|navigate)\b/i.test(state.message);
   if (looksLikeExplicitWebSearchRequest(state.message) && !explicitWebSearchNeedsAction) {
-    // Brain v4 carries the same linkable-source contract for answer-only
+    // Taki 3.0 carries the same linkable-source contract for answer-only
     // research while avoiding the compatibility planner's extra round trip.
-    // If v4 is disabled, fails, or lacks grounding, v3 and the established
-    // utility retain the exact fallback behavior.
-    const brainV4Plan = await brainV4FreeformPlan(state, onStableVoiceText);
-    if (brainV4Plan) return brainV4Plan;
-    const brainV3Plan = await brainV3GroundedFreeformPlan(state, onStableVoiceText);
-    if (brainV3Plan) return brainV3Plan;
-    const brainPlan = await brainV2FreeformPlan(state, onStableVoiceText);
-    if (brainPlan) return brainPlan;
+    // If it is shadowed, disabled, or lacks grounding, the established utility
+    // retains the fallback behavior.
+    const taki3Plan = await taki3FreeformPlan(state, onStableVoiceText);
+    if (taki3Plan) return taki3Plan;
     const answer = await getGeneralAnswer(state, onStableVoiceText);
     return answerPlan(answer.text, { lastIntent: "web_search" }, answer.sources);
   }
@@ -2429,74 +2301,29 @@ export async function planAssistantResponse(
   // of paying for a planner request first. This measured about twice as fast in
   // the live voice path while capability-shaped questions still keep planning.
   if (looksLikePlainVoiceKnowledgeQuestion(state)) {
-    const brainV4Plan = await brainV4FreeformPlan(state, onStableVoiceText);
-    if (brainV4Plan) return brainV4Plan;
-    const brainV3Plan = await brainV3FreeformPlan(state, onStableVoiceText);
-    if (brainV3Plan) return brainV3Plan;
-    const brainPlan = await brainV2FreeformPlan(state, onStableVoiceText);
-    if (brainPlan) return brainPlan;
+    const taki3Plan = await taki3FreeformPlan(state, onStableVoiceText);
+    if (taki3Plan) return taki3Plan;
     const ga = await getGeneralAnswer(state, onStableVoiceText);
     return answerPlan(ga.text, { lastIntent: "answer_only" }, ga.sources);
   }
 
-  // Brain v4 owns the remaining conversational path when explicitly enabled.
-  // If it declines the request or fails, the existing v3/v2/legacy planner
-  // continues with the same turn and action contract.
-  const brainV4Plan = await brainV4FreeformPlan(state, onStableVoiceText);
-  if (brainV4Plan) return brainV4Plan;
-
-  // The v3 replacement owns the remaining model-driven path when explicitly
-  // enabled. If it fails, brainV3FreeformPlan returns null and this exact turn
-  // continues through the existing compatibility planner below.
-  if (shouldUseBrainV3(state)) {
-    const brainV3Plan = await brainV3FreeformPlan(state, onStableVoiceText);
-    if (brainV3Plan) return brainV3Plan;
-  }
+  // Taki 3.0 owns the remaining conversational path when promoted. If it is
+  // disabled or declines an action-shaped turn, the compatibility planner
+  // retains the established action contract.
+  const taki3Plan = await taki3FreeformPlan(state, onStableVoiceText);
+  if (taki3Plan) return taki3Plan;
 
   let plan: PlannerModelOutput;
   try {
-    if (shouldUseBrainV2(state)) {
-      // Brain v2 is a fully separate understanding + answer pipeline. The
-      // rollout gate is environment-controlled, so existing installs remain on
-      // the proven planner until an operator explicitly enables canary/v2.
-      plan = await runBrainV2Planner(state, onStableVoiceText);
-    } else {
-      // Shadow mode is opt-in and intentionally discards the result. It gives
-      // us provider/quality evidence without changing the response, actions,
-      // metering, or latency of a live user.
-      if (shouldShadowBrainV2(state)) {
-        void runUnmetered(() => runBrainV2Shadow(state)).then((shadow) => {
-          if (shadow.ok === false) console.warn("Brain v2 shadow evaluation failed:", shadow.error);
-        }).catch((error) => console.warn("Brain v2 shadow evaluation error:", error));
-      }
-      plan = await runPlannerModel(state);
-    }
+    plan = await runPlannerModel(state);
   } catch (error) {
-    const brainV2Enabled = shouldUseBrainV2(state);
-    if (brainV2Enabled) {
-      // A malformed/partial v2 response or a v2-only timeout is a brain
-      // failure, not a user error. Keep the existing action-capable planner as
-      // a bounded compatibility fallback so a canary can never turn a working
-      // command into a plain conversational answer. If both planners fail with
-      // a typed provider outage, preserve that error for the HTTP layer instead
-      // of converting transport state into misleading answer text.
-      try {
-        plan = await runPlannerModel(state);
-      } catch (legacyError) {
-        console.error("Brain v2 and legacy planner failed:", legacyError);
-        if (legacyError instanceof ServiceError) throw legacyError;
-        const ga = await getGeneralAnswer(state, onStableVoiceText);
-        return answerPlan(ga.text, {}, ga.sources);
-      }
-    } else {
-      // Preserve typed vendor failures all the way to the HTTP route. Converting
-      // one into answerPlan makes outage copy look like Taki's answer to the
-      // user's question instead of transport state.
-      if (error instanceof ServiceError) throw error;
-      console.error("Planner failed, using general answer:", error);
-      const ga = await getGeneralAnswer(state, onStableVoiceText);
-      return answerPlan(ga.text, {}, ga.sources);
-    }
+    // Preserve typed vendor failures all the way to the HTTP route. Converting
+    // one into answerPlan makes outage copy look like Taki's answer to the
+    // user's question instead of transport state.
+    if (error instanceof ServiceError) throw error;
+    console.error("Planner failed, using general answer:", error);
+    const ga = await getGeneralAnswer(state, onStableVoiceText);
+    return answerPlan(ga.text, {}, ga.sources);
   }
 
   // Explicit clarification from the planner: park a pending clarification so the
@@ -3176,7 +3003,7 @@ export async function planAssistantResponse(
     case "answer_only":
     default: {
       const inline = plan.spokenText && plan.spokenText.trim() ? plan.spokenText.trim() : "";
-      // Brain v2's second-stage answer pass has already produced a complete,
+      // A staged answer pass has already produced a complete,
       // tone-aware answer. Do not send it through the legacy answer prompt a
       // second time (which would lose sarcasm/stutter context and add latency).
       // A v2 refusal is also final: sending it through the legacy answer layer

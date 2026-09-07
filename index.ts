@@ -4,10 +4,8 @@ import Stripe from "stripe";
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
-import { PORT, ACTIVE_AI_PROVIDER, MAIN_MODEL, PLANNER_MODEL, RESEARCH_MODEL, BRAIN_V3_MODEL, BRAIN_V3_MODELS, ServiceError, VOICE_UNAVAILABLE_SPOKEN, brainV3AuxEnabled, normalizeTakiModel, withTakiModel, withRequestAbort } from "./src/ai.js";
-import { brainV2Percent, brainV2RolloutStats, normalizeBrainRolloutMode } from "./src/brainV2.js";
-import { brainV3CanaryPercent, brainV3MaintenanceOverrideEnabled, brainV3PromotionReady, brainV3PromotionStatus, brainV3RolloutStats, brainV3ShadowPercent, normalizeBrainV3RolloutMode } from "./src/brainV3.js";
-import { BRAIN_V4_MODELS, brainV4CanaryPercent, brainV4PromotionReady, brainV4PromotionStatus, brainV4RolloutStats, brainV4ShadowPercent, normalizeBrainV4RolloutMode } from "./src/brainV4.js";
+import { PORT, ACTIVE_AI_PROVIDER, MAIN_MODEL, PLANNER_MODEL, RESEARCH_MODEL, ServiceError, VOICE_UNAVAILABLE_SPOKEN, normalizeTakiModel, withTakiModel, withRequestAbort } from "./src/ai.js";
+import { TAKI3_MODELS, TAKI3_VERSION, normalizeTaki3RolloutMode, taki3CanaryPercent, taki3PromotionReady, taki3PromotionStatus, taki3RolloutStats, taki3ShadowPercent } from "./src/taki3.js";
 import type { DeviceLocation, DeviceWeather, SpeechMetadata } from "./src/types.js";
 import { buildConversationState } from "./src/context.js";
 import { planAssistantResponse } from "./src/planner.js";
@@ -54,10 +52,10 @@ import { TurnReplayCache } from "./src/turnReplay.js";
 import { commitSignupSlot, MAX_ACCOUNTS_PER_IP, releaseSignupSlot, reserveSignupSlot } from "./src/registration.js";
 import { clientIpForRequest, locationForRequest, mergeIpLocations } from "./src/ipLocation.js";
 
-// Health/version evidence for the staged Brain v4 build. Keep this distinct
+// Health/version evidence for the staged Taki 3.0 build. Keep this distinct
 // from the rollout flag so a deployed artifact can be identified even while
 // all customer traffic remains on the compatibility path.
-const SERVER_VERSION = "2026-09-05-brain-v4-staged-v1";
+const SERVER_VERSION = "2026-09-06-taki-3.0-staged-v1";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
 // Render. (The purchase-simulating grant endpoint was removed when real
@@ -569,45 +567,23 @@ app.get("/health", async (_req, res) => {
   res.status(200).json({
     ok: true,
     app: "Taki AI server",
-    mode: "planner-first-modular-v4-staged",
+    mode: "taki-3.0-staged",
     version: SERVER_VERSION,
     durableStorage,
     aiProvider: ACTIVE_AI_PROVIDER,
     models: { main: MAIN_MODEL, planner: PLANNER_MODEL, research: RESEARCH_MODEL },
-    brain: {
-      version: normalizeBrainRolloutMode(),
-      canaryPercent: brainV2Percent(),
-      // The legacy planner remains the safe default. Operators can verify this
-      // field before changing the Render environment for a staged rollout.
-      liveUserImpact: normalizeBrainRolloutMode() === "legacy" ? "none" : "scoped",
-      stats: brainV2RolloutStats()
-    },
-    brainV3: {
-      version: normalizeBrainV3RolloutMode(),
-      promotionReady: brainV3PromotionReady(),
-      promotion: brainV3PromotionStatus(),
-      maintenanceOverride: brainV3MaintenanceOverrideEnabled(),
-      canaryPercent: brainV3CanaryPercent(),
-      shadowPercent: brainV3ShadowPercent(),
-      model: BRAIN_V3_MODEL,
-      models: BRAIN_V3_MODELS,
-      auxEnabled: brainV3AuxEnabled(),
+    taki3: {
+      version: TAKI3_VERSION,
+      rollout: normalizeTaki3RolloutMode(),
+      promotionReady: taki3PromotionReady(),
+      promotion: taki3PromotionStatus(),
+      canaryPercent: taki3CanaryPercent(),
+      shadowPercent: taki3ShadowPercent(),
+      models: TAKI3_MODELS,
       // Shadow calls are detached and discard their plans, so they do not
       // change a user's answer, action, or billing result.
-      liveUserImpact: ["disabled", "shadow"].includes(normalizeBrainV3RolloutMode()) ? "none" : "scoped",
-      stats: brainV3RolloutStats()
-    },
-    brainV4: {
-      version: normalizeBrainV4RolloutMode(),
-      promotionReady: brainV4PromotionReady(),
-      promotion: brainV4PromotionStatus(),
-      canaryPercent: brainV4CanaryPercent(),
-      shadowPercent: brainV4ShadowPercent(),
-      models: BRAIN_V4_MODELS,
-      // v4 shadow calls are detached and discard their plans. Active/canary
-      // traffic still has the compatibility planner immediately available.
-      liveUserImpact: ["disabled", "shadow"].includes(normalizeBrainV4RolloutMode()) ? "none" : "scoped",
-      stats: brainV4RolloutStats()
+      liveUserImpact: ["disabled", "shadow"].includes(normalizeTaki3RolloutMode()) ? "none" : "scoped",
+      stats: taki3RolloutStats()
     },
     // Live Activity background updates require APNs config (APNS_KEY_P8 or
     // APNS_KEY_PATH + KEY_ID + TEAM_ID). Surfaced here so a missing key on the

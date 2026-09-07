@@ -190,6 +190,7 @@ test("Brain v3 collapses spaced letter stutters without losing the target word",
 test("Brain v3 treats indirect requests as requests even when they end in a question mark", () => {
   assert.equal(normalizeBrainV3Input("Would you mind texting Chris that I am late?").speechAct, "request");
   assert.equal(normalizeBrainV3Input("Can you explain why leaves change color?").speechAct, "request");
+  assert.equal(normalizeBrainV3Input("Hey, Track flight Delta 123").speechAct, "request");
   assert.equal(normalizeBrainV3Input("Why do leaves change color?").speechAct, "question");
 });
 

@@ -249,11 +249,43 @@ function unsafeAnswer(value: string): boolean {
   return !safeFraming;
 }
 
+function stripConversationalLead(value: string): string {
+  let text = String(value || "").trim();
+  for (let index = 0; index < 4; index += 1) {
+    const before = text;
+    text = text
+      .replace(/^(?:(?:hey|hi|hello|please|p-p-please|p-please|quickly|um|uh|erm|hmm)\s*,?\s*)+/iu, "")
+      .replace(/^(?:(?:can|could|would|will)\s+){1,3}you\s*,?\s*/iu, "")
+      .replace(/^(?:(?:can|could|would|will)\s+you)\s*,?\s*/iu, "")
+      .trim();
+    if (text === before) break;
+  }
+  return text;
+}
+
+function directTransformationLikeMessage(message: string): boolean {
+  const text = stripConversationalLead(message);
+  if (!text) return false;
+  return /^(?:(?:help me\s+)?(?:to\s+)?)?(?:rewrite|rephrase|paraphrase|polish|proofread|summari[sz]e|translate|shorten|expand|edit|revise|format|convert|draft|compose|write)\b/i.test(text)
+    || /^(?:make)\s+(?:this|that|the following|it)\b/i.test(text)
+    || /^turn\s+(?:this|that|it|these|those|the following)(?:\s+(?:notes?|text|sentence|paragraph))?\s+into\b/i.test(text)
+    || /\b(?:rewrite|rephrase|paraphrase|summari[sz]e|translate|proofread)\s+(?:this|that|the following)\b/i.test(text);
+}
+
+function explicitResearchLikeMessage(message: string): boolean {
+  const text = stripConversationalLead(message);
+  if (!text) return false;
+  if (/\b(?:my contacts?|my calendar|my reminders?|my photos?|my location|near me|nearby|on maps?)\b/i.test(text)) return false;
+  if (/^(?:search|browse|find|look up)\b/i.test(text)) return true;
+  return /\bnext\s+public\s+event\b/i.test(text)
+    && !/\b(?:add|put|save|schedule|calendar|remind)\b/i.test(text);
+}
+
 function actionLikeMessage(message: string): boolean {
   const text = String(message || "").trim();
   if (!text) return false;
   // Transform requests are writing work, not a device "turn on/off" command.
-  if (/^turn\s+(?:this|that|it)\s+into\b/i.test(text)) return false;
+  if (/^turn\s+(?:this|that|it|these|those|the following)(?:\s+(?:notes?|text|sentence|paragraph))?\s+into\b/i.test(text)) return false;
   // “Open up” is an emotional/conversational phrase, not an app launch.
   if (/^open\s+up\b/i.test(text) || /\bopen\s+up\s+about\b/i.test(text)) return false;
   // "Remind me what we discussed" asks the assistant to recall the chat. It
@@ -276,9 +308,10 @@ function actionLikeMessage(message: string): boolean {
   if (/^(?:i|we)\s+(?:want|need|would like|plan|intend|have)\s+(?:you\s+)?(?:to\s+)?(?:send|text|message|email|call|add|put|schedule|save|create|delete|remove|cancel|move|update|open|show|navigate|turn|play|log|track|alert|remind|remember|copy|export|share|book|order|cook|set|start|stop|run|control)\b/i.test(text)) return true;
   if (/^(?:(?:let['’]?s|go ahead and)|(?:please\s+go ahead and))\s+(?:send|text|message|email|call|add|put|schedule|save|create|delete|remove|cancel|move|update|open|show|navigate|turn|play|log|track|alert|remind|remember|copy|export|share|book|order|cook|set|start|stop|run|control)\b/i.test(text)) return true;
   if (/\b(?:find|search|look up)\b.{0,80}\b(?:near me|nearby|on maps?|in my calendar|in my reminders?|my contact|my photos?)\b/i.test(text)) return true;
+  if (/^give\s+(?:me\s+)?directions?\b/i.test(text)) return true;
   if (/^(?:i|we)\s+(?:want|need|would like)\b.{0,60}\b(?:directions?|navigate|take me|drive me)\b/i.test(text)) return true;
   if (/\b(?:my calendar|my reminders?|my contacts?|my photos?|my location|my battery|my steps?|my sleep|the flashlight|homekit)\b/i.test(text)
-    && /^(?:what|where|when|how|show|check|find|open|is|are|can|could|would)\b/i.test(text)) return true;
+    && /^(?:what|where|when|how|show|check|find|search|look up|open|is|are|can|could|would)\b/i.test(text)) return true;
   if (/\b(?:on my calendar|to my calendar|in my reminders?|to my clipboard|as a text file|on my lock screen)\b/i.test(text)
     && /\b(?:add|put|save|create|copy|export|show|track|alert|remind|schedule)\b/i.test(text)) return true;
   return false;
@@ -287,15 +320,24 @@ function actionLikeMessage(message: string): boolean {
 function safetyLikeMessage(message: string): boolean {
   const text = String(message || "").trim().toLowerCase();
   if (!text) return false;
-  const dangerous = /\b(?:kill|hurt|harm|attack|dox|steal|hack|break into|bomb|explosive|weapon|weaponize|malware|ransomware|phishing|poison|household chemical)\b/.test(text);
+  const emergencyMedication = /\b(?:what|which|how much|what dosage|what dose|how many)\b.{0,100}\b(?:dose|dosage|take|medication|medicine|pill|drug)s?\b.{0,100}\b(?:chest pain|can't breathe|cannot breathe|shortness of breath|heart attack)\b/i.test(text)
+    || /\b(?:dose|dosage|take|medication|medicine|pill|drug)s?\b.{0,120}\b(?:chest pain|can't breathe|cannot breathe|shortness of breath|heart attack)\b/i.test(text)
+    || /\b(?:chest pain|can't breathe|cannot breathe|shortness of breath|heart attack)\b.{0,120}\b(?:dose|dosage|take|medication|medicine|pill|drug)s?\b/i.test(text);
+  if (emergencyMedication) return true;
+  const dangerous = /\b(?:kill|hurt|harm|attack|stalk(?:ing)?|dox|steal|hack|break into|bomb|explosive|weapon|weaponize|malware|ransomware|phishing|poison|household chemical)\b/.test(text);
   if (!dangerous) return false;
+  const selfHarm = /\b(?:i|me|myself)\s+(?:want|plan|intend|am going|might|may|feel like|thinking about|considering)\s+(?:to\s+)?(?:die|kill|hurt|harm|end(?:ing)?\s+my\s+life|self[- ]?harm)\b/i.test(text)
+    || /\b(?:kill|hurt|harm)\s+myself\b|\bend\s+my\s+life\b/i.test(text);
+  const stalking = /\b(?:how(?:\s+(?:do|can))?|tell me how|help me|want to|plan to|without being detected)\b.{0,120}\bstalk(?:ing)?\b/i.test(text)
+    && !/\b(?:prevent|recognize|escape|report|stop|protect|safety|safe)\b/i.test(text);
+  if (selfHarm || stalking) return true;
   // Defensive, preventive, historical, and recovery questions should remain
   // answerable. A protective verb by itself does not make a harmful request
   // safe: "how do I protect a bomb" still needs the safety path.
   const defensive = /\b(?:prevent|prevention|protect|defend|recover|recovery|detect|recognize|report|avoid|remove|secure|harden|patch|warning|safety|safe)\b/.test(text)
     && !/\b(?:make|build|buy|assemble|mix|combine|deploy|execute|detonate|weaponize)\b/.test(text);
   if (defensive) return false;
-  const target = "(?:kill|hurt|harm|attack|dox|steal|hack|break into|bomb|explosive|weapon|weaponize|malware|ransomware|phishing|poison|household chemical)";
+  const target = "(?:kill|hurt|harm|attack|stalk(?:ing)?|dox|steal|hack|break into|bomb|explosive|weapon|weaponize|malware|ransomware|phishing|poison|household chemical)";
   return new RegExp(`\\b(?:how (?:do|can|to)|tell me how|give me|help me)\\b.{0,160}\\b${target}\\b`).test(text)
     || new RegExp(`\\b(?:${target}|make|build|buy|use|assemble|mix|combine|deploy|execute|detonate|weaponize)\\b.{0,120}\\b(?:${target})\\b`).test(text);
 }
@@ -310,8 +352,16 @@ function promptInjectionLikeMessage(message: string): boolean {
 function clarificationLikeMessage(message: string, state: ConversationState): boolean {
   if (state.pendingClarification) return true;
   const raw = String(message || "").trim().toLowerCase();
-  const text = raw.replace(/[.!?]+$/g, "").trim();
-  return /^\?+$/.test(raw) || /^(?:help|help me|do it|go ahead|yes|yeah|yep|okay|ok|that one|what about it|huh|more)$/i.test(text);
+  let stripped = stripConversationalLead(raw);
+  for (let index = 0; index < 3; index += 1) {
+    const before = stripped;
+    stripped = stripped.replace(/[—–,;:\s]*(?:please|p-p-please|p-please|thanks|thank you)$/i, "").trim();
+    stripped = stripped.replace(/^(\p{L}+)\s+\1\b/iu, "$1").trim();
+    if (stripped === before) break;
+  }
+  const text = stripped.replace(/[.!?]+$/g, "").trim();
+  const questionOnly = stripped.replace(/[.!]+$/g, "").trim();
+  return /^\?+$/.test(questionOnly) || /^(?:help|help me|do it|go ahead|yes|yeah|yep|okay|ok|that one|what about it|huh|more|i need help choosing)$/i.test(text);
 }
 
 /**
@@ -328,12 +378,15 @@ export function classifyBrainV4Request(state: ConversationState): BrainV4Classif
     // Speech cleanup is a quality hint. A malformed advisory field must never
     // block the ordinary answer path.
   }
+  normalized = stripConversationalLead(normalized) || message;
   const base = { query: message, normalizedQuery: normalized };
   if (!message) return { ...base, kind: "clarify", reason: "empty" };
   if (clarificationLikeMessage(message, state)) return { ...base, kind: "clarify", reason: "missing_context" };
   if (safetyLikeMessage(message) || safetyLikeMessage(normalized)) return { ...base, kind: "safety", reason: "high_risk_request" };
   if (promptInjectionLikeMessage(message) || promptInjectionLikeMessage(normalized)) return { ...base, kind: "safety", reason: "prompt_injection" };
+  if (directTransformationLikeMessage(normalized)) return { ...base, kind: "direct", reason: "writing_or_transformation" };
   if (actionLikeMessage(message) || actionLikeMessage(normalized)) return { ...base, kind: "delegate", reason: "device_or_account_action" };
+  if (explicitResearchLikeMessage(normalized)) return { ...base, kind: "research", reason: "explicit_search_or_public_event" };
 
   const routing = answerRoutingFor(normalized, Boolean(state.voiceMode));
   if (routing.isLive || routing.policy === "forced") {
