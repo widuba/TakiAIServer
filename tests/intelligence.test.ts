@@ -84,7 +84,8 @@ test("changeable public facts always route to current research", () => {
     "Why did NASA supposedly announce this yesterday?",
     "Catch me up on the election this week.",
     "When is the tax deadline?",
-    "Are tickets available today?"
+    "Are tickets available today?",
+    "Explain the current schedule rules."
   ];
   for (const question of currentQuestions) {
     assert.equal(looksLikeFreshFactQuestion(question), true, question);
@@ -94,7 +95,10 @@ test("changeable public facts always route to current research", () => {
     "What does a president do?",
     "Why is the sky blue?",
     "Explain how passports work.",
-    "What is a CPU?"
+    "What is a CPU?",
+    "What does it mean to schedule a meeting?",
+    "How does a schedule work?",
+    "What is a calendar schedule?"
   ];
   for (const question of timelessQuestions) {
     assert.equal(looksLikeFreshFactQuestion(question), false, question);

@@ -2367,12 +2367,19 @@ export function looksLikeFreshFactQuestion(message: string) {
     return false;
   }
 
+  // A definition or tutorial about a mutable-sounding word is still timeless
+  // conversation. Without this guard, "What does it mean to schedule a
+  // meeting?" was mistaken for a request to look up a live schedule.
+  const conceptual = /^(?:what does .*?\bmean\b.*|what is (?:a|an)\s+.+|explain .+|define .+|how does .+? work|how do .+? work)\??$/i.test(m.trim());
+  const explicitFreshness = /\b(?:current(?:ly)?|latest|newest|today|tonight|tomorrow|yesterday|right now|this week|this month|this year|nowadays|recently|upcoming|next)\b/.test(m);
+  if (conceptual && !explicitFreshness) return false;
+
   const recency = /\b(latest|newest|most recent|current(?:ly)?|right now|today|tonight|yesterday|nowadays|these days|so far|this (?:week|month|year)|20\d\d|just (?:released|announced|came out|changed)|recently (?:released|announced|launched|changed|updated))\b/.test(m);
   const release = /\b(release[sd]?|releasing|announce[sd]?|came out|come out|coming out|available now|out now|launch(?:e[sd])?)\b/.test(m);
   const product = /\b(chip|processor|silicon|cpu|gpu|graphics card|iphone|ipad|mac|macbook|imac|phone|laptop|tablet|smartwatch|watch|model|version|console|car|ev|product|device|software|os|update)\b/.test(m);
   const superlative = /\b(best|fastest|newest|latest|top|most powerful|most advanced|highest[- ]end|flagship)\b/.test(m);
   const brand = /\b(apple|google|samsung|nvidia|amd|intel|microsoft|sony|tesla|openai|anthropic|android|iphone|playstation|xbox|pixel|galaxy)\b/.test(m);
-  const asksForInformation = /\b(who|what|when|where|why|how|which|is|are|was|were|does|do|did|can|could|should|tell me|show me|update me|catch me up|give me)\b/.test(m);
+  const asksForInformation = /\b(who|what|when|where|why|how|which|is|are|was|were|does|do|did|can|could|should|tell me|show me|explain|describe|update me|catch me up|give me)\b/.test(m);
 
   // Facts can change without the user saying "current." Officeholders, company
   // leaders, laws, public guidance, travel requirements, recalls, deadlines,
