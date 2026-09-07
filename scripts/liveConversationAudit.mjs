@@ -3,9 +3,15 @@
 const baseURL = process.argv[2] || "https://takiaiserver.onrender.com";
 const deviceId = process.argv[3];
 const resetEpoch = process.argv[4];
+const credential = process.argv[5] || process.env.TAKI_DEVICE_CREDENTIAL || "";
+const requestedIds = new Set(String(process.env.TAKI_LIVE_AUDIT_IDS || "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean));
+const requestTimeoutMs = Math.max(5_000, Math.min(120_000, Number(process.env.TAKI_LIVE_AUDIT_TIMEOUT_MS || 45_000)));
 
-if (!deviceId || !resetEpoch) {
-  console.error("Usage: node scripts/liveConversationAudit.mjs <base-url> <device-id> <reset-epoch>");
+if (!deviceId || !resetEpoch || !credential) {
+  console.error("Usage: node scripts/liveConversationAudit.mjs <base-url> <device-id> <reset-epoch> <device-credential>");
   process.exit(2);
 }
 
@@ -57,8 +63,9 @@ const cases = [
 
 const failures = [];
 let remaining = Number.POSITIVE_INFINITY;
+const selectedCases = cases.filter((candidate) => requestedIds.size === 0 || requestedIds.has(candidate.id));
 
-for (const item of cases) {
+for (const item of selectedCases) {
   if (remaining < 25) {
     console.log(JSON.stringify({ id: item.id, skipped: "low audit balance", remaining }));
     continue;
@@ -66,12 +73,17 @@ for (const item of cases) {
   const started = Date.now();
   let status = 0;
   let payload;
+  let timeout;
   try {
+    const controller = new AbortController();
+    timeout = setTimeout(() => controller.abort(new Error(`audit request timed out after ${requestTimeoutMs}ms`)), requestTimeoutMs);
     const response = await fetch(`${baseURL}/api/assistant`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-taki-reset-epoch": resetEpoch
+        "x-taki-reset-epoch": resetEpoch,
+        "x-taki-device-id": deviceId,
+        "x-taki-device-credential": credential
       },
       body: JSON.stringify({
         message: item.message,
@@ -81,12 +93,14 @@ for (const item of cases) {
         context: item.context ? JSON.stringify(item.context) : "",
         profile: { model: item.model || "taki_2_0_swift", characterStrength: 3, useMyName: 1 }
       }),
-      signal: AbortSignal.timeout(65_000)
+      signal: controller.signal
     });
     status = response.status;
     payload = await response.json();
   } catch (error) {
     payload = { error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 
   const latencyMs = Date.now() - started;
@@ -100,10 +114,16 @@ for (const item of cases) {
     reasons.push(`expected action ${item.action}, got ${payload?.action?.type || "none"}`);
   }
   if (item.sources && (!Array.isArray(payload?.sources) || payload.sources.length === 0)) reasons.push("missing verified sources");
-  if (item.expect && !item.expect(payload || {})) reasons.push("answer expectation failed");
+  if (item.expect) {
+    try {
+      if (!item.expect(payload || {})) reasons.push("answer expectation failed");
+    } catch (error) {
+      reasons.push(`expectation error: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   const latencyBudget = item.model === "taki_2_1_reasoning" ? 35_000 : item.model === "taki_2_1" ? 22_000 : 14_000;
   if (latencyMs > latencyBudget) reasons.push(`slow (${latencyMs}ms)`);
-  if (reasons.length) failures.push({ id: item.id, reasons, text, action: payload?.action?.type || null, sources: payload?.sources || [] });
+  if (reasons.length) failures.push({ id: item.id, reasons, error: payload?.error || null, text, action: payload?.action?.type || null, sources: payload?.sources || [] });
 
   console.log(JSON.stringify({
     id: item.id,
@@ -113,9 +133,10 @@ for (const item of cases) {
     remaining,
     action: payload?.action?.type || null,
     sourceCount: Array.isArray(payload?.sources) ? payload.sources.length : 0,
+    error: payload?.error || null,
     text
   }));
 }
 
-console.log(JSON.stringify({ summary: { total: cases.length, failures: failures.length, remaining, failureDetails: failures } }));
+console.log(JSON.stringify({ summary: { total: selectedCases.length, failures: failures.length, remaining, failureDetails: failures } }));
 process.exitCode = failures.length ? 1 : 0;

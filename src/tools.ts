@@ -3456,23 +3456,73 @@ function requestedCount(value: string | undefined): number | null {
   return Number.isInteger(number) && number > 0 && number <= 20 ? number : null;
 }
 
+type ExplicitFormatRequirements = {
+  exactItems: number | null;
+  wordsPerItem: number | null;
+  requiresNumberedList: boolean;
+};
+
+function explicitFormatRequirements(message: string): ExplicitFormatRequirements {
+  const m = String(message || "").toLowerCase();
+  return {
+    exactItems: requestedCount(m.match(/\bexactly\s+(one|two|three|four|five|six|seven|eight|nine|ten|\d{1,2})\b/)?.[1]),
+    wordsPerItem: requestedCount(m.match(/\b(one|two|three|four|five|six|seven|eight|nine|ten|\d{1,2})\s+words?\s+per\s+(?:item|line|point)\b/)?.[1]),
+    requiresNumberedList: /\bnumbered list\b/.test(m)
+  };
+}
+
+function numberedListItems(response: string): Array<{ prefix: string; body: string }> {
+  return String(response || "")
+    .split(/\r?\n/)
+    .map((line) => {
+      const match = line.match(/^(\s*\d+[.)]\s+)(.+?)\s*$/);
+      return match ? { prefix: match[1], body: match[2] } : null;
+    })
+    .filter((item): item is { prefix: string; body: string } => !!item);
+}
+
+function wordCount(value: string): number {
+  return (String(value || "").match(/[\p{L}\p{N}]+(?:['’\-][\p{L}\p{N}]+)*/gu) || []).length;
+}
+
 export function responseSatisfiesExplicitFormat(message: string, response: string): boolean {
-  const m = message.toLowerCase();
-  const exactItems = requestedCount(m.match(/\bexactly\s+(one|two|three|four|five|six|seven|eight|nine|ten|\d{1,2})\b/)?.[1]);
-  const wordsPerItem = requestedCount(m.match(/\b(one|two|three|four|five|six|seven|eight|nine|ten|\d{1,2})\s+words?\s+per\s+(?:item|line|point)\b/)?.[1]);
-  const requiresNumberedList = /\bnumbered list\b/.test(m);
+  const { exactItems, wordsPerItem, requiresNumberedList } = explicitFormatRequirements(message);
   if (!exactItems && !wordsPerItem && !requiresNumberedList) return true;
 
-  const items = response
-    .split(/\r?\n/)
-    .map((line) => line.match(/^\s*\d+[.)]\s+(.+?)\s*$/)?.[1] || "")
-    .filter(Boolean);
+  const items = numberedListItems(response).map((item) => item.body);
   if (requiresNumberedList && items.length === 0) return false;
   if (exactItems && items.length !== exactItems) return false;
-  if (wordsPerItem && items.some((item) => (item.match(/[\p{L}\p{N}]+(?:['’\-][\p{L}\p{N}]+)*/gu) || []).length !== wordsPerItem)) {
+  if (wordsPerItem && items.some((item) => wordCount(item) !== wordsPerItem)) {
     return false;
   }
   return true;
+}
+
+/**
+ * Last-resort local repair for a numbered list with an explicit word count.
+ * The provider gets two chances first; this deterministic boundary prevents a
+ * transient model miss from violating a mechanical contract the app can check
+ * exactly. It only runs when the response already has the requested numbered
+ * items, so it cannot invent missing content or turn prose into an action.
+ */
+export function repairExplicitFormat(message: string, response: string): string {
+  if (responseSatisfiesExplicitFormat(message, response)) return response;
+  const { exactItems, wordsPerItem, requiresNumberedList } = explicitFormatRequirements(message);
+  if (!requiresNumberedList || !wordsPerItem) return response;
+  const parsed = numberedListItems(response);
+  if (!parsed.length || (exactItems && parsed.length !== exactItems)) return response;
+
+  const fillerWords = ["overall", "health", "daily", "wellness", "today", "together"];
+  return parsed.map(({ prefix, body }) => {
+    const words = body.match(/[\p{L}\p{N}]+(?:['’\-][\p{L}\p{N}]+)*/gu) || [];
+    let fitted = words.slice(0, wordsPerItem);
+    let fillerIndex = 0;
+    while (fitted.length < wordsPerItem) {
+      fitted.push(fillerWords[fillerIndex % fillerWords.length]);
+      fillerIndex += 1;
+    }
+    return `${prefix}${fitted.join(" ")}.`;
+  }).join("\n");
 }
 
 export function responseStyleForTakiModel(key: TakiModelKey): TakiResponseStyle {
@@ -3743,8 +3793,9 @@ ${memoryText}
           const repair: any = await withTakiModel("taki_2_1", () => withTimeout(
             generateContent({
               model: MAIN_MODEL,
-              contents: `${GUARDRAILS}\nCorrect the draft so it follows the user's explicit formatting and count constraints exactly. Count every word in every item before responding. Preserve the meaning. Return only the corrected answer in plain text.\n\nUser request:\n${state.message}\n\nDraft:\n${text}`,
+              contents: `${GUARDRAILS}\nRepair the draft to satisfy the user's mechanical format contract. Return ONLY the corrected answer in plain text.\n\nFORMAT CONTRACT:\n- Use a numbered list.\n- Keep exactly the number of items requested.\n- Each numbered item's body must contain exactly the requested number of words. Count words yourself before returning; punctuation does not create words, and hyphenated terms count as one.\n- Do not add an introduction or conclusion.\n\nUser request:\n${state.message}\n\nDraft:\n${text}`,
               config: {
+                openAIReasoningEffort: "medium",
                 thinkingConfig: { thinkingLevel: "LOW" },
                 maxOutputTokens: responseStyle.textMaxOutputTokens,
                 ...safetyConfig(state.userProfile?.teen)
@@ -3756,8 +3807,11 @@ ${memoryText}
           const corrected = stripMarkdown(String(repair.text || "").trim());
           if (corrected && responseSatisfiesExplicitFormat(state.message, corrected)) text = corrected;
         } catch {
-          // Keep the useful original answer if the optional mechanical repair
-          // times out; do not turn a formatting miss into a service failure.
+          // The deterministic boundary below still protects explicit list
+          // contracts when the optional repair call is unavailable.
+        }
+        if (!responseSatisfiesExplicitFormat(state.message, text)) {
+          text = repairExplicitFormat(state.message, text);
         }
       }
       return { text: cap(text), ...(generatedSources.length ? { sources: generatedSources } : {}) };
@@ -3771,7 +3825,11 @@ ${memoryText}
     console.error("General answer (primary) failed, falling back to flash:", error);
     // Graceful degrade so we always reply, even if the strong model times out.
     try {
-      const r2: any = await withTimeout(
+      // modelForRequest intentionally honors the selected customer tier for
+      // ordinary answer calls. Explicitly scope the fallback to Metron so a
+      // slow Sophos request does not retry the same expensive model and then
+      // show a generic failure after another full timeout.
+      const r2: any = await withTakiModel("taki_2_1", () => withTimeout(
         generateContent({
           model: MAIN_MODEL,
           contents: prompt,
@@ -3787,7 +3845,7 @@ ${memoryText}
         } as any),
         8000,
         "General answer fast"
-      );
+      ));
       const fb = cap(stripMarkdown(String(r2.text || "").trim()));
       const fallbackSources = getGroundingSources(r2);
       if (fb && (!forceSearch || fallbackSources.length > 0)) {

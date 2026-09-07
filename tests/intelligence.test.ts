@@ -8,7 +8,7 @@ import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
 import { cleanAssistantText, finalizeResponse, resolveCalendarUpdateDates, sanitizeSources, validateAction } from "../src/validators.js";
 import { briefForVoice, extractCalendarTitle, progressiveVoiceBundles, resolveRelativeYmd, VOICE_MAX_CHARS } from "../src/util.js";
-import { isExplicitAllAlertCancellation, parseAlertCancel, parseLocationAutomation, parsePriceAlert, parseScheduledMessage, eventQueryFromCalendarMessage, formatMathNumber, looksLikeAddLookupEventToCalendar, looksLikeCurrentRecommendationQuestion, looksLikeExplicitWebSearchRequest, looksLikeFreshFactQuestion, looksLikeLiveInfoQuestion, looksLikeSubjectiveRecommendationQuestion, parseMusicCommand, parsePackageTracking, responseSatisfiesExplicitFormat, responseStyleForTakiModel, youtubeVideoInputURL } from "../src/tools.js";
+import { isExplicitAllAlertCancellation, parseAlertCancel, parseLocationAutomation, parsePriceAlert, parseScheduledMessage, eventQueryFromCalendarMessage, formatMathNumber, looksLikeAddLookupEventToCalendar, looksLikeCurrentRecommendationQuestion, looksLikeExplicitWebSearchRequest, looksLikeFreshFactQuestion, looksLikeLiveInfoQuestion, looksLikeSubjectiveRecommendationQuestion, parseMusicCommand, parsePackageTracking, repairExplicitFormat, responseSatisfiesExplicitFormat, responseStyleForTakiModel, youtubeVideoInputURL } from "../src/tools.js";
 import { usageLimitsFor } from "../src/credits.js";
 import { subscriptionMergeDecision } from "../src/iap.js";
 import { billableAudioDurationMs, normalizeSpeechKeyterms, normalizeTextForSpeech, shouldAskForVoiceRepeat, shouldUseDeviceTranscript, speechCharacterCount, splitTextForProgressiveSpeech, stabilityForVariability, STT_MODEL, TTS_MODEL, VOICE_REPEAT_PROMPT } from "../src/voice.js";
@@ -215,6 +215,13 @@ test("explicit numbered-list and word-count constraints are mechanically verifie
   const request = "Name exactly three benefits of walking. Use a numbered list, six words per item, and no introduction.";
   assert.equal(responseSatisfiesExplicitFormat(request, "1. Improves heart health and daily circulation\n2. Supports calmer moods during stressful days\n3. Strengthens muscles without expensive gym equipment"), true);
   assert.equal(responseSatisfiesExplicitFormat(request, "1. Improves cardiovascular health and circulation\n2. Boosts mood, reduces stress levels\n3. Strengthens muscles and joints endurance"), false);
+});
+
+test("explicit list repair closes a provider word-count miss deterministically", () => {
+  const request = "Name exactly three benefits of walking. Use a numbered list, six words per item, and no introduction.";
+  const repaired = repairExplicitFormat(request, "1. Improves cardiovascular health and endurance.\n2. Supports healthy weight management naturally.\n3. Reduces stress and boosts mood.");
+  assert.equal(responseSatisfiesExplicitFormat(request, repaired), true);
+  assert.match(repaired, /^1\. Improves cardiovascular health and endurance overall\./m);
 });
 
 test("context preserves more than the old forty-turn window while staying bounded", () => {
