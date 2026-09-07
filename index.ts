@@ -1887,8 +1887,13 @@ app.post("/api/credits/account-check", async (req, res) => {
   const identity = typeof req.body?.identity === "string" ? normalizeTopupIdentity(req.body.identity) : "";
   if (!identity) { res.status(400).json({ valid: false, reason: "Enter your Account ID." }); return; }
   const v = await validateTopupAccount(identity);
+  // The same public lookup starts either a monthly-plan checkout or a
+  // one-time-credit checkout. Bind the short-lived handoff to the selected
+  // flow so the credits endpoint does not reject a legitimate manual
+  // extra-credit purchase with a plan-purpose token (and vice versa).
+  const requestedPurpose = req.body?.purpose === "credits" ? "credits" : "checkout";
   const checkoutToken = v.valid && PURCHASE_LINK_SECRET
-    ? signPurchaseLink({ identity: v.publicId, exp: Date.now() + 10 * 60_000, nonce: randomUUID(), purpose: "checkout" })
+    ? signPurchaseLink({ identity: v.publicId, exp: Date.now() + 10 * 60_000, nonce: randomUUID(), purpose: requestedPurpose })
     : "";
   res.json(publicPurchaseAccount(v, checkoutToken, false));
 });
