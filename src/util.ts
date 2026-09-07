@@ -298,6 +298,18 @@ export function isoFromYmdTime(ymd: string, hour: number, minute: number, timeZo
   return `${ymd}T${pad2(hour)}:${pad2(minute)}:00${offsetString(off)}`;
 }
 
+/** Resolve a time-only request to the next occurrence in the user's timezone. */
+export function resolveFutureYmdForTime(
+  hour: number,
+  minute: number,
+  timeZone = TIME_ZONE,
+  now = new Date()
+) {
+  const today = ymdInTimeZone(now, timeZone);
+  const candidate = isoFromYmdTime(today, hour, minute, timeZone);
+  return Date.parse(candidate) > now.getTime() ? today : addDaysToYmd(today, 1);
+}
+
 // Human-readable "Thursday, June 18 at 4:00 PM" in the user's timezone.
 export function formatEventDateTime(iso: string, timeZone = TIME_ZONE) {
   const d = new Date(iso);
@@ -443,14 +455,38 @@ export function extractCalendarTitle(message: string) {
   return titleCaseTask(title);
 }
 
+function reminderWhenPattern() {
+  // Keep the date/time phrase reusable for both orders people naturally use:
+  // "remind me tomorrow at 8 to …" and "tomorrow at 8 remind me to …".
+  // The clock expression accepts an explicit meridiem, a bare "at 8", or a
+  // named time such as noon. The device's date/time resolvers apply the final
+  // timezone and future-date rules after this title-only cleanup.
+  const date = "(?:(?:on|by)?\\s*(?:(?:today|tomorrow|tonight)(?:\\s+(?:morning|afternoon|evening|night))?|(?:(?:this|next|coming)\\s+)?(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday|weekend|week)|\\d{4}-\\d{2}-\\d{2}|\\d{1,2}\\/\\d{1,2}(?:\\/\\d{2,4})?))";
+  const clock = "(?:(?:(?:at|around|by|@)\\s*)?\\d{1,2}(?::\\d{2})?\\s*(?:a\\.?m\\.?|p\\.?m\\.?)|(?:at|around|by|@)\\s*\\d{1,2}(?::\\d{2})?|noon|midnight)";
+  return `(?:${date}(?:\\s+${clock})?|${clock}(?:\\s+${date})?)`;
+}
+
+/** True when a reminder's date/time lead comes before "remind me". */
+export function looksLikeLeadingTimedReminder(message: string) {
+  const when = reminderWhenPattern();
+  return new RegExp(`^${when}\\s+(?:please\\s+)?remind\\s+me(?:\\s+(?:to|about|for))?\\s+\\S`, "i").test(String(message || "").trim());
+}
+
 export function extractReminderTitle(message: string) {
-  let title = message
-    .replace(/^(remind me to|remind me|add a reminder to|add reminder to|create a reminder to|add)\s+/i, "")
+  const when = reminderWhenPattern();
+  const leadingReminder = new RegExp(`^${when}\\s+(?:please\\s+)?remind\\s+me(?:\\s+(?:to|about|for))?\\s+`, "i");
+  const leadingWhen = new RegExp(`^${when}\\s*(?:to|about|for)?\\s+`, "i");
+  const trailingWhen = new RegExp(`\\s+${when}\\s*$`, "i");
+  let title = String(message || "")
+    .trim()
+    .replace(leadingReminder, "")
+    .replace(/^(?:please\s+)?(?:remind me|(?:add|create|set|make)\s+(?:a\s+)?reminder)(?:\s+(?:to|about|for))?\s+/i, "")
+    .replace(leadingWhen, "")
+    .replace(/^(?:to)\s+/i, "")
     .replace(/\b(to|in|on)\s+(my\s+)?reminders\b/gi, "")
     .replace(/^that\s+/i, "")
     .replace(/^i\s+(need|have|want|got)\s+to\s+/i, "")
-    .replace(/\b(today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b.*$/i, "")
-    .replace(/\bat\s+\d{1,2}(:\d{2})?\s*(am|pm)?\b.*$/i, "")
+    .replace(trailingWhen, "")
     .replace(/\s+/g, " ")
     .trim();
 

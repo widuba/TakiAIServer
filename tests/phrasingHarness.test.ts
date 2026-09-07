@@ -13,6 +13,7 @@ import {
   parseLocationAutomation,
   parseMusicCommand,
   parsePackageTracking,
+  parsePhotosCommand,
   parsePhotosSearch,
   parsePriceAlert,
   parseRememberCommand,
@@ -50,7 +51,7 @@ import { looksLikeCookingRequest } from "../src/cooking.js";
 type DetectorName =
   | "product_knowledge" | "price_alert" | "score_alert" | "alert_cancel"
   | "location_automation" | "scheduled_message" | "recurring" | "music"
-  | "home" | "scene" | "photos_search" | "weather" | "stock_question"
+  | "home" | "scene" | "photos_show" | "photos_search" | "weather" | "stock_question"
   | "crypto_question" | "cooking" | "identify_song" | "math" | "flight"
   | "package" | "remember" | "habit" | "expense" | "everyday_reminder_edit";
 
@@ -65,6 +66,7 @@ const DETECTORS: { name: DetectorName; claims: (message: string) => boolean }[] 
   { name: "music", claims: (m) => !!parseMusicCommand(m) },
   { name: "home", claims: (m) => !!parseHomeCommand(m) },
   { name: "scene", claims: (m) => !!parseSceneCommand(m) },
+  { name: "photos_show", claims: (m) => !!parsePhotosCommand(m) },
   { name: "photos_search", claims: (m) => !!parsePhotosSearch(m) },
   { name: "weather", claims: isWeatherQuestion },
   { name: "stock_question", claims: looksLikeStockQuestion },
@@ -112,7 +114,7 @@ const PRECEDENCE: DetectorName[] = [
   "home",
   "music",
   "everyday_reminder_edit",
-  "package", "flight", "photos_search", "cooking", "remember", "habit", "expense",
+  "package", "flight", "photos_show", "photos_search", "cooking", "remember", "habit", "expense",
   "weather", "math", "crypto_question", "stock_question", "product_knowledge"
 ];
 
@@ -268,7 +270,7 @@ test("harness: one intent survives many phrasings", () => {
     { message: "Shazam this", claims: ["identify_song"] },
 
     // Photos
-    { message: "Show me photos from this weekend", claims: ["photos_search"] },
+    { message: "Show me photos from this weekend", claims: ["photos_show"] },
 
     // Math
     { message: "What is 15% of 240?", claims: ["math"] },

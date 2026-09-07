@@ -1701,7 +1701,7 @@ export function parsePhotosSearch(message: string): { query: string } | null {
     .trim();
   if (!q || q.length > 60) return null;
   // Date-only "searches" belong to the recency viewer, not content search.
-  if (/^(?:today|yesterday|last week|this week|this month|last month|recent|the weekend|vacation)$/.test(q)) return null;
+  if (/^(?:today|yesterday|last week|this week|this month|last month|recent|(?:(?:this|last|past|the)\s+)?weekend|vacation)$/.test(q)) return null;
   return { query: q };
 }
 
@@ -1714,6 +1714,7 @@ export function parsePhotosCommand(message: string): { days: number } | null {
   if (/\btoday\b/.test(m)) days = 1;
   else if (/\b(this week|past week|last 7 days|recent)\b/.test(m)) days = 7;
   else if (/\b(last week)\b/.test(m)) days = 14;
+  else if (/\b(?:this|last|past)\s+weekend\b/.test(m)) days = 7;
   else if (/\b(this month|past month|last 30 days)\b/.test(m)) days = 30;
   return { days };
 }

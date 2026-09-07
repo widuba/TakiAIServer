@@ -121,8 +121,10 @@ import {
   extractReminderTitle,
   formatEventDateTime,
   isoFromYmdTime,
+  looksLikeLeadingTimedReminder,
   messageHasExplicitDateOrTime,
   normalizeMessageBodyForRecipient,
+  resolveFutureYmdForTime,
   resolveRelativeYmd,
   resolveTimeFromMessage,
   titleCaseTask,
@@ -653,7 +655,11 @@ export function directCorePhoneAction(state: ConversationState, message = state.
     return actionPlan("I'll check your reminders.", action, { lastIntent: "reminder_search" });
   }
 
-  const reminderShape = /^(?:remind me(?:\s+to)?|(?:add|create|set|make)\s+(?:a\s+)?reminder(?:\s+to)?)\s+(.+)$/i.exec(text);
+  const reminderShape = /^(?:remind me(?:\s+(?:to|about|for))?|(?:add|create|set|make)\s+(?:a\s+)?reminder(?:\s+(?:to|about|for))?)\s+(.+)$/i.exec(text);
+  // People also put the time first while speaking: "tomorrow at 8 remind me
+  // to renew my passport". Keep that equivalent to the command-first form so
+  // it remains deterministic when the provider is slow or unavailable.
+  const leadingTimedReminder = looksLikeLeadingTimedReminder(text);
   // This shape detector runs long before the richer reminder blocks, so without
   // these guards it claimed every "remind me to …" first and threw the extra
   // meaning away:
@@ -664,13 +670,14 @@ export function directCorePhoneAction(state: ConversationState, message = state.
   //     medication is the difference between a working reminder and a useless
   //     one.
   // Defer to whichever block understands more of the sentence.
-  if (reminderShape && !parseScheduledMessage(state.message) && !parseRecurring(state.message)) {
+  if ((reminderShape || leadingTimedReminder) && !parseScheduledMessage(state.message) && !parseRecurring(state.message)) {
     const title = titleCaseTask(extractReminderTitle(text));
     if (title && title !== "Reminder") {
       const action = blankAction("reminder_create");
       action.title = title;
-      const ymd = resolveRelativeYmd(text, state.timeZone);
       const time = resolveTimeFromMessage(text);
+      const ymd = resolveRelativeYmd(text, state.timeZone)
+        || (time ? resolveFutureYmdForTime(time.hour, time.minute, state.timeZone) : null);
       action.dueDate = ymd ? isoFromYmdTime(ymd, time?.hour ?? 9, time?.minute ?? 0, state.timeZone) : null;
       return actionPlan(`I'll remind you to ${title.charAt(0).toLowerCase()}${title.slice(1)}.`, action, { lastIntent: "reminder_create" });
     }
@@ -2875,8 +2882,9 @@ export async function planAssistantResponse(
 
     case "reminder_create": {
       const a = plan.action || {};
-      const ymd = resolveRelativeYmd(state.message, state.timeZone);
       const time = resolveTimeFromMessage(state.message);
+      const ymd = resolveRelativeYmd(state.message, state.timeZone)
+        || (time ? resolveFutureYmdForTime(time.hour, time.minute, state.timeZone) : null);
       let title = String(a.title || "").trim() || extractReminderTitle(state.message);
       // "remind me about that" -> use the last event's title.
       if (/^\s*(that|it|this)\s*$/i.test(title) && state.priorEvent?.title) {
