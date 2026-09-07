@@ -1794,7 +1794,11 @@ async function validateTopupAccount(identity: string): Promise<PurchaseAccount> 
   }
   const issued = await storeGet<boolean>(`devnum:used:${id}`, false);
   const deviceUser = await userForIdentity(id);
-  const appleSub = await appleForDevice(id);
+  // The device-to-Apple index is the normal source of truth. Keep the
+  // verified user profile as a compatibility fallback for accounts linked by
+  // an older server revision, so the purchase confirmation cannot falsely say
+  // that Apple is disconnected when the account record still proves the link.
+  const appleSub = (await appleForDevice(id)) || String(deviceUser.apple?.sub || "").trim().slice(0, 256);
   if (!issued && !deviceUser.firstSeenAt && !appleSub) {
     return { valid: false, reason: "We couldn't find an account with that ID.", publicId: id, ledgerIdentity: id, isPro: false, tier: "free", appleSynced: false, email: "", displayName: "", devices: [] };
   }
