@@ -119,6 +119,47 @@ detached shadow mode (`canaryPercent: 0`, `shadowPercent: 1`,
 `promotionReady: false`, `reason=readiness_flag_missing`,
 `liveUserImpact=none`).
 
+## v19 verification — September 7, 2026
+
+An independent 190-case conversational/action fuzz corpus found two additional
+defects: vague polite follow-ups such as “Would you handle that?” could fall
+through to ordinary conversation, and the verb “phish” was not covered by the
+cyber-safety classifier. Taki 3.0 now preserves the clarification boundary,
+catches phishing facilitation, and routes questions about the next public
+eclipse, meteor shower, comet, or rocket launch through current research. The
+corrected fuzz corpus passes 190/190.
+
+The complete server suite passes 348/348 on two consecutive runs, TypeScript
+typecheck passes, and `git diff --check` is clean. The refreshed deterministic
+evidence passes 6,000/6,000 classifier cases (p50 0.302 ms, p95 0.519 ms),
+18,000/18,000 all-tier strict contracts (aggregate p50 0.299 ms, p95 0.598
+ms), 500/500 long-chat cases with 1,502 history turns (p50 1.278 ms, p95
+2.086 ms), 144/144 action-matrix cases, and 150/150 canonical routing cases.
+Artifacts: `/tmp/taki3-6000-1788832546851.json`,
+`/tmp/taki3-contract-6000-1788832551534.json`,
+`/tmp/taki3-long-chat-1788832545246.json`, and
+`/tmp/taki3-150-routing-regression-v19.json`.
+
+The authenticated live-provider smoke reached Gemini for all eight
+provider-eligible cases, but all eight returned typed HTTP 429 `ai_quota`; the
+four local safety/clarification/delegation cases passed 4/4. Provider p50 was
+131.664 ms, p95 541.298 ms, and measured cost was $0.00 because no provider
+request succeeded. Artifact:
+`/tmp/taki3-live-smoke-1788832587266.json`. Production health is configured
+for OpenAI, but the local environment has no production OpenAI credential, so
+the real-provider quality and cost gate remains closed.
+
+The account-deletion test was also made concurrency-safe: it now asserts that
+deleted identities stay absent while unrelated concurrent test registrations
+are allowed. This removed a shared-store test race without weakening the
+privacy invariant.
+
+Commit `d76401f` is pushed to `origin/main`. Render serves
+`2026-09-07-taki-3.0-staged-v19` with OpenAI selected and Taki 3.0 still in
+detached shadow mode (`canaryPercent: 0`, `shadowPercent: 1`,
+`promotionReady: false`, `reason=readiness_flag_missing`,
+`liveUserImpact=none`).
+
 ## v18 verification — September 7, 2026
 
 The v18 pass added a second 56-case conversational/action sweep after the
