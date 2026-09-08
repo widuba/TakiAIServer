@@ -139,12 +139,15 @@ routing cases. Artifacts: `/tmp/taki3-6000-1788875603007.json`,
 `/tmp/taki3-long-chat-1788875601671.json`, and
 `/tmp/taki3-150-routing-regression-v22.json`.
 
-The previously authenticated live-provider smoke remains the latest real
-provider evidence: all eight Gemini provider-eligible cases returned typed HTTP
-429 `ai_quota`, while the four local safety/clarification/delegation cases
-passed. No successful provider call means no defensible live quality or cost
-measurement; the promotion gate remains closed. Production is configured for
-OpenAI, but no production OpenAI credential is available locally.
+The post-deployment authenticated live-provider smoke reached Gemini for all
+eight provider-eligible cases, but all eight returned typed HTTP 429 `ai_quota`;
+the four local safety/clarification/delegation cases passed 4/4. Provider p50
+was 127.084 ms, p95 266.401 ms, and measured cost was $0.00 because no
+provider request succeeded. Artifact:
+`/tmp/taki3-live-smoke-1788875748331.json`. No successful provider call means
+no defensible live quality or cost measurement; the promotion gate remains
+closed. Production is configured for OpenAI, but no production OpenAI
+credential is available locally.
 
 The v22 source is staged for deployment as
 `2026-09-08-taki-3.0-staged-v22`; Taki 3.0 remains in detached shadow mode
