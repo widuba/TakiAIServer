@@ -121,6 +121,32 @@ detached shadow mode (`canaryPercent: 0`, `shadowPercent: 1`,
 
 ## v23 verification — September 8, 2026
 
+## v24 verification — September 8, 2026
+
+The v24 conversational edge pass fixed six additional gaps found by a fresh
+manual probe: creative “find” requests stay direct instead of becoming web
+searches, recalling the chat stays direct even with date words such as
+“yesterday,” private conversation and chat-history searches use the native
+device path, personal advice such as “what should I eat tonight?” stays
+conversation, subject-less “tell me something current/recent” requests ask
+for a topic, and polite “maybe handle that” follow-ups preserve clarification.
+The targeted regressions and complete 6,000-case sweep pass.
+
+The v24 server suite passes 395/395, TypeScript typecheck passes, and
+`git diff --check` is clean. Deterministic evidence passes 6,000/6,000
+classifier cases (p50 0.251 ms, p95 0.414 ms), 18,000/18,000 all-tier strict
+contracts (aggregate p50 0.276 ms, p95 0.564 ms), 500/500 long-chat cases with
+1,502 history turns (p50 1.064 ms, p95 1.699 ms), 144/144 action-matrix cases,
+and 150/150 canonical routing cases. Artifacts:
+`/tmp/taki3-6000-followup.json`, `/tmp/taki3-contract-6000-followup.json`,
+`/tmp/taki3-long-chat-1788876800348.json`, and
+`/tmp/taki3-150-routing-followup.json`.
+
+This source-only pass does not change the live-provider result: a provider
+smoke still needs a successful, quota-backed request before promotion. The
+release remains shadow-only until the provider quality, p95, cost, and
+rollback evidence token is issued for the committed release.
+
 The v23 edge pass closes five additional routing gaps found by the 148-case
 natural-language sweep: definitions containing a word such as “current” stay
 timeless, private chat searches use the device search action, appointment

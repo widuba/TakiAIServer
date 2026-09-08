@@ -255,7 +255,7 @@ function stripConversationalLead(value: string): string {
     const before = text;
     text = text
       .replace(/^(?:(?:hey|hi|hello|please|okay|ok|p-p-please|p-please|quickly|um|uh|erm|hmm)\s*,?\s*)+/iu, "")
-      .replace(/^(?:(?:can|could|would|will)\s+){1,3}you\s*,?\s*/iu, "")
+      .replace(/^(?:(?:can|could|would|will)\s+){1,3}you\s+(?:(?:please|maybe|possibly|just)\s+)*,?\s*/iu, "")
       .replace(/^(?:(?:can|could|would|will)\s+you)\s*,?\s*/iu, "")
       .trim();
     if (text === before) break;
@@ -269,7 +269,13 @@ function directTransformationLikeMessage(message: string): boolean {
   return /^(?:(?:help me\s+)?(?:to\s+)?)?(?:rewrite|rephrase|paraphrase|polish|proofread|summari[sz]e|translate|shorten|expand|edit|revise|format|convert|draft|compose|write)\b/i.test(text)
     || /^(?:make)\s+(?:this|that|the following|it)\b/i.test(text)
     || /^turn\s+(?:this|that|it|these|those|the following)(?:\s+(?:notes?|text|sentence|paragraph))?\s+into\b/i.test(text)
-    || /\b(?:rewrite|rephrase|paraphrase|summari[sz]e|translate|proofread)\s+(?:this|that|the following)\b/i.test(text);
+    || /\b(?:rewrite|rephrase|paraphrase|summari[sz]e|translate|proofread)\s+(?:this|that|the following)\b/i.test(text)
+    // Creative generation is answer work even when the user says "find".
+    // Keep explicit location/current cues on the research or device paths.
+    || (!/\b(?:near me|nearby|around me|in my area|current|latest|newest|today|tonight|available|open now)\b/i.test(text)
+      && /^(?:find|give|suggest|generate|brainstorm|come up with)\s+(?:me\s+)?(?:a|an|some|one|two|three|four|five|six|seven|eight|nine|ten|\d+)?\s*(?:good\s+)?(?:poem|haiku|joke|jokes|story|stories|name|names|ideas?|slogans?|taglines?|titles?|ways?|examples?|options?|prompts?|captions?|rhymes?)\b/i.test(text))
+    || (!/\b(?:near me|nearby|around me|in my area|current|latest|newest|today|tonight|available|open now)\b/i.test(text)
+      && /^(?:find|give|suggest|generate|come up with)\s+(?:me\s+)?(?:a|an|the)?\s*(?:good|better|best|kind|simple|polite|practical)\s+way\s+to\b/i.test(text));
 }
 
 function instructionalHowLikeMessage(message: string): boolean {
@@ -293,7 +299,7 @@ function explicitResearchLikeMessage(message: string): boolean {
   // Private calendar lookups belong to the device planner. Keep the longer
   // forms out of the public-search path as well ("my next calendar event"
   // does not contain the shorter "my calendar" phrase).
-  if (/\b(?:my contacts?|my calendar|my reminders?|my photos?|my chats?|my location|near me|nearby|on maps?)\b/i.test(text)
+  if (/\b(?:my contacts?|my calendar|my reminders?|my photos?|my chats?|my conversations?|our conversations?|(?:chat|conversation) history|my location|near me|nearby|on maps?)\b/i.test(text)
     || /\b(?:my|our)\s+(?:(?:next|upcoming|previous|last|today['’]s|tomorrow['’]s)\s+)?calendar\s+(?:events?|appointments?|meetings?)\b/i.test(text)) return false;
   if (/^(?:search|browse|find|look up)\b/i.test(text)) return true;
   return (
@@ -311,6 +317,7 @@ function underspecifiedFreshnessLikeMessage(message: string): boolean {
   // such as "latest" or returning an unrelated current result.
   return /^(?:latest|current|newest|recent|up[- ]to[- ]date)$/i.test(text)
     || /^(?:what(?:'s| is)|tell me|give me)\s+(?:the\s+)?(?:latest|current|newest|recent|up[- ]to[- ]date)$/i.test(text)
+    || /^(?:tell me|give me|show me)\s+(?:something|anything)\s+(?:latest|current|newest|recent|up[- ]to[- ]date)\b/i.test(text)
     || /^(?:what(?:'s| is)|tell me|give me)\s+(?:happening|new)\s+(?:right\s+now|today)?$/i.test(text);
 }
 
@@ -318,6 +325,22 @@ function timelessDefinitionLikeMessage(message: string): boolean {
   const text = stripConversationalLead(message).replace(/[.!?]+$/g, "").trim();
   return /^(?:what(?:'s| is)|what does|define|meaning of|explain)\s+(?:the\s+)?(?:word|term|phrase)\b/i.test(text)
     || /^(?:what(?:'s| is)|define|meaning of)\s+(?:an?\s+)?(?:abstract|general)\s+(?:concept|idea)\b/i.test(text);
+}
+
+function conversationalRecallLikeMessage(message: string): boolean {
+  const text = stripConversationalLead(message).replace(/[.!?]+$/g, "").trim();
+  if (!text) return false;
+  return /^(?:remind me)\s+(?:what|why|how|when|where|who|whether|if)\b/i.test(text)
+    || /^(?:remind me)\s+(?:of|about)\s+(?:what\s+(?:we|i)|our\s+(?:conversation|discussion|plan))\b/i.test(text)
+    || /^(?:what did|what have)\s+(?:we|i)\s+(?:discuss|talk|say|cover|decide|plan)\b/i.test(text)
+    || /^(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:recall|remember)\s+(?:what|the plan|our (?:conversation|discussion))\b/i.test(text);
+}
+
+function personalAdviceLikeMessage(message: string): boolean {
+  const text = stripConversationalLead(message).replace(/[.!?]+$/g, "").trim();
+  if (!text || /\b(?:near me|nearby|around me|in my area|restaurant|restaurants|store|shop|event|concert|current|latest|newest|available|open now)\b/i.test(text)) return false;
+  return /^(?:what|which)\s+should\s+i\s+(?:eat|cook|wear|do|bring|pack|order|make|have)\b/i.test(text)
+    || /^(?:what|which)\s+(?:would|could)\s+be\s+(?:a\s+)?good\s+(?:thing|meal|outfit|option)\s+for\s+(?:tonight|today|this\s+(?:morning|afternoon|evening|weekend))\b/i.test(text);
 }
 
 function actionLikeMessage(message: string): boolean {
@@ -438,10 +461,10 @@ function actionLikeMessage(message: string): boolean {
   if (/\b(?:would you mind|i was wondering if|wondering if|it would be great if)\b.{0,60}\b(?:send|text|message|email|call|add|put|schedule|save|create|delete|remove|cancel|move|update|open|navigate|turn|play|log|track|alert|remind|remember|copy|export|share|book|order|cook|set|start|stop|run|control)\b/i.test(text)) return true;
   if (/^(?:i|we)\s+(?:want|need|would like|plan|intend|have)\s+(?:you\s+)?(?:to\s+)?(?:send|text|message|email|call|add|put|schedule|save|create|delete|remove|cancel|move|update|open|show|navigate|turn|play|log|track|alert|remind|remember|copy|export|share|book|order|cook|set|start|stop|run|control)\b/i.test(text)) return true;
   if (/^(?:(?:let['’]?s|go ahead and)|(?:please\s+go ahead and))\s+(?:send|text|message|email|call|add|put|schedule|save|create|delete|remove|cancel|move|update|open|show|navigate|turn|play|log|track|alert|remind|remember|copy|export|share|book|order|cook|set|start|stop|run|control)\b/i.test(text)) return true;
-  if (/\b(?:find|search|look up)\b.{0,80}\b(?:near me|nearby|on maps?|in my calendar|in my reminders?|my contact|my photos?|my chats?)\b/i.test(text)) return true;
+  if (/\b(?:find|search|look up)\b.{0,90}\b(?:near me|nearby|on maps?|in my calendar|in my reminders?|my contact|my photos?|my chats?|my conversations?|our conversation|(?:chat|conversation) history)\b/i.test(text)) return true;
   if (/^give\s+(?:me\s+)?directions?\b/i.test(text)) return true;
   if (/^(?:i|we)\s+(?:want|need|would like)\b.{0,60}\b(?:directions?|navigate|take me|drive me)\b/i.test(text)) return true;
-  if (/\b(?:my calendar|my reminders?|my contacts?|my photos?|my location|my (?:phone )?battery|battery\s+(?:on|of)\s+my\s+phone|my steps?|my sleep|my lost phone|my (?:lights?|lamps?|thermostat|locks?)|the flashlight|homekit)\b/i.test(text)
+  if (/\b(?:my calendar|my reminders?|my contacts?|my photos?|my chats?|my conversations?|(?:chat|conversation) history|my location|my (?:phone )?battery|battery\s+(?:on|of)\s+my\s+phone|my steps?|my sleep|my lost phone|my (?:lights?|lamps?|thermostat|locks?)|the flashlight|homekit)\b/i.test(text)
     && /^(?:what|where|when|how|show|see|view|check|find|search|look up|open|is|are|can|could|would)\b/i.test(text)) return true;
   if (/\b(?:my|our)\s+(?:(?:next|upcoming|previous|last|today['’]s|tomorrow['’]s)\s+)?calendar\s+(?:events?|appointments?|meetings?)\b/i.test(text)
     && /^(?:what|where|when|which|show|check|find|search|look up|open|is|are|can|could|would|tell me|give me)\b/i.test(text)) return true;
@@ -533,9 +556,11 @@ export function classifyTaki3Request(state: ConversationState): Taki3Classificat
   if (directTransformationLikeMessage(normalized)) return { ...base, kind: "direct", reason: "writing_or_transformation" };
   if (instructionalHowLikeMessage(normalized)) return { ...base, kind: "direct", reason: "instructional_explanation" };
   if (timelessDefinitionLikeMessage(normalized)) return { ...base, kind: "direct", reason: "timeless_definition" };
+  if (conversationalRecallLikeMessage(normalized)) return { ...base, kind: "direct", reason: "conversation_recall" };
   if (actionLikeMessage(message) || actionLikeMessage(normalized)) return { ...base, kind: "delegate", reason: "device_or_account_action" };
   if (explicitResearchLikeMessage(normalized)) return { ...base, kind: "research", reason: "explicit_search_or_public_event" };
   if (underspecifiedFreshnessLikeMessage(normalized)) return { ...base, kind: "clarify", reason: "missing_research_subject" };
+  if (personalAdviceLikeMessage(normalized)) return { ...base, kind: "direct", reason: "personal_advice" };
 
   const routing = answerRoutingFor(normalized, Boolean(state.voiceMode));
   if (routing.isLive || routing.policy === "forced") {

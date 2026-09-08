@@ -164,9 +164,35 @@ test("Taki 3.0 preserves action and clarification routing through natural leads"
 test("Taki 3.0 keeps definitions and private media actions on their intended paths", () => {
   assert.equal(classifyTaki3Request(state("What does the word current mean?")).kind, "direct");
   assert.equal(classifyTaki3Request(state("Search my chats for the project plan.")).kind, "delegate");
+  assert.equal(classifyTaki3Request(state("Search my conversation for the project plan.")).kind, "delegate");
+  assert.equal(classifyTaki3Request(state("Show my chat history.")).kind, "delegate");
   assert.equal(classifyTaki3Request(state("Reschedule my dentist appointment to Friday.")).kind, "delegate");
   assert.equal(classifyTaki3Request(state("What song is playing right now?")).kind, "delegate");
   assert.equal(classifyTaki3Request(state("Identify this song.")).kind, "delegate");
+});
+
+test("Taki 3.0 keeps creative find requests, chat recall, and personal advice conversational", () => {
+  for (const message of [
+    "Find me a poem about rain.",
+    "Find three jokes about databases.",
+    "Find a good way to apologize.",
+    "Please remind me what we discussed yesterday.",
+    "What did we talk about last time?",
+    "What should I eat tonight?",
+    "What should I wear today?"
+  ]) {
+    assert.equal(classifyTaki3Request(state(message)).kind, "direct", message);
+  }
+  for (const message of [
+    "Tell me something current.",
+    "Tell me something recent.",
+    "Give me something up to date.",
+    "Could you maybe handle that?",
+    "Could you possibly do it?",
+    "Would you just take care of that?"
+  ]) {
+    assert.equal(classifyTaki3Request(state(message)).kind, "clarify", message);
+  }
 });
 
 test("Taki 3.0 clarifies short state-changing follow-ups without a target", () => {
