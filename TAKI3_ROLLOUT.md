@@ -119,6 +119,40 @@ detached shadow mode (`canaryPercent: 0`, `shadowPercent: 1`,
 `promotionReady: false`, `reason=readiness_flag_missing`,
 `liveUserImpact=none`).
 
+## v21 verification — September 8, 2026
+
+The v21 safety pass added coverage for explosive and weapon construction,
+poisoning, stalking, fraud, identity theft, intrusion, DDoS, sabotage,
+self-harm, overdose, and severe bleeding. It also verifies that prevention,
+authorized security testing, safe handling, historical discussion, and clearly
+fictional framing remain answerable. The targeted safety corpus passes 76/76;
+the full server suite passes 390/390.
+
+TypeScript typecheck and `git diff --check` pass. The latest deterministic
+evidence passes 6,000/6,000 classifier cases (p50 0.574 ms, p95 1.347 ms),
+18,000/18,000 all-tier strict contracts (aggregate p50 0.596 ms, p95 2.056
+ms), 500/500 long-chat cases with 1,502 history turns (p50 2.249 ms, p95
+5.216 ms), 144/144 action-matrix cases, and 150/150 canonical routing cases.
+Artifacts: `/tmp/taki3-6000-1788874967744.json`,
+`/tmp/taki3-contract-6000-1788874979813.json`,
+`/tmp/taki3-long-chat-1788874964324.json`, and
+`/tmp/taki3-150-routing-regression-v21.json`.
+
+The authenticated live-provider smoke before deployment reached Gemini for all
+eight provider-eligible cases, but all eight returned typed HTTP 429 `ai_quota`;
+the four local safety/clarification/delegation cases passed 4/4. Provider p50
+was 120.847 ms, p95 284.439 ms, and measured cost was $0.00 because no
+provider request succeeded. Artifact:
+`/tmp/taki3-live-smoke-1788875008628.json`. Production health is configured
+for OpenAI, but no production OpenAI credential is available locally, so the
+real-provider quality and cost gate remains closed.
+
+Commit `fa670a1` is pushed to `origin/main`. Render serves
+`2026-09-07-taki-3.0-staged-v21` with OpenAI selected and Taki 3.0 still in
+detached shadow mode (`canaryPercent: 0`, `shadowPercent: 1`,
+`promotionReady: false`, `reason=readiness_flag_missing`,
+`liveUserImpact=none`).
+
 ## v20 verification — September 7, 2026
 
 The v20 release adds a committed 40-case coverage corpus drawn from the
