@@ -10,7 +10,7 @@ import {
   safetyConfig
 } from "./ai.js";
 import { taki3PromotionGateStatus } from "./taki3Promotion.js";
-import { answerRoutingFor, responseSatisfiesExplicitFormat, responseStyleForTakiModel } from "./tools.js";
+import { answerRoutingFor, parsePhotosSearch, responseSatisfiesExplicitFormat, responseStyleForTakiModel } from "./tools.js";
 import { normalizeTaki3Input } from "./taki3Compatibility.js";
 import { capabilityPromptBlock } from "./capabilities.js";
 import { productKnowledgePromptBlock } from "./productKnowledge.js";
@@ -316,8 +316,8 @@ function actionLikeMessage(message: string): boolean {
   if (/\b(?:show|give|provide|write)\s+me\s+(?:an?\s+)?(?:example|sample|template|draft|version|idea|copy)\b/i.test(text)) return false;
   // "Remind me what we discussed" asks the assistant to recall the chat. It
   // must not become a device reminder just because it starts with "remind me".
-  if (/^remind\s+me\s+(?:what|why|how|when|where|who|whether|if)\b/i.test(text)
-    || /^remind\s+me\s+(?:of|about)\s+(?:what\s+(?:we|i)|our\s+(?:conversation|discussion))\b/i.test(text)) return false;
+  if (/^(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?remind\s+me\s+(?:what|why|how|when|where|who|whether|if)\b/i.test(text)
+    || /^(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?remind\s+me\s+(?:of|about)\s+(?:what\s+(?:we|i)|our\s+(?:conversation|discussion))\b/i.test(text)) return false;
   // Idiomatic "call out" / "call it" phrases are conversation. A phone call
   // request still uses a person, number, or explicit call-back wording.
   if (/^(?:call|ring)\s+(?:out|it|this|that|for|upon|attention|a\s+bell)\b/i.test(text)) return false;
@@ -325,6 +325,7 @@ function actionLikeMessage(message: string): boolean {
   // Broad calendar advice is conversation. A lookup with an event, meeting,
   // or appointment remains a private-device action below.
   if (/^(?:what|how)\s+should\s+i\s+do\s+(?:about|with)\s+(?:my|our)\s+calendar\b/i.test(text)) return false;
+  if (/^(?:what|which)\s+should\s+i\s+(?:put|add|schedule|plan)\b.{0,50}\b(?:on|in)\s+(?:my|our)\s+calendar\b/i.test(text)) return false;
   // Personal nouns can also appear in generic advice. Do not turn questions
   // about organizing or managing reminders/calendar data into a lookup when
   // the user is asking for a method rather than asking to see the data.
@@ -381,11 +382,25 @@ function actionLikeMessage(message: string): boolean {
   // than a venue noun ("Where should I eat in my area?"). Route them through
   // Maps/device search so the answer uses the user's actual location.
   if (/^(?:what|where|which|recommend|suggest|show|find)\b.{0,100}\b(?:eat|dine|dining|food|breakfast|lunch|dinner)\b.{0,40}\b(?:near me|nearby|around me|in my area|close to me)\b/i.test(text)) return true;
+  // Content searches and private personal-data lookups must stay on the
+  // device path even when a freshness word such as "today" is present.
+  if (parsePhotosSearch(text)) return true;
+  if (/^(?:what|which)\s+(?:reminders?|tasks?|todos?)\s+do\s+i\s+have\b/i.test(text)
+    || /^(?:what|which)\s+(?:meetings?|appointments?|events?)\s+do\s+i\s+have\b/i.test(text)
+    || /^(?:when|where)\s+is\s+my\s+next\s+(?:meeting|appointment|event)\b/i.test(text)) return true;
+  if (/^(?:what(?:'s| is)|tell me|give me|find|look up)\b.{0,60}\b(?:phone|email)\s+(?:number|address)\b/i.test(text)
+    && (/\b[\p{L}][\p{L}'-]*['’]s\b/u.test(text) || /\b(?:for|of)\s+(?!a\b|an\b|the\b|my\b)[\p{L}][\p{L}'-]*/iu.test(text))) return true;
+  if (/^(?:how much|what(?:'s| is)|show|check|tell me)\b.{0,80}\b(?:battery|storage|free space)\b/i.test(text)
+    && /\b(?:my|i|phone|device)\b/i.test(text)) return true;
+  if (/^(?:how many|what|how did|show|check|tell me)\b.{0,90}\b(?:steps?|sleep|heart rate|calories?|workouts?|exercise|activity|health data)\b/i.test(text)
+    && /\b(?:my|i|today|yesterday|last night|this week)\b/i.test(text)) return true;
+  if (/^(?:(?:(?:please)\s+)?(?:can|could|would|will)\s+you\s+)?(?:complete|finish|mark|reschedule|rename|edit|change)\b.{0,90}\b(?:reminders?|tasks?|todos?)\b/i.test(text)) return true;
   // Undo and recent-activity checks are model-free native actions. Keep the
   // exact supported phrasings here so they never reach a provider that could
   // invent an action or claim an unsupported operation completed.
-  if (/^(?:undo|undo that|undo the last (?:thing|action)|take that back|revert that|cancel what you just did)\b/i.test(text)) return true;
-  if (/^(?:what did you just do|what have you (?:just )?done(?: on my (?:phone|iphone))?|what did (?:you|i) do (?:recently|today|earlier|last)(?:\s+\w+)?|what have (?:you|i) done (?:recently|today|so far)|did that (?:work|complete|succeed)|what happened with that|show(?: me)? (?:your |my )?(?:recent activity|recent actions|action history)|(?:my )?recent activity)[.!?]*$/i.test(text)) return true;
+  if (/^(?:(?:(?:please)\s+)?(?:can|could|would|will)\s+you\s+)?(?:undo|undo that|undo the last (?:thing|action)|take that back|revert that|cancel what you just did)\b/i.test(text)
+    || /^(?:i|we)\s+(?:want|need|would like)\s+to\s+undo\b/i.test(text)) return true;
+  if (/^(?:(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:tell|show)\s+me\s+)?(?:what did you just do|what did you do on my (?:phone|iphone)|what you (?:just )?did(?: on my (?:phone|iphone))?|what you did (?:recently|today|earlier|last)(?:\s+\w+)?|what have you (?:just )?done(?: on my (?:phone|iphone))?|what did (?:you|i) do (?:recently|today|earlier|last)(?:\s+\w+)?|what have (?:you|i) done (?:recently|today|so far)|did that (?:work|complete|succeed)|what happened with that|show(?: me)? (?:your |my )?(?:recent activity|recent actions|action history)|(?:my )?recent activity)[.!?]*$/i.test(text)) return true;
   // Commands and polite commands are deliberately conservative. A sentence
   // such as “help me write a text” remains conversational; “text Mom…” delegates.
   if (/^(?:(?:please|hey|okay|ok)\s+)?(?:send|text|message|email|call|add|put|schedule|save|create|delete|remove|cancel|move|update|open|navigate|directions?|take|turn|play|pause|resume|log|track|alert|remind|remember|forget|copy|export|share|book|order|cook|set|start|stop|run|control|lock|unlock)\b/i.test(text)) return true;
@@ -451,7 +466,9 @@ function clarificationLikeMessage(message: string, state: ConversationState): bo
   }
   const text = stripped.replace(/[.!?]+$/g, "").trim();
   const questionOnly = stripped.replace(/[.!]+$/g, "").trim();
-  return /^\?+$/.test(questionOnly) || /^(?:help|help me|do it|go ahead|yes|yeah|yep|okay|ok|that one|what about it|huh|more|i need help choosing)$/i.test(text);
+  return /^\?+$/.test(questionOnly)
+    || /^(?:help|help me|do it|do that|go ahead|go ahead and do it|yes(?:,\s*please)?|yeah|yep|okay|ok|that one|which one|what about it|huh|more|i need help choosing)$/i.test(text)
+    || /^(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:do|handle|take care of)\s+(?:that|it)$/i.test(text);
 }
 
 /**
