@@ -62,10 +62,10 @@ turn instead of being downgraded to a generic answer. The regression suite
 covers this path; the full server suite and 144-case action matrix remain
 green.
 
-The latest deterministic rerun passed 6,000/6,000 (p50 0.242 ms, p95 0.385
-ms, max 108.621 ms), the three-tier contract sweep passed 18,000/18,000
-(p50 0.263 ms, p95 0.451 ms, max 112.380 ms), and the long-chat audit passed
-500/500 with 1,502 history turns (p50 1.010 ms, p95 1.907 ms, max 123.396 ms).
+The latest deterministic rerun passed 6,000/6,000 (p50 0.242 ms, p95 0.401
+ms, max 111.043 ms), the three-tier contract sweep passed 18,000/18,000
+(p50 0.267 ms, p95 0.462 ms, max 112.490 ms), and the long-chat audit passed
+500/500 with 1,502 history turns (p50 1.011 ms, p95 1.762 ms, max 122.522 ms).
 The action matrix passed 144/144 cases across 48 action families and three
 natural-language variants per family. The complete server suite is 347/347
 with typecheck passing.
@@ -75,5 +75,11 @@ and Sophos, with aggregate p50 3,560 ms and p95 6,315 ms at 179 credits
 ($0.179 at the app's $0.001 credit rate). This audit exercised the deployed
 legacy compatibility response path because the Taki 3.0 promotion gate remains
 closed. It is live provider evidence for the compatibility path, not proof of
-active Taki 3.0 traffic. The current health response reports v13, OpenAI, and
+active Taki 3.0 traffic. The current health response reports v15, OpenAI, and
 `promotionReady: false` with `readiness_flag_missing`.
+
+The v15 routing patch also forces organization leadership questions such as
+“Who runs OpenAI?”, “Who heads the FDA?”, and “Who is in charge of NASA?”
+through current research, while leaving timeless phrases such as “Who runs the
+marathon?” on the direct conversation path. The full intelligence regression
+suite covers both sides of this boundary.
