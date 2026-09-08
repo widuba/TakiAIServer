@@ -77,6 +77,11 @@ test("changeable public facts always route to current research", () => {
   const currentQuestions = [
     "Who is the president of France?",
     "Who is the CEO of OpenAI?",
+    "Who runs OpenAI?",
+    "Who heads the FDA?",
+    "Who is in charge of NASA?",
+    "What is the CEO of OpenAI?",
+    "Who leads the company?",
     "Is it legal to turn left on red in Georgia?",
     "What are the current CDC recommendations?",
     "What are the entry requirements for Japan?",
@@ -98,7 +103,9 @@ test("changeable public facts always route to current research", () => {
     "What is a CPU?",
     "What does it mean to schedule a meeting?",
     "How does a schedule work?",
-    "What is a calendar schedule?"
+    "What is a calendar schedule?",
+    "Who runs the marathon?",
+    "Who runs my household?"
   ];
   for (const question of timelessQuestions) {
     assert.equal(looksLikeFreshFactQuestion(question), false, question);
@@ -1382,17 +1389,17 @@ test("a scheduled text keeps its message body instead of collapsing to a reminde
   assert.equal(parseScheduledMessage("remind me to text Mom happy birthday"), null);
 });
 
-test("search is offered on anything the live detectors miss, never absent by default", () => {
+test("search is offered on anything the live detectors miss, while mutable facts are forced", () => {
   const policy = (m: string, voice = false) => answerRoutingFor(m, voice).policy;
 
   // Definitely-current questions still force grounding.
   assert.equal(policy("What is Apple's stock price?"), "forced");
   assert.equal(policy("Search the web for the new iPhone"), "forced");
 
-  // The whole point: questions the keyword detectors do NOT classify as live can
-  // still reach the web. These previously answered from stale memory with the
-  // search tool absent, which is the main source of confidently wrong answers.
-  assert.equal(policy("Who runs the FDA?"), "offered");
+  // Questions the keyword detectors do NOT classify as live can still reach the
+  // web. Mutable officeholder facts are classified explicitly and forced to
+  // current research so they cannot be answered from stale memory.
+  assert.equal(policy("Who runs the FDA?"), "forced");
   assert.equal(policy("Is the Rivian R2 any good?"), "offered");
   assert.equal(policy("Explain how mRNA vaccines work"), "offered");
   // A price question the detectors DO catch stays forced.
@@ -1402,8 +1409,9 @@ test("search is offered on anything the live detectors miss, never absent by def
   // an unused tool costs nothing, so there is no reason to withhold it on text.
   assert.equal(policy("Which is better, apples or oranges?"), "offered");
 
-  // "Easy" still picks the cheap/fast model, but no longer blocks grounding.
-  assert.equal(answerRoutingFor("Who runs the FDA?").isEasy, true);
+  // A mutable officeholder fact escalates to the research tier even when the
+  // wording is short; correctness must win over the fast-tier shortcut.
+  assert.equal(answerRoutingFor("Who runs the FDA?").isEasy, false);
 
   // Voice never pays tool-selection latency unless the question is truly live.
   assert.equal(policy("Explain how mRNA vaccines work", true), "none");

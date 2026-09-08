@@ -2386,7 +2386,12 @@ export function looksLikeFreshFactQuestion(message: string) {
   // schedules, and developing news must never be answered from model memory.
   const mutableOfficeholder =
     /\bwho(?:'s| is| are)\s+(?:the\s+)?(?:current\s+)?(?:president|prime minister|premier|governor|mayor|senator|representative|secretary|attorney general|chief justice|pope|ceo|cfo|cto|chair(?:man|woman|person)?|commissioner|coach|manager|leader|head)\b/.test(m)
-    || /\b(?:current|new|incoming|acting)\s+(?:president|prime minister|premier|governor|mayor|senator|representative|secretary|attorney general|chief justice|pope|ceo|cfo|cto|chair(?:man|woman|person)?|commissioner|coach|manager|leader|head)\b/.test(m);
+    || /\b(?:who|what(?:'s| is))\s+(?:the\s+)?(?:current\s+)?(?:president|prime minister|premier|governor|mayor|senator|representative|secretary|attorney general|chief justice|pope|ceo|cfo|cto|chair(?:man|woman|person)?|commissioner|coach|manager|leader|head)\s+(?:of|at|for)\b/.test(m)
+    || /\b(?:current|new|incoming|acting)\s+(?:president|prime minister|premier|governor|mayor|senator|representative|secretary|attorney general|chief justice|pope|ceo|cfo|cto|chair(?:man|woman|person)?|commissioner|coach|manager|leader|head)\b/.test(m)
+    || (asksForInformation
+      && /\b(?:who|which person)\s+(?:runs?|heads?|leads?|oversees?|is in charge of)\b/.test(m)
+        && (/(?:^|\b)(?:openai|apple|google|microsoft|amazon|meta|nasa|fda|cdc|tesla|samsung|anthropic|spacex)(?:\b|$)/i.test(m)
+        || /\b(?:the|a|an)\s+(?:company|organization|agency|department|team|business|firm|startup|government|country|city|state|office|school|university)\b/.test(m)));
   const developingNews =
     /\b(latest news|breaking news|headlines?|news (?:on|about)|what(?:'s| is) happening|what happened (?:today|yesterday|this week)|update me on|catch me up on|developments? (?:in|on))\b/.test(m);
   const mutableLawOrRates =
