@@ -135,6 +135,11 @@ action-matrix cases, and 150/150 canonical routing cases. The live provider
 gate remains unchanged and closed until a successful quota-backed provider run
 exists.
 
+Commit `b102ad2` is pushed to `origin/main`. Render health serves
+`2026-09-08-taki-3.0-staged-v25` with OpenAI selected and Taki 3.0 detached in
+shadow mode (`canaryPercent: 0`, `shadowPercent: 1`, `promotionReady: false`,
+`reason=readiness_flag_missing`, `liveUserImpact=none`).
+
 ## v24 verification — September 8, 2026
 
 The v24 conversational edge pass fixed six additional gaps found by a fresh
