@@ -83,3 +83,38 @@ The v15 routing patch also forces organization leadership questions such as
 through current research, while leaving timeless phrases such as “Who runs the
 marathon?” on the direct conversation path. The full intelligence regression
 suite covers both sides of this boundary.
+
+## v16 verification — September 7, 2026
+
+The v16 routing patch expands live-fact detection for venue hours, open status,
+local wait times, gas prices, weather, game times, sales, package status,
+flight status, traffic rules, and travel-entry rules. It also covers natural
+device-action phrasing such as “I was hoping you could call Mom,” “Take me to
+the airport,” and location-aware food requests such as “Where should I eat in
+my area?” Educational phrasing that mentions a capability (“explain how to
+schedule a meeting”) remains ordinary conversation.
+
+The final deterministic evidence passed 6,000/6,000 classifier cases (p50
+0.260 ms, p95 0.437 ms, max 108.604 ms), 18,000/18,000 strict contract cases
+across all three tiers (p50 0.275 ms, p95 0.551 ms, max 110.671 ms), 500/500
+long-chat cases with 1,502 history turns (p50 1.098 ms, p95 1.856 ms, max
+120.858 ms), 144/144 action-matrix cases, and 150/150 canonical routing cases.
+Artifacts: `/tmp/taki3-6000-1788830506940.json`,
+`/tmp/taki3-contract-6000-1788830511585.json`,
+`/tmp/taki3-long-chat-1788830505574.json`, and
+`/tmp/taki3-150-routing-regression-v16.json`. The complete server suite is
+348/348 and TypeScript typecheck passes.
+
+The final authenticated live smoke reached Gemini for all eight provider
+eligible cases, but every provider call returned typed HTTP 429 `ai_quota`;
+the four local safety, clarification, and delegation cases passed. Provider
+p50 was 120.355 ms, p95 273.629 ms, and measured cost was $0.00 because no
+provider request succeeded. Artifact:
+`/tmp/taki3-live-smoke-1788830648831.json`. The live provider gate therefore
+remains closed; no quality or cost claim is inferred from fixture runs.
+
+Commit `b1c2556` is pushed to `origin/main`. Render now serves
+`2026-09-07-taki-3.0-staged-v16` with OpenAI selected and Taki 3.0 still in
+detached shadow mode (`canaryPercent: 0`, `shadowPercent: 1`,
+`promotionReady: false`, `reason=readiness_flag_missing`,
+`liveUserImpact=none`).
