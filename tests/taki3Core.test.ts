@@ -161,6 +161,20 @@ test("Taki 3.0 preserves action and clarification routing through natural leads"
   assert.equal(classifyTaki3Request(state("What is the latest official NASA update?")).kind, "research");
 });
 
+test("Taki 3.0 keeps definitions and private media actions on their intended paths", () => {
+  assert.equal(classifyTaki3Request(state("What does the word current mean?")).kind, "direct");
+  assert.equal(classifyTaki3Request(state("Search my chats for the project plan.")).kind, "delegate");
+  assert.equal(classifyTaki3Request(state("Reschedule my dentist appointment to Friday.")).kind, "delegate");
+  assert.equal(classifyTaki3Request(state("What song is playing right now?")).kind, "delegate");
+  assert.equal(classifyTaki3Request(state("Identify this song.")).kind, "delegate");
+});
+
+test("Taki 3.0 clarifies short state-changing follow-ups without a target", () => {
+  for (const message of ["I want help.", "Okay.", "Okay, do that.", "I changed my mind.", "Use the other one."]) {
+    assert.equal(classifyTaki3Request(state(message)).kind, "clarify", message);
+  }
+});
+
 test("Taki 3.0 direct answer is one strict, answer-only provider call", async () => {
   resetTaki3RolloutStats();
   const calls: any[] = [];

@@ -254,7 +254,7 @@ function stripConversationalLead(value: string): string {
   for (let index = 0; index < 4; index += 1) {
     const before = text;
     text = text
-      .replace(/^(?:(?:hey|hi|hello|please|p-p-please|p-please|quickly|um|uh|erm|hmm)\s*,?\s*)+/iu, "")
+      .replace(/^(?:(?:hey|hi|hello|please|okay|ok|p-p-please|p-please|quickly|um|uh|erm|hmm)\s*,?\s*)+/iu, "")
       .replace(/^(?:(?:can|could|would|will)\s+){1,3}you\s*,?\s*/iu, "")
       .replace(/^(?:(?:can|could|would|will)\s+you)\s*,?\s*/iu, "")
       .trim();
@@ -293,7 +293,7 @@ function explicitResearchLikeMessage(message: string): boolean {
   // Private calendar lookups belong to the device planner. Keep the longer
   // forms out of the public-search path as well ("my next calendar event"
   // does not contain the shorter "my calendar" phrase).
-  if (/\b(?:my contacts?|my calendar|my reminders?|my photos?|my location|near me|nearby|on maps?)\b/i.test(text)
+  if (/\b(?:my contacts?|my calendar|my reminders?|my photos?|my chats?|my location|near me|nearby|on maps?)\b/i.test(text)
     || /\b(?:my|our)\s+(?:(?:next|upcoming|previous|last|today['’]s|tomorrow['’]s)\s+)?calendar\s+(?:events?|appointments?|meetings?)\b/i.test(text)) return false;
   if (/^(?:search|browse|find|look up)\b/i.test(text)) return true;
   return (
@@ -312,6 +312,12 @@ function underspecifiedFreshnessLikeMessage(message: string): boolean {
   return /^(?:latest|current|newest|recent|up[- ]to[- ]date)$/i.test(text)
     || /^(?:what(?:'s| is)|tell me|give me)\s+(?:the\s+)?(?:latest|current|newest|recent|up[- ]to[- ]date)$/i.test(text)
     || /^(?:what(?:'s| is)|tell me|give me)\s+(?:happening|new)\s+(?:right\s+now|today)?$/i.test(text);
+}
+
+function timelessDefinitionLikeMessage(message: string): boolean {
+  const text = stripConversationalLead(message).replace(/[.!?]+$/g, "").trim();
+  return /^(?:what(?:'s| is)|what does|define|meaning of|explain)\s+(?:the\s+)?(?:word|term|phrase)\b/i.test(text)
+    || /^(?:what(?:'s| is)|define|meaning of)\s+(?:an?\s+)?(?:abstract|general)\s+(?:concept|idea)\b/i.test(text);
 }
 
 function actionLikeMessage(message: string): boolean {
@@ -419,6 +425,9 @@ function actionLikeMessage(message: string): boolean {
   if (/^(?:(?:(?:please)\s+)?(?:can|could|would|will)\s+you\s+)?(?:undo|undo that|undo the last (?:thing|action)|take that back|revert that|cancel what you just did)\b/i.test(text)
     || /^(?:i|we)\s+(?:want|need|would like)\s+to\s+undo\b/i.test(text)) return true;
   if (/^(?:(?:(?:can|could|would|will)\s+you\s+)?(?:please\s+)?(?:tell|show)\s+me\s+)?(?:what did you just do|what did you do on my (?:phone|iphone)|what you (?:just )?did(?: on my (?:phone|iphone))?|what you did (?:recently|today|earlier|last)(?:\s+\w+)?|what have you (?:just )?done(?: on my (?:phone|iphone))?|what did (?:you|i) do (?:recently|today|earlier|last)(?:\s+\w+)?|what have (?:you|i) done (?:recently|today|so far)|did that (?:work|complete|succeed)|what happened with that|show(?: me)? (?:your |my )?(?:recent activity|recent actions|action history)|(?:my )?recent activity)[.!?]*$/i.test(text)) return true;
+  if (/^(?:what|which)\s+song\s+is\s+playing\b/i.test(text)
+    || /^(?:identify|name)\s+(?:this|the)\s+song\b/i.test(text)) return true;
+  if (/^(?:(?:(?:please)\s+)?(?:can|could|would|will)\s+you\s+)?(?:reschedule|move|change|edit|rename|delete|remove|cancel|complete|finish|mark)\b.{0,100}\b(?:appointment|meeting|event)\b/i.test(text)) return true;
   // Commands and polite commands are deliberately conservative. A sentence
   // such as “help me write a text” remains conversational; “text Mom…” delegates.
   if (/^(?:(?:please|hey|okay|ok)\s+)?get\s+directions?\b/i.test(text)) return true;
@@ -429,7 +438,7 @@ function actionLikeMessage(message: string): boolean {
   if (/\b(?:would you mind|i was wondering if|wondering if|it would be great if)\b.{0,60}\b(?:send|text|message|email|call|add|put|schedule|save|create|delete|remove|cancel|move|update|open|navigate|turn|play|log|track|alert|remind|remember|copy|export|share|book|order|cook|set|start|stop|run|control)\b/i.test(text)) return true;
   if (/^(?:i|we)\s+(?:want|need|would like|plan|intend|have)\s+(?:you\s+)?(?:to\s+)?(?:send|text|message|email|call|add|put|schedule|save|create|delete|remove|cancel|move|update|open|show|navigate|turn|play|log|track|alert|remind|remember|copy|export|share|book|order|cook|set|start|stop|run|control)\b/i.test(text)) return true;
   if (/^(?:(?:let['’]?s|go ahead and)|(?:please\s+go ahead and))\s+(?:send|text|message|email|call|add|put|schedule|save|create|delete|remove|cancel|move|update|open|show|navigate|turn|play|log|track|alert|remind|remember|copy|export|share|book|order|cook|set|start|stop|run|control)\b/i.test(text)) return true;
-  if (/\b(?:find|search|look up)\b.{0,80}\b(?:near me|nearby|on maps?|in my calendar|in my reminders?|my contact|my photos?)\b/i.test(text)) return true;
+  if (/\b(?:find|search|look up)\b.{0,80}\b(?:near me|nearby|on maps?|in my calendar|in my reminders?|my contact|my photos?|my chats?)\b/i.test(text)) return true;
   if (/^give\s+(?:me\s+)?directions?\b/i.test(text)) return true;
   if (/^(?:i|we)\s+(?:want|need|would like)\b.{0,60}\b(?:directions?|navigate|take me|drive me)\b/i.test(text)) return true;
   if (/\b(?:my calendar|my reminders?|my contacts?|my photos?|my location|my (?:phone )?battery|battery\s+(?:on|of)\s+my\s+phone|my steps?|my sleep|my lost phone|my (?:lights?|lamps?|thermostat|locks?)|the flashlight|homekit)\b/i.test(text)
@@ -487,8 +496,12 @@ function clarificationLikeMessage(message: string, state: ConversationState): bo
   }
   const text = stripped.replace(/[.!?]+$/g, "").trim();
   const questionOnly = stripped.replace(/[.!]+$/g, "").trim();
+  // A turn made only of a conversational lead/filler ("Okay.", "Hey,") has
+  // no task to answer. Keep it on the clarification path after normalization
+  // removes that lead rather than letting it become ordinary direct chat.
+  if (!text && /[\p{L}\p{N}]/u.test(raw)) return true;
   return /^\?+$/.test(questionOnly)
-    || /^(?:help|help me|do it|do that|go ahead|go ahead and do it|yes(?:,\s*please)?|yeah|yep|okay|ok|that one|which one|what about it|huh|more|i need help choosing)$/i.test(text)
+    || /^(?:help|help me|i want help|i need help|do it|do that|go ahead|go ahead and do it|yes(?:,\s*please)?|yeah|yep|okay|ok|that one|which one|what about it|huh|more|i need help choosing|i changed my mind|use the other one)$/i.test(text)
     || /^(?:handle|take care of)\s+(?:that|it)$/i.test(text)
     || /^(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:do|handle|take care of)\s+(?:that|it)$/i.test(text)
     // stripConversationalLead removes a polite "Would you" lead before the
@@ -519,6 +532,7 @@ export function classifyTaki3Request(state: ConversationState): Taki3Classificat
   if (promptInjectionLikeMessage(message) || promptInjectionLikeMessage(normalized)) return { ...base, kind: "safety", reason: "prompt_injection" };
   if (directTransformationLikeMessage(normalized)) return { ...base, kind: "direct", reason: "writing_or_transformation" };
   if (instructionalHowLikeMessage(normalized)) return { ...base, kind: "direct", reason: "instructional_explanation" };
+  if (timelessDefinitionLikeMessage(normalized)) return { ...base, kind: "direct", reason: "timeless_definition" };
   if (actionLikeMessage(message) || actionLikeMessage(normalized)) return { ...base, kind: "delegate", reason: "device_or_account_action" };
   if (explicitResearchLikeMessage(normalized)) return { ...base, kind: "research", reason: "explicit_search_or_public_event" };
   if (underspecifiedFreshnessLikeMessage(normalized)) return { ...base, kind: "clarify", reason: "missing_research_subject" };

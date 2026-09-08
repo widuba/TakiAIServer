@@ -119,6 +119,30 @@ detached shadow mode (`canaryPercent: 0`, `shadowPercent: 1`,
 `promotionReady: false`, `reason=readiness_flag_missing`,
 `liveUserImpact=none`).
 
+## v23 verification — September 8, 2026
+
+The v23 edge pass closes five additional routing gaps found by the 148-case
+natural-language sweep: definitions containing a word such as “current” stay
+timeless, private chat searches use the device search action, appointment
+rescheduling reaches the calendar action compiler, song identification stays
+on the native media path, and short filler-only or state-changing follow-ups
+ask for context. The corrected edge corpus passes 148/148. The full server
+suite passes 394/394, TypeScript typecheck passes, and `git diff --check` is
+clean.
+
+The v23 deterministic evidence passes 6,000/6,000 classifier cases (p50 0.257
+ms, p95 0.437 ms), 18,000/18,000 all-tier strict contracts (aggregate p50
+0.275 ms, p95 0.553 ms), 500/500 long-chat cases with 1,502 history turns (p50
+1.074 ms, p95 1.811 ms), 144/144 action-matrix cases, and 150/150 canonical
+routing cases. Artifacts: `/tmp/taki3-6000-1788876015594.json`,
+`/tmp/taki3-contract-6000-1788876020245.json`,
+`/tmp/taki3-long-chat-1788876014224.json`, and
+`/tmp/taki3-150-routing-regression-v23-final.json`.
+
+The v23 source is staged for deployment as
+`2026-09-08-taki-3.0-staged-v23`; Taki 3.0 remains in detached shadow mode
+until a successful provider-backed promotion evidence package exists.
+
 ## v22 verification — September 8, 2026
 
 The v22 routing pass fixes four natural-language boundary defects found by an
