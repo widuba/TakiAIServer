@@ -166,6 +166,9 @@ test("Taki 3.0 keeps definitions and private media actions on their intended pat
   assert.equal(classifyTaki3Request(state("Search my chats for the project plan.")).kind, "delegate");
   assert.equal(classifyTaki3Request(state("Search my conversation for the project plan.")).kind, "delegate");
   assert.equal(classifyTaki3Request(state("Show my chat history.")).kind, "delegate");
+  assert.equal(classifyTaki3Request(state("Find examples in my chat history.")).kind, "delegate");
+  assert.equal(classifyTaki3Request(state("Find names for my contacts.")).kind, "delegate");
+  assert.equal(classifyTaki3Request(state("Find options on my calendar.")).kind, "delegate");
   assert.equal(classifyTaki3Request(state("Reschedule my dentist appointment to Friday.")).kind, "delegate");
   assert.equal(classifyTaki3Request(state("What song is playing right now?")).kind, "delegate");
   assert.equal(classifyTaki3Request(state("Identify this song.")).kind, "delegate");

@@ -273,8 +273,10 @@ function directTransformationLikeMessage(message: string): boolean {
     // Creative generation is answer work even when the user says "find".
     // Keep explicit location/current cues on the research or device paths.
     || (!/\b(?:near me|nearby|around me|in my area|current|latest|newest|today|tonight|available|open now)\b/i.test(text)
+      && !/\b(?:my|our)\s+(?:contacts?|calendar|reminders?|photos?|chats?|conversations?|location|phone|battery)\b|\b(?:my|our)\s+(?:chat|conversation)\s+history\b/i.test(text)
       && /^(?:find|give|suggest|generate|brainstorm|come up with)\s+(?:me\s+)?(?:a|an|some|one|two|three|four|five|six|seven|eight|nine|ten|\d+)?\s*(?:good\s+)?(?:poem|haiku|joke|jokes|story|stories|name|names|ideas?|slogans?|taglines?|titles?|ways?|examples?|options?|prompts?|captions?|rhymes?)\b/i.test(text))
     || (!/\b(?:near me|nearby|around me|in my area|current|latest|newest|today|tonight|available|open now)\b/i.test(text)
+      && !/\b(?:my|our)\s+(?:contacts?|calendar|reminders?|photos?|chats?|conversations?|location|phone|battery)\b|\b(?:my|our)\s+(?:chat|conversation)\s+history\b/i.test(text)
       && /^(?:find|give|suggest|generate|come up with)\s+(?:me\s+)?(?:a|an|the)?\s*(?:good|better|best|kind|simple|polite|practical)\s+way\s+to\b/i.test(text));
 }
 

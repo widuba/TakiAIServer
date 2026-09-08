@@ -121,6 +121,20 @@ detached shadow mode (`canaryPercent: 0`, `shadowPercent: 1`,
 
 ## v23 verification — September 8, 2026
 
+## v25 verification — September 8, 2026
+
+The v25 adversarial pass closed a precedence regression introduced by the v24
+creative-generation rule: private phrases such as “find examples in my chat
+history,” “find names for my contacts,” and “find options on my calendar” now
+always remain on the native private-data path. The focused regression, full
+suite, typecheck, and all deterministic promotion corpora pass.
+
+The v25 evidence passes 395/395 server tests, 6,000/6,000 classifier cases,
+18,000/18,000 all-tier contracts, 500/500 long-chat cases, 144/144
+action-matrix cases, and 150/150 canonical routing cases. The live provider
+gate remains unchanged and closed until a successful quota-backed provider run
+exists.
+
 ## v24 verification — September 8, 2026
 
 The v24 conversational edge pass fixed six additional gaps found by a fresh
