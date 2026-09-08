@@ -56,7 +56,7 @@ import { clientIpForRequest, locationForRequest, mergeIpLocations } from "./src/
 // Health/version evidence for the staged Taki 3.0 build. Keep this distinct
 // from the rollout flag so a deployed artifact can be identified even while
 // all customer traffic remains on the compatibility path.
-const SERVER_VERSION = "2026-09-07-taki-3.0-staged-v19";
+const SERVER_VERSION = "2026-09-07-taki-3.0-staged-v20";
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
 // Render. (The purchase-simulating grant endpoint was removed when real
