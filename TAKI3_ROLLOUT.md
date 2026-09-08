@@ -147,6 +147,11 @@ smoke still needs a successful, quota-backed request before promotion. The
 release remains shadow-only until the provider quality, p95, cost, and
 rollback evidence token is issued for the committed release.
 
+Commit `f37c6d8` is pushed to `origin/main`. Render health now serves
+`2026-09-08-taki-3.0-staged-v24` with OpenAI selected, Taki 3.0 in detached
+shadow mode (`canaryPercent: 0`, `shadowPercent: 1`, `promotionReady: false`,
+`reason=readiness_flag_missing`, `liveUserImpact=none`).
+
 The v23 edge pass closes five additional routing gaps found by the 148-case
 natural-language sweep: definitions containing a word such as “current” stay
 timeless, private chat searches use the device search action, appointment
