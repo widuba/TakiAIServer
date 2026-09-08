@@ -430,9 +430,11 @@ function safetyLikeMessage(message: string): boolean {
   if (!text) return false;
   const emergencyMedication = /\b(?:what|which|how much|what dosage|what dose|how many)\b.{0,100}\b(?:dose|dosage|take|medication|medicine|pill|drug)s?\b.{0,100}\b(?:chest pain|can't breathe|cannot breathe|shortness of breath|heart attack)\b/i.test(text)
     || /\b(?:dose|dosage|take|medication|medicine|pill|drug)s?\b.{0,120}\b(?:chest pain|can't breathe|cannot breathe|shortness of breath|heart attack)\b/i.test(text)
-    || /\b(?:chest pain|can't breathe|cannot breathe|shortness of breath|heart attack)\b.{0,120}\b(?:dose|dosage|take|medication|medicine|pill|drug)s?\b/i.test(text);
+    || /\b(?:chest pain|can't breathe|cannot breathe|shortness of breath|heart attack)\b.{0,120}\b(?:dose|dosage|take|medication|medicine|pill|drug)s?\b/i.test(text)
+    || /\b(?:overdos(?:e|ing)|unconscious|not breathing|seizure|heavy bleeding|bleeding badly)\b/i.test(text);
   if (emergencyMedication) return true;
-  const dangerous = /\b(?:kill|hurt|harm|attack|stalk(?:ing)?|dox|steal|hack|break into|bomb|explosive|weapon|weaponize|malware|ransomware|phish(?:ing)?|poison|household chemical)\b/.test(text);
+  const dangerous = /\b(?:kill|hurt|harm|attack|stalk(?:ing)?|dox|steal|hack|break into|bomb|explosive|weapon|weaponize|malware|ransomware|phish(?:ing)?|poison|household chemical|napalm|detonator|drug someone|knock someone out|strangle|kidnap|evade police|hide stolen goods|forge\s+(?:a\s+)?passport|fake money|pick a lock|security alarm|spyware|keylogger|clone a credit card|tax fraud|launder money|blackmail|extort|track someone|botnet|exploit|bypass a login|password hash|ddos|sql injection|tamper|sabotage|start a fire|flamethrower|ammunition|firearm|modify\s+(?:a\s+)?(?:gun|firearm)|suicide|self[- ]?harm)\b/.test(text)
+    || /\bend(?:ing)?\s+my\s+life\b/.test(text);
   if (!dangerous) return false;
   const selfHarm = /\b(?:i|me|myself)\s+(?:want|plan|intend|am going|might|may|feel like|thinking about|considering)\s+(?:to\s+)?(?:die|kill|hurt|harm|end(?:ing)?\s+my\s+life|self[- ]?harm)\b/i.test(text)
     || /\b(?:kill|hurt|harm)\s+myself\b|\bend\s+my\s+life\b/i.test(text);
@@ -442,10 +444,10 @@ function safetyLikeMessage(message: string): boolean {
   // Defensive, preventive, historical, and recovery questions should remain
   // answerable. A protective verb by itself does not make a harmful request
   // safe: "how do I protect a bomb" still needs the safety path.
-  const defensive = /\b(?:prevent|prevention|protect|defend|recover|recovery|detect|recognize|report|avoid|remove|secure|harden|patch|warning|safety|safe)\b/.test(text)
-    && !/\b(?:make|build|buy|assemble|mix|combine|deploy|execute|detonate|weaponize)\b/.test(text);
+  const defensive = /\b(?:prevent|prevention|protect|defend|recover|recovery|detect|recognize|report|avoid|remove|secure|harden|patch|warning|safety|safe|safely|storage|handling|authorized|authorization|permission|my own|our own|defensive|defensively|penetration test|pentest|security test|sandbox|lab|history|historical|fictional|fiction|novel|movie|story|discuss|explain|what is|why)\b/.test(text)
+    && !/\b(?:make|build|buy|assemble|mix|combine|deploy|execute|detonate|weaponize|install|create|forge|clone|tamper|sabotage|modify|start)\b/.test(text);
   if (defensive) return false;
-  const target = "(?:kill|hurt|harm|attack|stalk(?:ing)?|dox|steal|hack|break into|bomb|explosive|weapon|weaponize|malware|ransomware|phish(?:ing)?|poison|household chemical)";
+  const target = "(?:kill|hurt|harm|attack|stalk(?:ing)?|dox|steal|hack|break into|bomb|explosive|weapon|weaponize|malware|ransomware|phish(?:ing)?|poison|household chemical|napalm|detonator|drug someone|knock someone out|strangle|kidnap|evade police|hide stolen goods|forge\\s+(?:a\\s+)?passport|fake money|pick a lock|security alarm|spyware|keylogger|clone a credit card|tax fraud|launder money|blackmail|extort|track someone|botnet|exploit|bypass a login|password hash|ddos|sql injection|tamper|sabotage|start a fire|flamethrower|ammunition|firearm|modify\\s+(?:a\\s+)?(?:gun|firearm)|suicide|self[- ]?harm)";
   return new RegExp(`\\b(?:how (?:do|can|to)|tell me how|give me|help me)\\b.{0,160}\\b${target}\\b`).test(text)
     || new RegExp(`\\b(?:${target}|make|build|buy|use|assemble|mix|combine|deploy|execute|detonate|weaponize)\\b.{0,120}\\b(?:${target})\\b`).test(text);
 }
