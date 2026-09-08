@@ -118,3 +118,35 @@ Commit `b1c2556` is pushed to `origin/main`. Render now serves
 detached shadow mode (`canaryPercent: 0`, `shadowPercent: 1`,
 `promotionReady: false`, `reason=readiness_flag_missing`,
 `liveUserImpact=none`).
+
+## v17 verification — September 7, 2026
+
+The v17 pass came from an additional 90-case natural-language sweep. It fixed
+generic reminder/calendar advice being treated as a private lookup, instructional
+“How do I …?” questions being treated as actions, example/template requests
+starting an action path, Japan border-regulation wording missing fresh research,
+and undo/recent-activity questions falling through to a provider. The expanded
+sweep now passes 90/90.
+
+The complete server suite passes 348/348 and TypeScript typecheck passes. The
+refreshed deterministic evidence passes 6,000/6,000 classifier cases (p50
+0.265 ms, p95 0.534 ms), 18,000/18,000 all-tier strict contracts (aggregate
+p50 0.287 ms, p95 0.580 ms), 500/500 long-chat cases with 1,502 history turns
+(p50 1.193 ms, p95 2.968 ms), 144/144 action-matrix cases, and 150/150
+canonical routing cases. Artifacts: `/tmp/taki3-6000-1788831185463.json`,
+`/tmp/taki3-contract-6000-1788831190151.json`,
+`/tmp/taki3-long-chat-1788831184026.json`, and
+`/tmp/taki3-150-routing-regression-v17.json`.
+
+The final v17 authenticated live smoke again reached Gemini but all 8
+provider-eligible cases returned typed HTTP 429 `ai_quota`; the 4 local
+safety/clarification/delegation cases passed. Provider p50 was 119.885 ms,
+p95 250.837 ms, and measured cost was $0.00 because no provider request
+succeeded. Artifact: `/tmp/taki3-live-smoke-1788831377446.json`. The real
+provider gate remains closed.
+
+Commit `082f032` is pushed to `origin/main`. Render serves
+`2026-09-07-taki-3.0-staged-v17` with OpenAI selected and Taki 3.0 still in
+detached shadow mode (`canaryPercent: 0`, `shadowPercent: 1`,
+`promotionReady: false`, `reason=readiness_flag_missing`,
+`liveUserImpact=none`).
