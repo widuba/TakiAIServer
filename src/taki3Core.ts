@@ -280,7 +280,11 @@ function instructionalHowLikeMessage(message: string): boolean {
   // real device action or a current-schedule lookup.
   return /^(?:(?:can|could|would|will)\s+you\s+)?(?:(?:please|maybe|possibly|just)\s+)*(?:explain|teach|show\s+me\s+how|tell\s+me\s+how|walk\s+me\s+through|describe)\b/i.test(text)
     || /\b(?:explain|teach|show\s+me\s+how|tell\s+me\s+how|walk\s+me\s+through)\b/i.test(text)
-    || /\b(?:know|understand|learn)\s+how\b/i.test(text);
+    || /\b(?:know|understand|learn)\s+how\b/i.test(text)
+    // "How do I ...?" asks for instructions, even when the subject is a
+    // private capability. It must not be mistaken for a request to execute
+    // the capability on the user's device.
+    || /^how\s+(?:do|can|should|would)\s+(?:i|you|one)\b/i.test(text);
 }
 
 function explicitResearchLikeMessage(message: string): boolean {
@@ -307,6 +311,9 @@ function actionLikeMessage(message: string): boolean {
   // “Send me an example/template…” asks for writing help. The word “send”
   // must not turn an answer request into an outbound message action.
   if (/\b(?:send|share|give)\s+me\s+(?:an?\s+)?(?:example|sample|template|draft|version|idea|copy)\b/i.test(text)) return false;
+  // The same applies to "show me an example/template". This is an answer
+  // request, not a private lookup merely because it begins with "show".
+  if (/\b(?:show|give|provide|write)\s+me\s+(?:an?\s+)?(?:example|sample|template|draft|version|idea|copy)\b/i.test(text)) return false;
   // "Remind me what we discussed" asks the assistant to recall the chat. It
   // must not become a device reminder just because it starts with "remind me".
   if (/^remind\s+me\s+(?:what|why|how|when|where|who|whether|if)\b/i.test(text)
@@ -318,6 +325,11 @@ function actionLikeMessage(message: string): boolean {
   // Broad calendar advice is conversation. A lookup with an event, meeting,
   // or appointment remains a private-device action below.
   if (/^(?:what|how)\s+should\s+i\s+do\s+(?:about|with)\s+(?:my|our)\s+calendar\b/i.test(text)) return false;
+  // Personal nouns can also appear in generic advice. Do not turn questions
+  // about organizing or managing reminders/calendar data into a lookup when
+  // the user is asking for a method rather than asking to see the data.
+  if (/^(?:what|how|which|why|can|could)\b.{0,90}\b(?:organize|manage|sort|prioritize|set\s+up|use|improve|clean\s+up|structure|plan)\b/i.test(text)
+    && /\b(?:my|our)\s+(?:calendar|reminders?|contacts?|photos?)\b/i.test(text)) return false;
   // Educational "show me how" requests are conversation, even though "show"
   // is also used by private-device lookups handled by the compatibility path.
   if (/\bshow\s+me\s+how\b/i.test(text)) return false;
@@ -369,6 +381,11 @@ function actionLikeMessage(message: string): boolean {
   // than a venue noun ("Where should I eat in my area?"). Route them through
   // Maps/device search so the answer uses the user's actual location.
   if (/^(?:what|where|which|recommend|suggest|show|find)\b.{0,100}\b(?:eat|dine|dining|food|breakfast|lunch|dinner)\b.{0,40}\b(?:near me|nearby|around me|in my area|close to me)\b/i.test(text)) return true;
+  // Undo and recent-activity checks are model-free native actions. Keep the
+  // exact supported phrasings here so they never reach a provider that could
+  // invent an action or claim an unsupported operation completed.
+  if (/^(?:undo|undo that|undo the last (?:thing|action)|take that back|revert that|cancel what you just did)\b/i.test(text)) return true;
+  if (/^(?:what did you just do|what have you (?:just )?done(?: on my (?:phone|iphone))?|what did (?:you|i) do (?:recently|today|earlier|last)(?:\s+\w+)?|what have (?:you|i) done (?:recently|today|so far)|did that (?:work|complete|succeed)|what happened with that|show(?: me)? (?:your |my )?(?:recent activity|recent actions|action history)|(?:my )?recent activity)[.!?]*$/i.test(text)) return true;
   // Commands and polite commands are deliberately conservative. A sentence
   // such as “help me write a text” remains conversational; “text Mom…” delegates.
   if (/^(?:(?:please|hey|okay|ok)\s+)?(?:send|text|message|email|call|add|put|schedule|save|create|delete|remove|cancel|move|update|open|navigate|directions?|take|turn|play|pause|resume|log|track|alert|remind|remember|forget|copy|export|share|book|order|cook|set|start|stop|run|control|lock|unlock)\b/i.test(text)) return true;

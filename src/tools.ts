@@ -2399,9 +2399,9 @@ export function looksLikeFreshFactQuestion(message: string) {
     && asksForInformation
     || (asksForInformation && /\b(?:turn left|turn right|u[- ]?turn|red light|speed limit|parking rule|driving rule|traffic rule)\b/.test(m));
   const mutableTravel =
-    /\b(visa|passport|entry requirements?|entry rules?|entry regulations?|travel advisory|travel requirements?|border rules?)\b/.test(m)
+    /\b(visa|passport|entry requirements?|entry rules?|entry regulations?|travel advisory|travel requirements?|border rules?|border regulations?|border policies?|customs rules?)\b/.test(m)
     && ( /\b(need|required?|requirements?|valid|validity|renew|expir|travel|enter|visit|allowed|can i|should i)\b/.test(m)
-      || /\bentry rules?|entry regulations?|border rules?\b/.test(m) );
+      || /\bentry rules?|entry regulations?|border rules?|border regulations?|border policies?|customs rules?\b/.test(m) );
   const mutableGuidanceOrSafety =
     /\b(medical guidance|health guidance|recommendations?|guidelines?|dosage|drug interaction|recall|safety notice)\b/.test(m)
     && asksForInformation;

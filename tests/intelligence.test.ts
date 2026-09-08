@@ -85,6 +85,7 @@ test("changeable public facts always route to current research", () => {
     "Is it legal to turn left on red in Georgia?",
     "What are the current CDC recommendations?",
     "What are the entry requirements for Japan?",
+    "What are Japan's border regulations?",
     "Was there a recall on this model?",
     "Why did NASA supposedly announce this yesterday?",
     "Catch me up on the election this week.",

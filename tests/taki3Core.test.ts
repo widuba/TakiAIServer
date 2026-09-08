@@ -64,10 +64,21 @@ test("Taki 3.0 classifier keeps conversation, research, actions, safety, and amb
   assert.equal(classifyTaki3Request(state("Can you show me how to schedule a workout?")).kind, "direct");
   assert.equal(classifyTaki3Request(state("Can you send me an example of a polite email?")).kind, "direct");
   assert.equal(classifyTaki3Request(state("What should I do about my calendar?")).kind, "direct");
+  assert.equal(classifyTaki3Request(state("What is a good way to organize my reminders?")).kind, "direct");
+  assert.equal(classifyTaki3Request(state("How do I search my contacts manually?")).kind, "direct");
+  assert.equal(classifyTaki3Request(state("Could you show me an example of a polite reminder?")).kind, "direct");
   assert.equal(classifyTaki3Request(state("Look up my next calendar event and tell me where it is.")).kind, "delegate");
   assert.equal(classifyTaki3Request(state("I want to call this a success.")).kind, "direct");
   assert.equal(classifyTaki3Request(state("Turn this into a strong resume bullet: I helped customers.")).kind, "direct");
   assert.equal(classifyTaki3Request(state("Could you turn these notes into a checklist, please?")).kind, "direct");
+  for (const request of [
+    "Undo that last action.",
+    "What did I do recently?",
+    "Show me recent activity",
+    "Did that work?"
+  ]) {
+    assert.equal(classifyTaki3Request(state(request)).kind, "delegate", request);
+  }
   for (const request of [
     "I'd like to text Chris that I am running late.",
     "Would it be possible for you to text Chris that I am running late?",
