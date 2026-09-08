@@ -345,6 +345,60 @@ function personalAdviceLikeMessage(message: string): boolean {
     || /^(?:what|which)\s+(?:would|could)\s+be\s+(?:a\s+)?good\s+(?:thing|meal|outfit|option)\s+for\s+(?:tonight|today|this\s+(?:morning|afternoon|evening|weekend))\b/i.test(text);
 }
 
+function multilingualMessageText(message: string): string {
+  return String(message || "").normalize("NFKC").toLocaleLowerCase().replace(/\s+/g, " ").trim();
+}
+
+// The model can answer multilingual conversation directly, but the model-free
+// safety/action/current-fact boundary must recognize common languages too. These
+// patterns stay intentionally narrow: they cover explicit operational phrases
+// without trying to translate every ordinary sentence.
+function multilingualSafetyLikeMessage(message: string): boolean {
+  const text = multilingualMessageText(message);
+  if (!text) return false;
+  return /\b(?:c[oó]mo|como)\s+(?:hago|hacer|construyo|construir)\s+(?:una?\s+)?bomba\b/u.test(text)
+    || /\b(?:piratear|hackear)\b.{0,80}\b(?:cuenta|contrase(?:ñ|n)a|sistema|ordenador|computadora)\b/u.test(text)
+    || /\bcomment\s+(?:faire|construire)\s+une?\s+bombe\b/u.test(text)
+    || /\bcomment\s+(?:pirater|hacker)\b.{0,80}\b(?:compte|mot de passe|syst[eè]me)\b/u.test(text)
+    || /\bwie\s+(?:baue|mache|stelle)\s+ich\s+(?:eine?\s+)?bombe\b/u.test(text)
+    || /\b(?:hacken|knacke)\b.{0,80}\b(?:konto|passwort|system)\b/u.test(text)
+    || /(?:怎么|如何|怎样)(?:制作|做|制造)(?:一个)?炸弹/u.test(text)
+    || /(?:黑进|入侵).{0,20}(?:账户|账号|密码|系统)/u.test(text)
+    || /(?:爆弾).{0,12}(?:作る|作り方)|(?:ハッキング|乗っ取る).{0,20}(?:アカウント|パスワード)/u.test(text);
+}
+
+function multilingualActionLikeMessage(message: string): boolean {
+  const text = multilingualMessageText(message);
+  if (!text) return false;
+  return /(?:env[ií]a(?:le|me)?|m[aá]ndame|manda|mandar)(?:\s|,).{0,90}\b(?:mensaje|sms|texto)\b/u.test(text)
+    || /\b(?:recu[eé]rdame|recuerdame|recordarme)\b/u.test(text)
+    || /(?:qu[eé]|que|mostrar|muestra|ver|revisar|buscar)(?:\s|,).{0,70}\b(?:mi|mis)\s+calendario\b/u.test(text)
+    || /\b(?:envoie|envoie-moi|envoyer)\b.{0,90}\bmessage\b/u.test(text)
+    || /\brappelle-moi\b.{0,70}\b(?:demain|aujourd'hui|agenda|calendrier)\b/u.test(text)
+    || /\b(?:mon|ma)\s+(?:agenda|calendrier)\b.{0,60}\b(?:aujourd['’]hui|demain|prochain|prochaine|rendez-vous|quand|quoi|o[uù])\b/u.test(text)
+    || /\b(?:aujourd['’]hui|demain|qu['’]est-ce|quel(?:le)?)\b.{0,70}\b(?:mon|ma)\s+(?:agenda|calendrier)\b/u.test(text)
+    || /\b(?:schick|sende)\b.{0,90}\b(?:nachricht|sms)\b/u.test(text)
+    || /\berinnere mich\b/u.test(text)
+    || /\b(?:mein|meinem)\s+kalender\b.{0,60}\b(?:heute|morgen|was|wann|welcher|n[aä]chsten)\b/u.test(text)
+    || /\b(?:was steht|was ist|wann ist|welcher)\b.{0,70}\b(?:mein|meinem)\s+kalender\b/u.test(text)
+    || /(?:给|向).{0,20}(?:发短信|发消息|发个消息)/u.test(text)
+    || /提醒我/u.test(text)
+    || /(?:我的日历|我日历).{0,30}(?:今天|明天|什么|哪些|下一个|会议|日程)/u.test(text)
+    || /(?:メッセージ|sms).{0,12}(?:して|送って|送る)/iu.test(text)
+    || /(?:思い出させて|リマインドして|覚えておいて)/u.test(text)
+    || /カレンダー.{0,30}(?:今日|明日|何|次|予定|会議)/u.test(text);
+}
+
+function multilingualResearchLikeMessage(message: string): boolean {
+  const text = multilingualMessageText(message);
+  if (!text) return false;
+  return /\b(?:precio|precios)\s+(?:actual|actuales|ahora)|\b(?:tiempo|clima)\b.{0,60}\b(?:hoy|ahora|actual)\b|\b(?:últimas|ultimas)\s+noticias\b/u.test(text)
+    || /\bprix\s+(?:actuel|actuelle|actuels|actuelles)\b|\b(?:m[eé]t[eé]o|temps)\b.{0,60}\b(?:aujourd['’]hui|maintenant|actuelle)\b|\bderni[eè]res?\s+nouvelles\b/u.test(text)
+    || /\b(?:aktuellen|aktuelle)\s+preis\b|\bwetter\b.{0,60}\b(?:heute|jetzt|aktuell)\b|\bneueste\s+n(?:a|ä)chrichten\b/u.test(text)
+    || /(?:当前|最新|今天|今日|现在).{0,30}(?:价格|天气|新闻|首席执行官|CEO)|(?:价格|天气|新闻).{0,30}(?:当前|最新|今天|今日|现在)/u.test(text)
+    || /(?:現在|最新|今日|今).{0,30}(?:価格|天気|ニュース|CEO)|(?:価格|天気|ニュース).{0,30}(?:現在|最新|今日|今)/u.test(text);
+}
+
 function actionLikeMessage(message: string): boolean {
   const text = String(message || "").trim();
   if (!text) return false;
@@ -553,13 +607,14 @@ export function classifyTaki3Request(state: ConversationState): Taki3Classificat
   const base = { query: message, normalizedQuery: normalized };
   if (!message) return { ...base, kind: "clarify", reason: "empty" };
   if (clarificationLikeMessage(message, state)) return { ...base, kind: "clarify", reason: "missing_context" };
-  if (safetyLikeMessage(message) || safetyLikeMessage(normalized)) return { ...base, kind: "safety", reason: "high_risk_request" };
+  if (safetyLikeMessage(message) || safetyLikeMessage(normalized) || multilingualSafetyLikeMessage(message) || multilingualSafetyLikeMessage(normalized)) return { ...base, kind: "safety", reason: "high_risk_request" };
   if (promptInjectionLikeMessage(message) || promptInjectionLikeMessage(normalized)) return { ...base, kind: "safety", reason: "prompt_injection" };
   if (directTransformationLikeMessage(normalized)) return { ...base, kind: "direct", reason: "writing_or_transformation" };
   if (instructionalHowLikeMessage(normalized)) return { ...base, kind: "direct", reason: "instructional_explanation" };
   if (timelessDefinitionLikeMessage(normalized)) return { ...base, kind: "direct", reason: "timeless_definition" };
   if (conversationalRecallLikeMessage(normalized)) return { ...base, kind: "direct", reason: "conversation_recall" };
-  if (actionLikeMessage(message) || actionLikeMessage(normalized)) return { ...base, kind: "delegate", reason: "device_or_account_action" };
+  if (multilingualActionLikeMessage(message) || multilingualActionLikeMessage(normalized) || actionLikeMessage(message) || actionLikeMessage(normalized)) return { ...base, kind: "delegate", reason: "device_or_account_action" };
+  if (multilingualResearchLikeMessage(message) || multilingualResearchLikeMessage(normalized)) return { ...base, kind: "research", reason: "multilingual_fresh_or_explicit_fact" };
   if (explicitResearchLikeMessage(normalized)) return { ...base, kind: "research", reason: "explicit_search_or_public_event" };
   if (underspecifiedFreshnessLikeMessage(normalized)) return { ...base, kind: "clarify", reason: "missing_research_subject" };
   if (personalAdviceLikeMessage(normalized)) return { ...base, kind: "direct", reason: "personal_advice" };

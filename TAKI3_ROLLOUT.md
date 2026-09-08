@@ -121,6 +121,21 @@ detached shadow mode (`canaryPercent: 0`, `shadowPercent: 1`,
 
 ## v23 verification — September 8, 2026
 
+## v26 verification — September 8, 2026
+
+The v26 multilingual boundary pass fixed a real routing gap: common Spanish,
+French, German, Chinese, and Japanese safety requests, private actions, and
+current-fact questions were previously falling through to ordinary English
+conversation. Narrow language-aware guards now route those cases to safety,
+native actions, or grounded research while leaving ordinary multilingual chat
+direct. The focused multilingual regressions and complete deterministic gates
+pass.
+
+The v26 evidence passes 396/396 server tests, 6,000/6,000 classifier cases,
+18,000/18,000 all-tier contracts, 500/500 long-chat cases, 144/144
+action-matrix cases, and 150/150 canonical routing cases. The real provider
+gate remains closed until a successful quota-backed provider run exists.
+
 ## v25 verification — September 8, 2026
 
 The v25 adversarial pass closed a precedence regression introduced by the v24
