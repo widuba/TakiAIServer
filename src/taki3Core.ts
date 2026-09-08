@@ -761,8 +761,13 @@ function answerPlan(state: ConversationState, answer: Taki3Answer, sources: Assi
 }
 
 function providerTimeoutMs(state: ConversationState, kind: "direct" | "research"): number {
-  if (kind === "research") return state.voiceMode ? 13_000 : 22_000;
-  return state.voiceMode ? 9_000 : 15_000;
+  // Text turns can wait a little longer for the selected reasoning tier to
+  // finish. The previous 15/22 second outer limits still allowed the provider
+  // attempt to time out first at 8/10 seconds, turning otherwise valid Metron
+  // and Sophos answers into user-facing timeout fallbacks. Voice keeps its
+  // shorter interaction budget.
+  if (kind === "research") return state.voiceMode ? 13_000 : 28_000;
+  return state.voiceMode ? 9_000 : 20_000;
 }
 
 function maxOutputTokens(state: ConversationState): number {
@@ -811,7 +816,7 @@ export async function runTaki3Plan(
       maxOutputTokens: maxOutputTokens(state),
       openAIReasoningEffort: selected.effort,
       thinkingConfig: { thinkingLevel: selected.effort === "medium" ? "LOW" : "MINIMAL" },
-      providerAttemptTimeoutMs: state.voiceMode ? 6_500 : kind === "research" ? 10_000 : 8_000,
+      providerAttemptTimeoutMs: state.voiceMode ? 6_500 : kind === "research" ? 16_000 : 12_000,
       ...((kind === "research" || (!state.voiceMode && answerRoutingFor(classification.normalizedQuery || classification.query, false).policy === "offered"))
         ? {
             tools: [{ googleSearch: {} }],
