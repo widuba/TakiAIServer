@@ -278,7 +278,9 @@ function instructionalHowLikeMessage(message: string): boolean {
   // These are requests for an explanation or tutorial. A capability verb later
   // in the sentence ("explain how to send…") must not turn the lesson into a
   // real device action or a current-schedule lookup.
-  return /^(?:(?:can|could|would|will)\s+you\s+)?(?:(?:please|maybe|possibly|just)\s+)*(?:explain|teach|show\s+me\s+how|tell\s+me\s+how|walk\s+me\s+through|describe)\b/i.test(text);
+  return /^(?:(?:can|could|would|will)\s+you\s+)?(?:(?:please|maybe|possibly|just)\s+)*(?:explain|teach|show\s+me\s+how|tell\s+me\s+how|walk\s+me\s+through|describe)\b/i.test(text)
+    || /\b(?:explain|teach|show\s+me\s+how|tell\s+me\s+how|walk\s+me\s+through)\b/i.test(text)
+    || /\b(?:know|understand|learn)\s+how\b/i.test(text);
 }
 
 function explicitResearchLikeMessage(message: string): boolean {
@@ -319,9 +321,57 @@ function actionLikeMessage(message: string): boolean {
   // Educational "show me how" requests are conversation, even though "show"
   // is also used by private-device lookups handled by the compatibility path.
   if (/\bshow\s+me\s+how\b/i.test(text)) return false;
+  // Natural preference and contingency phrasing still carries an executable
+  // request. Keep the verb immediately after the lead so an educational
+  // sentence such as "I'd like to know how to call a function" stays direct.
+  const executableVerb = "(?:send|text|message|email|call|add|put|schedule|save|create|delete|remove|cancel|move|update|open|navigate|directions?|take|turn|play|pause|resume|log|track|alert|remind|remember|copy|export|share|book|order|cook|set|start|stop|run|control|lock|unlock)";
+  const educationalPhrase = /\b(?:explain|teach|show\s+me\s+how|tell\s+me\s+how|walk\s+me\s+through)\b/i.test(text)
+    || /\b(?:know|understand|learn)\s+(?:how|why|what|whether|if)\b/i.test(text);
+  if (educationalPhrase) return false;
+  if (new RegExp(`^(?:i['’]d\\s+(?:like|love)|i\\s+(?:would\\s+like|would\\s+love))\\s+(?:you\\s+)?(?:to\\s+)?${executableVerb}\\b`, "i").test(text)) return true;
+  if (/^(?:would|could)\s+it\s+be\s+possible(?:\s+for\s+you)?\s+to\s+/i.test(text)
+    && new RegExp(`^(?:would|could)\\s+it\\s+be\\s+possible(?:\\s+for\\s+you)?\\s+to\\s+${executableVerb}\\b`, "i").test(text)) return true;
+  if (/^(?:is\s+there\s+any\s+chance|would\s+it\s+be\s+okay)\s+(?:for\s+you\s+)?(?:to\s+|if\s+you\s+could\s+|you\s+could\s+)/i.test(text)
+    && new RegExp(`^(?:is\\s+there\\s+any\\s+chance|would\\s+it\\s+be\\s+okay)\\s+(?:for\\s+you\\s+)?(?:to\\s+|if\\s+you\\s+could\\s+|you\\s+could\\s+)${executableVerb}\\b`, "i").test(text)) return true;
+  if (/^(?:i\s+was\s+)?hoping\s+you\s+could\s+|^i\s+was\s+wondering\s+(?:if|whether)\s+you\s+could\s+/i.test(text)
+    && new RegExp(`^(?:i\\s+was\\s+)?hoping\\s+you\\s+could\\s+${executableVerb}\\b|^i\\s+was\\s+wondering\\s+(?:if|whether)\\s+you\\s+could\\s+${executableVerb}\\b`, "i").test(text)) return true;
+  if (/^i\s+would\s+appreciate\s+it\s+if\s+you\s+could\s+/i.test(text)
+    && new RegExp(`^i\\s+would\\s+appreciate\\s+it\\s+if\\s+you\\s+could\\s+${executableVerb}\\b`, "i").test(text)) return true;
+  if (new RegExp(`^(?:i['’]d\\s+appreciate|i\\s+would\\s+appreciate)\\s+it\\s+if\\s+you\\s+could\\s+${executableVerb}\\b`, "i").test(text)) return true;
+  if (new RegExp(`^(?:could\\s+i\\s+get\\s+you\\s+to|can\\s+i\\s+have\\s+you)\\s+${executableVerb}\\b`, "i").test(text)) return true;
+  if (new RegExp(`^(?:i['’]d\\s+love\\s+it|i['’]d\\s+be\\s+grateful)\\s+if\\s+you\\s+could\\s+${executableVerb}\\b`, "i").test(text)) return true;
+  if (new RegExp(`^if\\s+you\\s+could\\s+${executableVerb}\\b`, "i").test(text)) return true;
+  if (/^i\s+was\s+hoping\s+to\s+(?:get|have)\s+(?:me\s+)?directions?\b/i.test(text)) return true;
+  if (/^(?:i\s+was\s+hoping|i\s+was\s+wondering\s+(?:if|whether))\s+you\s+could\s+(?:show|see|view|check|find|search)\b.{0,80}\b(?:my\s+(?:calendar|reminders?|contacts?|photos?|chats?|(?:phone\s+)?battery|steps?|sleep)|near\s+me|nearby|on\s+maps?)\b/i.test(text)) return true;
+  // "Take me …" is the common spoken equivalent of asking for navigation.
+  if (/^take\s+me\s+(?:to|there|home|back)\b/i.test(text)) return true;
+  // A scheduled reminder is often phrased as a noun request instead of the
+  // imperative "remind me". Require a time cue so chat-recall questions remain
+  // direct conversation.
+  if (/^(?:i['’]d\s+|i\s+(?:would\s+like|want|need)\s+|we\s+(?:would\s+like|want|need)\s+)\b.{0,45}\breminder\b/i.test(text)
+    && /\b(?:today|tonight|tomorrow|this\s+(?:morning|afternoon|evening|week)|at\s+\d|on\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|every\s+)/i.test(text)) return true;
+  // Indirect state changes and saved-object requests are still device work.
+  if (/^(?:i['’]d\s+|i\s+(?:would\s+like|want|need)\s+|we\s+(?:would\s+like|want|need)\s+)\b.{0,70}\b(?:lights?|lamps?|thermostat|fan|door|lock|flashlight|volume)\b.{0,25}\b(?:turned|switched|set|locked|unlocked|on|off)\b/i.test(text)) return true;
+  if (/^(?:i['’]d\s+|i\s+(?:would\s+like|want|need)\s+|we\s+(?:would\s+like|want|need)\s+)\b.{0,40}\b(?:directions?|navigate|take\s+me)\b/i.test(text)) return true;
+  if (/^(?:i['’]d\s+|i\s+(?:would\s+like|want|need)\s+|we\s+(?:would\s+like|want|need)\s+)\b.{0,45}\b(?:search|find|look\s+up)\b.{0,60}\b(?:my\s+(?:contacts?|calendar|reminders?|photos?|chats?)|near\s+me|nearby|on\s+maps?)\b/i.test(text)) return true;
+  if (/^(?:i['’]d\s+|i\s+(?:would\s+(?:like|love)|want|need)\s+|we\s+(?:would\s+(?:like|love)|want|need)\s+)\b.{0,45}\b(?:search|find|look\s+up)\b.{0,60}\b(?:my\s+(?:contacts?|calendar|reminders?|photos?|chats?)|near\s+me|nearby|on\s+maps?)\b/i.test(text)) return true;
+  if (/^(?:i['’]d\s+|i\s+(?:would\s+like|want|need)\s+|we\s+(?:would\s+like|want|need)\s+)\b.{0,35}\b(?:see|view|show)\b.{0,60}\bmy\s+(?:photos?|calendar|reminders?|contacts?|chats?|(?:phone\s+)?battery|steps?|sleep)\b/i.test(text)) return true;
+  if (/^(?:i['’]d\s+|i\s+(?:would\s+like|want|need)\s+|we\s+(?:would\s+like|want|need)\s+)\b.{0,35}\b(?:timer|countdown)\b/i.test(text)
+    && /\b(?:\d+|one|two|three|five|ten|fifteen|twenty|minute|minutes|second|seconds|hour|hours)\b/i.test(text)) return true;
+  if (/^(?:i['’]d\s+|i\s+(?:would\s+like|want|need)\s+|we\s+(?:would\s+like|want|need)\s+)\b.{0,45}\b(?:copied|saved|shared|added|logged)\b.{0,45}\b(?:clipboard|file|answer|list|habit|note|document)\b/i.test(text)) return true;
+  if (/^(?:i['’]d\s+|i\s+(?:would\s+like|want|need)\s+|we\s+(?:would\s+like|want|need)\s+)\b.{0,45}\b(?:clipboard|file|answer|list|habit|note|document)\b.{0,25}\b(?:copied|saved|shared|added|logged)\b/i.test(text)) return true;
+  if (/^(?:(?:please)\s+)?(?:can|could|would|will)\s+you\s+(?:get|give)\s+(?:me\s+)?directions?\b/i.test(text)) return true;
+  if (/^(?:(?:please)\s+)?(?:get|book|order)\s+(?:me\s+)?(?:an?\s+)?(?:uber|lyft|ride)\b/i.test(text)) return true;
+  if (/^(?:can|could|would|will)\s+you\s+make\s+(?:a|an)\s+(?:calendar\s+event|reminder|grocery\s+list|recipe)\b/i.test(text)) return true;
+  if (/^(?:can|could|would|will)\s+you\s+clear\b.{0,45}\b(?:completed|done|finished)\s+(?:reminders?|tasks?|todos?)\b/i.test(text)) return true;
+  if (/^(?:what|where|which|recommend|suggest|show|find)\b.{0,70}\b(?:restaurant|restaurants|coffee|cafe|cafes|bar|bars|hotel|hotels|pharmacy|pharmacies|store|stores|shop|shops|things to do)\b.{0,40}\b(?:near me|nearby|around me|in my area|close to me)\b/i.test(text)) return true;
+  // Location-aware food questions are often phrased with the activity rather
+  // than a venue noun ("Where should I eat in my area?"). Route them through
+  // Maps/device search so the answer uses the user's actual location.
+  if (/^(?:what|where|which|recommend|suggest|show|find)\b.{0,100}\b(?:eat|dine|dining|food|breakfast|lunch|dinner)\b.{0,40}\b(?:near me|nearby|around me|in my area|close to me)\b/i.test(text)) return true;
   // Commands and polite commands are deliberately conservative. A sentence
   // such as “help me write a text” remains conversational; “text Mom…” delegates.
-  if (/^(?:(?:please|hey|okay|ok)\s+)?(?:send|text|message|email|call|add|put|schedule|save|create|delete|remove|cancel|move|update|open|navigate|directions?|turn|play|pause|resume|log|track|alert|remind|remember|forget|copy|export|share|book|order|cook|set|start|stop|run|control|lock|unlock)\b/i.test(text)) return true;
+  if (/^(?:(?:please|hey|okay|ok)\s+)?(?:send|text|message|email|call|add|put|schedule|save|create|delete|remove|cancel|move|update|open|navigate|directions?|take|turn|play|pause|resume|log|track|alert|remind|remember|forget|copy|export|share|book|order|cook|set|start|stop|run|control|lock|unlock)\b/i.test(text)) return true;
   if (/^(?:can|could|would|will)\s+you\s+(?:(?:please|maybe|possibly|just)\s+)*(?:send|text|message|email|call|add|put|schedule|save|create|delete|remove|cancel|move|update|open|show|navigate|turn|play|log|track|alert|remind|remember|copy|export|share|book|order|cook|set|start|stop|run|control)\b/i.test(text)) return true;
   if (/^(?:can|could|would|will)\s+you\s+(?:(?:please|maybe|possibly|just)\s+)*(?:help me\s+)?(?:to\s+)?(?:send|text|message|email|call|add|put|schedule|save|create|delete|remove|cancel|move|update|open|show|navigate|turn|play|log|track|alert|remind|remember|copy|export|share|book|order|cook|set|start|stop|run|control)\b/i.test(text)) return true;
   if (/\b(?:can|could|would|will)\s+you\b.{0,60}\b(?:send|text|message|email|call|add|put|schedule|save|create|delete|remove|cancel|move|update|open|navigate|turn|play|log|track|alert|remind|remember|copy|export|share|book|order|cook|set|start|stop|run|control)\b/i.test(text)) return true;
@@ -331,12 +381,12 @@ function actionLikeMessage(message: string): boolean {
   if (/\b(?:find|search|look up)\b.{0,80}\b(?:near me|nearby|on maps?|in my calendar|in my reminders?|my contact|my photos?)\b/i.test(text)) return true;
   if (/^give\s+(?:me\s+)?directions?\b/i.test(text)) return true;
   if (/^(?:i|we)\s+(?:want|need|would like)\b.{0,60}\b(?:directions?|navigate|take me|drive me)\b/i.test(text)) return true;
-  if (/\b(?:my calendar|my reminders?|my contacts?|my photos?|my location|my battery|my steps?|my sleep|the flashlight|homekit)\b/i.test(text)
-    && /^(?:what|where|when|how|show|check|find|search|look up|open|is|are|can|could|would)\b/i.test(text)) return true;
+  if (/\b(?:my calendar|my reminders?|my contacts?|my photos?|my location|my (?:phone )?battery|battery\s+(?:on|of)\s+my\s+phone|my steps?|my sleep|my lost phone|my (?:lights?|lamps?|thermostat|locks?)|the flashlight|homekit)\b/i.test(text)
+    && /^(?:what|where|when|how|show|see|view|check|find|search|look up|open|is|are|can|could|would)\b/i.test(text)) return true;
   if (/\b(?:my|our)\s+(?:(?:next|upcoming|previous|last|today['’]s|tomorrow['’]s)\s+)?calendar\s+(?:events?|appointments?|meetings?)\b/i.test(text)
     && /^(?:what|where|when|which|show|check|find|search|look up|open|is|are|can|could|would|tell me|give me)\b/i.test(text)) return true;
   if (/\b(?:on my calendar|to my calendar|in my reminders?|to my clipboard|as a text file|on my lock screen)\b/i.test(text)
-    && /\b(?:add|put|save|create|copy|export|show|track|alert|remind|schedule)\b/i.test(text)) return true;
+    && /\b(?:add|put|save|create|copy|export|show|track|alert|remind|schedule|copied|saved|shared|added|logged)\b/i.test(text)) return true;
   return false;
 }
 

@@ -112,6 +112,28 @@ test("changeable public facts always route to current research", () => {
   }
 });
 
+test("natural current status questions force live research", () => {
+  for (const question of [
+    "When does the museum close?",
+    "What time does the store open?",
+    "What are the store hours?",
+    "Is the airport open?",
+    "Is there a sale at Costco?",
+    "How much is gas near me?",
+    "What time is the game?",
+    "What's the wait at the restaurant?",
+    "When is my flight boarding?",
+    "Is my flight delayed?",
+    "What is the status of my package?",
+    "Can I turn left on red in Georgia?",
+    "What are Japan's entry rules?",
+    "What is the weather like outside?",
+    "Will it rain this afternoon?"
+  ]) {
+    assert.equal(answerRoutingFor(question).policy, "forced", question);
+  }
+});
+
 test("explicit web-search language always requests research", () => {
   for (const request of [
     "Look it up",

@@ -2396,15 +2396,17 @@ export function looksLikeFreshFactQuestion(message: string) {
     /\b(latest news|breaking news|headlines?|news (?:on|about)|what(?:'s| is) happening|what happened (?:today|yesterday|this week)|update me on|catch me up on|developments? (?:in|on))\b/.test(m);
   const mutableLawOrRates =
     /\b(law|legal|illegal|regulation|policy|court ruling|executive order|tax(?:es)?|tax deadline|interest rate|mortgage rate)\b/.test(m)
-    && asksForInformation;
+    && asksForInformation
+    || (asksForInformation && /\b(?:turn left|turn right|u[- ]?turn|red light|speed limit|parking rule|driving rule|traffic rule)\b/.test(m));
   const mutableTravel =
-    /\b(visa|passport|entry requirements?|travel advisory|travel requirements?)\b/.test(m)
-    && /\b(need|required?|requirements?|valid|validity|renew|expir|travel|enter|visit|allowed|can i|should i)\b/.test(m);
+    /\b(visa|passport|entry requirements?|entry rules?|entry regulations?|travel advisory|travel requirements?|border rules?)\b/.test(m)
+    && ( /\b(need|required?|requirements?|valid|validity|renew|expir|travel|enter|visit|allowed|can i|should i)\b/.test(m)
+      || /\bentry rules?|entry regulations?|border rules?\b/.test(m) );
   const mutableGuidanceOrSafety =
     /\b(medical guidance|health guidance|recommendations?|guidelines?|dosage|drug interaction|recall|safety notice)\b/.test(m)
     && asksForInformation;
   const mutableAvailability =
-    /\b(schedule|opening hours|hours today|availability|available (?:today|now|this week)|sold out|tickets?|deadline|release date|airdate|premiere date|shipping date|service status|outage)\b/.test(m)
+    /\b(schedule|opening hours|business hours|operating hours|hours today|availability|available (?:today|now|this week)|sold out|tickets?|deadline|release date|airdate|premiere date|shipping date|service status|outage)\b/.test(m)
     && asksForInformation;
 
   if (superlative && (product || brand)) return true;
@@ -2482,6 +2484,42 @@ export function looksLikeCurrentRecommendationQuestion(message: string) {
 // stale model memory. Kept tight to avoid hijacking ordinary chat.
 export function looksLikeLiveInfoQuestion(message: string) {
   const m = message.toLowerCase();
+  const asksForInformation = /\b(?:who|what|when|where|why|how|which|is|are|was|were|does|do|did|can|could|should|will|tell me|show me|find|check|look up)\b/.test(m);
+
+  // Flight status is a current fact even when the user omits "right now".
+  // Keeping this in the shared live detector prevents an active Taki 3.0 turn
+  // from answering a coded flight question from model memory.
+  if (looksLikeFlightQuestion(message)) return true;
+
+  // Store/venue hours and open/closed status are inherently time-sensitive.
+  const venue = /\b(?:museum|store|shop|airport|restaurant|bank|office|library|gym|clinic|pharmacy|school|park|attraction|business|venue|theat(?:er|re)|dmv)\b/.test(m);
+  if (asksForInformation && /\b(?:when|what time|what are)\b.{0,60}\b(?:open|close|hours?|opening times?|business hours?|operating hours?)\b/.test(m)) return true;
+  if (asksForInformation && venue && /\b(?:open|closed|close)\b/.test(m)) return true;
+
+  // Local prices and availability change throughout the day, even without an
+  // explicit "today" cue.
+  if (/\b(?:gas|fuel|petrol)\b/.test(m) && /\b(?:price|cost|how much|near me|nearby|today|now|currently)\b/.test(m)) return true;
+  if (asksForInformation && /\b(?:wait(?:ing)?(?: time)?|queue|line|crowded|busy)\b/.test(m)
+    && /\b(?:today|now|currently|right now|at the moment|restaurant|dmv|airport|museum|store|clinic|hospital|venue)\b/.test(m)) return true;
+  if (asksForInformation && /\b(?:open|available)\b/.test(m) && /\b(?:late|tonight|today|now|currently|restaurant|store|shop|pharmacy|ticket|tickets?)\b/.test(m)) return true;
+
+  // Forecast wording is current even when a user leaves out the word
+  // "weather" (for example, "Will it rain this afternoon?").
+  if (/\b(?:weather|rain(?:ing)?|snow(?:ing)?|forecast|temperature|hot|cold)\b/.test(m)
+    && /\b(?:outside|today|tonight|tomorrow|this\s+(?:morning|afternoon|evening|week)|later|now|currently|right now|will|going to|forecast)\b/.test(m)) return true;
+
+  // Game start times are mutable public schedule facts, just like scores and
+  // standings below.
+  if (asksForInformation && /\bwhat time\b.{0,50}\b(?:game|match|race|fight|event|concert|show)\b/.test(m)) return true;
+
+  // A sale or promotion at a named retailer is a current availability fact.
+  if (asksForInformation && /\b(?:sale|deal|discount|promotion)\b/.test(m)
+    && /\b(?:at|from|near|this week|today|now)\b/.test(m)) return true;
+
+  // Package/order status is a current lookup, even when the tracking number is
+  // unavailable and the provider must ask for it.
+  if (asksForInformation && /\b(?:package|parcel|shipment|delivery|order|tracking)\b/.test(m)
+    && /\b(?:where|status|arriv|deliver|track|late|delay|when)\b/.test(m)) return true;
 
   // Live sports / competition state.
   if (/\bwho('?s| is| are)?\s+(winning|leading|ahead|in the lead)\b/.test(m)) return true;

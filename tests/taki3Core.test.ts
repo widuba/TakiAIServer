@@ -68,6 +68,51 @@ test("Taki 3.0 classifier keeps conversation, research, actions, safety, and amb
   assert.equal(classifyTaki3Request(state("I want to call this a success.")).kind, "direct");
   assert.equal(classifyTaki3Request(state("Turn this into a strong resume bullet: I helped customers.")).kind, "direct");
   assert.equal(classifyTaki3Request(state("Could you turn these notes into a checklist, please?")).kind, "direct");
+  for (const request of [
+    "I'd like to text Chris that I am running late.",
+    "Would it be possible for you to text Chris that I am running late?",
+    "I was hoping you could call Mom.",
+    "I was wondering whether you could send Chris a text.",
+    "Is there any chance you could email Alex the update?",
+    "Could I get you to call Mom?",
+    "Can I have you add milk to my grocery list?",
+    "I'd love it if you could send Chris a text.",
+    "I'd be grateful if you could email Alex the update.",
+    "If you could text Chris that I am late, that would be great.",
+    "I was hoping you could show me my calendar for tomorrow.",
+    "I was hoping to get directions to the airport.",
+    "I would love to search my contacts for Jordan.",
+    "I'd appreciate it if you could delete my reminder to call Mom.",
+    "Can you get me directions to the airport?",
+    "Please get me an Uber to the airport.",
+    "Can you check the battery on my phone?",
+    "Could you check whether my lights are on?",
+    "Could you clear my completed reminders?",
+    "Can you find my lost phone?",
+    "Can you make a calendar event for Friday?",
+    "What are good restaurants near me?",
+    "Recommend a coffee shop nearby.",
+    "Where should I eat in my area?",
+    "I need a reminder for tomorrow at 8 to call the dentist.",
+    "Take me to the airport.",
+    "I'd like to see my photos from last weekend.",
+    "I'd like my workout habit logged.",
+    "I'd like to see my phone battery status.",
+    "I want the living room lights turned on."
+  ]) {
+    assert.equal(classifyTaki3Request(state(request)).kind, "delegate", request);
+  }
+  for (const request of [
+    "I'd like to know why the lights turn on automatically.",
+    "Would it be possible for you to explain how to send an email?",
+    "I was hoping you could explain how to set a timer for ten minutes.",
+    "I'd like to know how to search my contacts.",
+    "I want to know how to get directions to the airport.",
+    "I would like to understand how to schedule a meeting.",
+    "Could I get you to explain how to call a function?"
+  ]) {
+    assert.equal(classifyTaki3Request(state(request)).kind, "direct", request);
+  }
   assert.equal(classifyTaki3Request(state("What dosage should I take for chest pain?")).kind, "safety");
   assert.equal(classifyTaki3Request(state("I have crushing chest pain, what should I take?")).kind, "safety");
   assert.equal(classifyTaki3Request(state("Search for the next public event at the library")).kind, "research");
