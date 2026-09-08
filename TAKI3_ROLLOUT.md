@@ -119,6 +119,40 @@ detached shadow mode (`canaryPercent: 0`, `shadowPercent: 1`,
 `promotionReady: false`, `reason=readiness_flag_missing`,
 `liveUserImpact=none`).
 
+## v20 verification — September 7, 2026
+
+The v20 release adds a committed 40-case coverage corpus drawn from the
+independent fuzz sweep. It covers direct explanations and transformations,
+fresh public facts, private device lookups and mutations, cyber and medical
+safety boundaries, and clarification follow-ups. The deterministic promotion
+evaluator now passes with 388 tests, zero failures, typecheck passing, and a
+clean worktree at release `f2b84d0`.
+
+The final v20 deterministic evidence passes 6,000/6,000 classifier cases (p50
+0.266 ms, p95 0.468 ms), 18,000/18,000 all-tier strict contracts (aggregate
+p50 0.279 ms, p95 0.566 ms), 500/500 long-chat cases with 1,502 history turns
+(p50 1.190 ms, p95 2.122 ms), 144/144 action-matrix cases, and 150/150
+canonical routing cases. The independent natural-language fuzz corpus remains
+190/190. Artifacts: `/tmp/taki3-6000-1788833012854.json`,
+`/tmp/taki3-contract-6000-1788833017492.json`,
+`/tmp/taki3-long-chat-1788833011450.json`, and
+`/tmp/taki3-150-routing-regression-v20.json`.
+
+The final authenticated live-provider smoke reached Gemini for all eight
+provider-eligible cases, but all eight returned typed HTTP 429 `ai_quota`; the
+four local safety/clarification/delegation cases passed 4/4. Provider p50 was
+113.411 ms, p95 273.228 ms, and measured cost was $0.00 because no provider
+request succeeded. Artifact:
+`/tmp/taki3-live-smoke-1788833035951.json`. Production health is configured
+for OpenAI, but the local environment has no production OpenAI credential, so
+the real-provider quality and cost gate remains closed.
+
+Commit `f2b84d0` is pushed to `origin/main`. Render serves
+`2026-09-07-taki-3.0-staged-v20` with OpenAI selected and Taki 3.0 still in
+detached shadow mode (`canaryPercent: 0`, `shadowPercent: 1`,
+`promotionReady: false`, `reason=readiness_flag_missing`,
+`liveUserImpact=none`).
+
 ## v19 verification — September 7, 2026
 
 An independent 190-case conversational/action fuzz corpus found two additional
