@@ -139,9 +139,15 @@ routing cases. Artifacts: `/tmp/taki3-6000-1788876015594.json`,
 `/tmp/taki3-long-chat-1788876014224.json`, and
 `/tmp/taki3-150-routing-regression-v23-final.json`.
 
-The v23 source is staged for deployment as
-`2026-09-08-taki-3.0-staged-v23`; Taki 3.0 remains in detached shadow mode
-until a successful provider-backed promotion evidence package exists.
+The post-deployment v23 live smoke reached Gemini for all eight provider-
+eligible cases, but all eight returned typed HTTP 429 `ai_quota`; the four
+local safety/clarification/delegation cases passed 4/4. Provider p50 was
+118.321 ms, p95 262.016 ms, and measured cost was $0.00 because no provider
+request succeeded. Artifact: `/tmp/taki3-live-smoke-1788876194506.json`.
+Render health verifies `2026-09-08-taki-3.0-staged-v23` with OpenAI selected,
+Taki 3.0 in detached shadow mode, `canaryPercent: 0`, `shadowPercent: 1`,
+`promotionReady: false`, and `liveUserImpact: none`. Promotion remains closed
+until a successful provider-backed evidence package exists.
 
 ## v22 verification — September 8, 2026
 
