@@ -296,8 +296,11 @@ function explicitResearchLikeMessage(message: string): boolean {
   if (/\b(?:my contacts?|my calendar|my reminders?|my photos?|my location|near me|nearby|on maps?)\b/i.test(text)
     || /\b(?:my|our)\s+(?:(?:next|upcoming|previous|last|today['’]s|tomorrow['’]s)\s+)?calendar\s+(?:events?|appointments?|meetings?)\b/i.test(text)) return false;
   if (/^(?:search|browse|find|look up)\b/i.test(text)) return true;
-  return /\bnext\s+public\s+event\b/i.test(text)
-    && !/\b(?:add|put|save|schedule|calendar|remind)\b/i.test(text);
+  return (
+    /\bnext\s+public\s+event\b/i.test(text)
+    || /\bnext\s+(?:(?:public|solar|lunar)\s+)?eclipse\b/i.test(text)
+    || /\bnext\s+(?:meteor\s+shower|comet|rocket\s+launch)\b/i.test(text)
+  ) && !/\b(?:add|put|save|schedule|calendar|remind)\b/i.test(text);
 }
 
 function actionLikeMessage(message: string): boolean {
@@ -429,7 +432,7 @@ function safetyLikeMessage(message: string): boolean {
     || /\b(?:dose|dosage|take|medication|medicine|pill|drug)s?\b.{0,120}\b(?:chest pain|can't breathe|cannot breathe|shortness of breath|heart attack)\b/i.test(text)
     || /\b(?:chest pain|can't breathe|cannot breathe|shortness of breath|heart attack)\b.{0,120}\b(?:dose|dosage|take|medication|medicine|pill|drug)s?\b/i.test(text);
   if (emergencyMedication) return true;
-  const dangerous = /\b(?:kill|hurt|harm|attack|stalk(?:ing)?|dox|steal|hack|break into|bomb|explosive|weapon|weaponize|malware|ransomware|phishing|poison|household chemical)\b/.test(text);
+  const dangerous = /\b(?:kill|hurt|harm|attack|stalk(?:ing)?|dox|steal|hack|break into|bomb|explosive|weapon|weaponize|malware|ransomware|phish(?:ing)?|poison|household chemical)\b/.test(text);
   if (!dangerous) return false;
   const selfHarm = /\b(?:i|me|myself)\s+(?:want|plan|intend|am going|might|may|feel like|thinking about|considering)\s+(?:to\s+)?(?:die|kill|hurt|harm|end(?:ing)?\s+my\s+life|self[- ]?harm)\b/i.test(text)
     || /\b(?:kill|hurt|harm)\s+myself\b|\bend\s+my\s+life\b/i.test(text);
@@ -442,7 +445,7 @@ function safetyLikeMessage(message: string): boolean {
   const defensive = /\b(?:prevent|prevention|protect|defend|recover|recovery|detect|recognize|report|avoid|remove|secure|harden|patch|warning|safety|safe)\b/.test(text)
     && !/\b(?:make|build|buy|assemble|mix|combine|deploy|execute|detonate|weaponize)\b/.test(text);
   if (defensive) return false;
-  const target = "(?:kill|hurt|harm|attack|stalk(?:ing)?|dox|steal|hack|break into|bomb|explosive|weapon|weaponize|malware|ransomware|phishing|poison|household chemical)";
+  const target = "(?:kill|hurt|harm|attack|stalk(?:ing)?|dox|steal|hack|break into|bomb|explosive|weapon|weaponize|malware|ransomware|phish(?:ing)?|poison|household chemical)";
   return new RegExp(`\\b(?:how (?:do|can|to)|tell me how|give me|help me)\\b.{0,160}\\b${target}\\b`).test(text)
     || new RegExp(`\\b(?:${target}|make|build|buy|use|assemble|mix|combine|deploy|execute|detonate|weaponize)\\b.{0,120}\\b(?:${target})\\b`).test(text);
 }
@@ -468,7 +471,11 @@ function clarificationLikeMessage(message: string, state: ConversationState): bo
   const questionOnly = stripped.replace(/[.!]+$/g, "").trim();
   return /^\?+$/.test(questionOnly)
     || /^(?:help|help me|do it|do that|go ahead|go ahead and do it|yes(?:,\s*please)?|yeah|yep|okay|ok|that one|which one|what about it|huh|more|i need help choosing)$/i.test(text)
-    || /^(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:do|handle|take care of)\s+(?:that|it)$/i.test(text);
+    || /^(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:do|handle|take care of)\s+(?:that|it)$/i.test(text)
+    // stripConversationalLead removes a polite "Would you" lead before the
+    // generic checks above. Preserve the raw form so a vague follow-up still
+    // asks for the missing target instead of becoming an ordinary answer.
+    || /^(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:do|handle|take care of)\s+(?:that|it)[.!?]*$/i.test(raw);
 }
 
 /**

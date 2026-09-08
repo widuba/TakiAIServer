@@ -38,7 +38,14 @@ test("account deletion purges linked account data and preserves only starter-cre
     assert.equal(await storeGet(`email:conn:${safePlain(appleIdentity)}`, null), null);
     assert.equal(await storeGet(`routines:${appleIdentity}`, null), null);
     assert.deepEqual(await storeGet("feedback", []), [...(originalFeedback || []), { deviceId: "keep", note: "keep" }]);
-    assert.deepEqual(await storeGet("users:index", { ids: [] }), originalUsersIndex || { ids: [] });
+    // Other test files can register a temporary identity while node:test runs
+    // files concurrently. The deletion invariant is that this account's
+    // identities are gone and pre-existing identities remain; requiring an
+    // exact global snapshot makes the test fail on an unrelated concurrent
+    // registration.
+    const usersAfterDeletion = await storeGet<{ ids: string[] }>("users:index", { ids: [] });
+    assert.equal((usersAfterDeletion.ids || []).some((id) => deleted.identities.includes(id)), false);
+    for (const id of originalUsersIndex?.ids || []) assert.equal(usersAfterDeletion.ids.includes(id), true);
     assert.deepEqual(await storeGet(`userip:${safeColon("192.0.2.8")}`, { ids: [] }), { ids: [] });
 
     const deviceCredits = await storeGet<any>(deviceCreditsKey, null);
