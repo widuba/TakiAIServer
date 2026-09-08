@@ -136,6 +136,11 @@ The v26 evidence passes 396/396 server tests, 6,000/6,000 classifier cases,
 action-matrix cases, and 150/150 canonical routing cases. The real provider
 gate remains closed until a successful quota-backed provider run exists.
 
+Commit `e2eb935` is pushed to `origin/main`. Render health serves
+`2026-09-08-taki-3.0-staged-v26` with OpenAI selected and Taki 3.0 detached in
+shadow mode (`canaryPercent: 0`, `shadowPercent: 1`, `promotionReady: false`,
+`reason=readiness_flag_missing`, `liveUserImpact=none`).
+
 ## v25 verification — September 8, 2026
 
 The v25 adversarial pass closed a precedence regression introduced by the v24
