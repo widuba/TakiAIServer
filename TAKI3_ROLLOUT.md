@@ -119,6 +119,37 @@ detached shadow mode (`canaryPercent: 0`, `shadowPercent: 1`,
 `promotionReady: false`, `reason=readiness_flag_missing`,
 `liveUserImpact=none`).
 
+## v22 verification — September 8, 2026
+
+The v22 routing pass fixes four natural-language boundary defects found by an
+independent edge sweep. Conceptual questions such as “How does my calendar
+work?” stay conversational, while actual private lookups such as “What are my
+reminders?” remain device actions. Plain “Get directions…” commands now reach
+the native maps handoff, vague follow-ups keep their clarification state after
+“Hey” or “Please,” and a subject-less “What is the latest?” asks for the
+missing topic instead of issuing an ungrounded web search. The full server
+suite passes 392/392, typecheck passes, and `git diff --check` is clean.
+
+The v22 deterministic evidence passes 6,000/6,000 classifier cases (p50 0.258
+ms, p95 0.450 ms), 18,000/18,000 all-tier strict contracts (aggregate p50
+0.281 ms, p95 0.564 ms), 500/500 long-chat cases with 1,502 history turns (p50
+1.114 ms, p95 1.981 ms), 144/144 action-matrix cases, and 150/150 canonical
+routing cases. Artifacts: `/tmp/taki3-6000-1788875603007.json`,
+`/tmp/taki3-contract-6000-1788875607740.json`,
+`/tmp/taki3-long-chat-1788875601671.json`, and
+`/tmp/taki3-150-routing-regression-v22.json`.
+
+The previously authenticated live-provider smoke remains the latest real
+provider evidence: all eight Gemini provider-eligible cases returned typed HTTP
+429 `ai_quota`, while the four local safety/clarification/delegation cases
+passed. No successful provider call means no defensible live quality or cost
+measurement; the promotion gate remains closed. Production is configured for
+OpenAI, but no production OpenAI credential is available locally.
+
+The v22 source is staged for deployment as
+`2026-09-08-taki-3.0-staged-v22`; Taki 3.0 remains in detached shadow mode
+until a successful provider-backed promotion evidence package exists.
+
 ## v21 verification — September 8, 2026
 
 The v21 safety pass added coverage for explosive and weapon construction,

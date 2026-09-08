@@ -146,6 +146,21 @@ test("Taki 3.0 classifier keeps conversation, research, actions, safety, and amb
   assert.equal(classifyTaki3Request(state("What about it?")).kind, "clarify");
 });
 
+test("Taki 3.0 keeps conceptual private-feature questions out of device actions", () => {
+  assert.equal(classifyTaki3Request(state("What does my calendar do?")).kind, "direct");
+  assert.equal(classifyTaki3Request(state("How does my calendar work?")).kind, "direct");
+  assert.equal(classifyTaki3Request(state("What are my reminders?")).kind, "delegate");
+  assert.equal(classifyTaki3Request(state("Why is my calendar not syncing?")).kind, "direct");
+});
+
+test("Taki 3.0 preserves action and clarification routing through natural leads", () => {
+  assert.equal(classifyTaki3Request(state("Get directions to the airport.")).kind, "delegate");
+  assert.equal(classifyTaki3Request(state("Hey, can you handle that?")).kind, "clarify");
+  assert.equal(classifyTaki3Request(state("Please can you handle that?")).kind, "clarify");
+  assert.equal(classifyTaki3Request(state("What is the latest?")).kind, "clarify");
+  assert.equal(classifyTaki3Request(state("What is the latest official NASA update?")).kind, "research");
+});
+
 test("Taki 3.0 direct answer is one strict, answer-only provider call", async () => {
   resetTaki3RolloutStats();
   const calls: any[] = [];
