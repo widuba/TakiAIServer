@@ -513,11 +513,13 @@ export function extractReminderTitle(message: string) {
 // inline planner text, action confirmations) — not just one generator.
 // HARD length cap for spoken replies — keeps voice fast to synthesize + read AND
 // bounds the per-answer TTS cost (so included-voice tiers can't run up the bill).
-export const VOICE_MAX_CHARS = 280;
+// The balanced default leaves enough room to finish a useful answer instead of
+// truncating it after two short sentences.
+export const VOICE_MAX_CHARS = 420;
 export function briefForVoice(
   text: string,
   maxChars = VOICE_MAX_CHARS,
-  maxSentences = 2
+  maxSentences = 3
 ): string {
   const characterLimit = Math.max(40, Math.floor(maxChars));
   const sentenceLimit = Math.max(1, Math.floor(maxSentences));
@@ -572,7 +574,7 @@ export function progressiveVoiceBundles(
   text: string,
   emittedText = "",
   maxChars = VOICE_MAX_CHARS,
-  maxSentences = 2
+  maxSentences = 3
 ): { bundles: string[]; emittedText: string } {
   const normalized = String(text || "").replace(/\s+/g, " ").trim();
   // Use the complete prefix through the last stable sentence boundary. An

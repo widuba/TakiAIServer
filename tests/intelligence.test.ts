@@ -941,8 +941,8 @@ test("Taki model tiers have materially different answer-depth budgets", () => {
   assert.ok(balanced.textMaxOutputTokens < reasoning.textMaxOutputTokens);
   assert.ok(swift.voiceMaxChars < balanced.voiceMaxChars);
   assert.ok(balanced.voiceMaxChars < reasoning.voiceMaxChars);
-  assert.equal(swift.voiceMaxSentences, 1);
-  assert.equal(reasoning.voiceMaxSentences, 4);
+  assert.equal(swift.voiceMaxSentences, 2);
+  assert.equal(reasoning.voiceMaxSentences, 5);
   assert.match(swift.textDirective, /fast|quick|tight|concise/i);
   assert.match(reasoning.textDirective, /deep|tradeoffs?|reason/i);
 });
@@ -1496,7 +1496,7 @@ test("voice fallback always fits without an ellipsis", () => {
   assert.ok(result.length <= VOICE_MAX_CHARS);
   assert.doesNotMatch(result, /(?:\.\.\.|…)/);
   assert.match(result, /[.!?]$/);
-  assert.equal(VOICE_MAX_CHARS, 280);
+  assert.equal(VOICE_MAX_CHARS, 420);
 
   const longList = `Common examples include things such as ${"dogs, cats, birds, and fish, ".repeat(20)}with many more beyond those.`;
   const complete = briefForVoice(longList);

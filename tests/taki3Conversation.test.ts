@@ -64,6 +64,20 @@ test("Taki 3.0 keeps long-chat context and corrections bounded but available", a
   assert.match(plan?.spokenText || "", /Canberra/);
 });
 
+test("an inline correction carries the original question into the answer context", () => {
+  const current = state(
+    "No, I meant Meta glasses.",
+    [
+      { role: "user", text: "Are medical glasses worth it?" },
+      { role: "assistant", text: "Medical glasses can help with some vision needs." }
+    ],
+    [],
+    true
+  );
+  assert.match(current.correctionsText, /Previous user request: Are medical glasses worth it\?/);
+  assert.match(current.correctionsText, /User correction: No, I meant Meta glasses\./);
+});
+
 test("Taki 3.0 research turns stay one-call and require grounding", async () => {
   const current = state("What is the current price of Apple stock? Verify it and cite the source.");
   assert.equal(classifyTaki3Request(current).kind, "research");

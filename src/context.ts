@@ -98,13 +98,32 @@ export function buildConversationState(
     lastAssistant ? `Most recent assistant response: ${lastAssistant}` : ""
   ].filter(Boolean).join("\n");
 
-  const correctionsText = structured && Array.isArray(structured.corrections)
+  const storedCorrections = structured && Array.isArray(structured.corrections)
     ? structured.corrections.slice(-12).map((item: any, index: number) => {
         const wrong = String(item?.misunderstoodAnswer || "").trim().slice(0, 800);
         const correction = String(item?.userCorrection || "").trim().slice(0, 800);
         return correction ? `Correction ${index + 1}: Assistant misunderstood: ${wrong}\nUser clarified: ${correction}` : "";
       }).filter(Boolean).join("\n")
     : "";
+
+  // Voice turns do not have the text chat's correction editor, so recover an
+  // explicit correction directly from the current utterance and recent turns.
+  // This gives the answer stage the original question and the corrected target
+  // in one bounded record instead of allowing a model to only acknowledge it.
+  const correctionCue = /^\s*(?:no\b|actually\b|that['’]s not\b|that is not\b|i meant\b|you misunderstood\b|not what i meant\b|correction\b)/i;
+  const currentCorrection = correctionCue.test(String(message || "").trim())
+    ? String(message || "").trim().slice(0, 800)
+    : "";
+  const priorUserForCorrection = currentCorrection
+    ? [...recent].reverse().find((turn) => turn.role === "user")?.text || ""
+    : "";
+  const priorAssistantForCorrection = currentCorrection
+    ? [...recent].reverse().find((turn) => turn.role === "assistant")?.text || ""
+    : "";
+  const derivedCorrection = currentCorrection && priorUserForCorrection && priorAssistantForCorrection
+    ? `Current-turn correction: Previous user request: ${priorUserForCorrection.slice(0, 800)}\nPrevious assistant response: ${priorAssistantForCorrection.slice(0, 800)}\nUser correction: ${currentCorrection}`
+    : "";
+  const correctionsText = [storedCorrections, derivedCorrection].filter(Boolean).join("\n");
 
   const decoded = decodeSavedMemory(structured);
 

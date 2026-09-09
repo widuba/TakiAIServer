@@ -3572,30 +3572,30 @@ export function responseStyleForTakiModel(key: TakiModelKey): TakiResponseStyle 
   if (key === "taki_2_0_swift") {
     return {
       textMaxOutputTokens: 560,
-      voiceMaxOutputTokens: 120,
-      voiceMaxChars: 160,
-      voiceMaxSentences: 1,
+      voiceMaxOutputTokens: 180,
+      voiceMaxChars: 220,
+      voiceMaxSentences: 2,
       textDirective: "Lead with the single most useful answer and stop. Normally one or two tight sentences or one compact paragraph. Stay fast and correct: no background, hedging, or alternatives unless the user asked. Never sacrifice a materially correct detail for brevity.",
-      voiceDirective: "Answer in ONE complete short sentence under 160 characters."
+      voiceDirective: "Answer in up to TWO complete short sentences under 220 characters."
     };
   }
   if (key === "taki_2_1_reasoning") {
     return {
       textMaxOutputTokens: 3200,
-      voiceMaxOutputTokens: 420,
-      voiceMaxChars: 520,
-      voiceMaxSentences: 4,
+      voiceMaxOutputTokens: 520,
+      voiceMaxChars: 640,
+      voiceMaxSentences: 5,
       textDirective: "Go genuinely deep on substantive questions. Reason it through: cover the key considerations, tradeoffs, edge cases, and a clear recommendation, with concrete examples or numbers where they sharpen the point. Organize a long answer into logical paragraphs (or plain numbered steps if the user wants a procedure). Match effort to the question — do not inflate a trivial reply, but never leave a hard question shallow.",
-      voiceDirective: "Give a complete, in-depth spoken answer in up to FOUR clear sentences under 520 characters."
+      voiceDirective: "Give a complete, in-depth spoken answer in up to FIVE clear sentences under 640 characters."
     };
   }
   return {
     textMaxOutputTokens: 1300,
-    voiceMaxOutputTokens: 200,
-    voiceMaxChars: 280,
-    voiceMaxSentences: 2,
+    voiceMaxOutputTokens: 320,
+    voiceMaxChars: 420,
+    voiceMaxSentences: 3,
     textDirective: "Be concise but genuinely complete: fully answer the question and add the supporting detail, caveat, or brief example that makes the answer actually useful. Usually one to four sentences; expand when the question rewards it and tighten when it doesn't. Prefer a clear, well-reasoned answer over a padded or a truncated one.",
-    voiceDirective: "Answer in one or two complete spoken sentences under 280 characters."
+    voiceDirective: "Answer in up to three complete spoken sentences under 420 characters."
   };
 }
 
@@ -3707,6 +3707,7 @@ ${searchBlock}
 - In recommendations, treat the user's stated dislikes, sensitivities, budget, and other dealbreakers as hard filters. Do not recommend an option that substantially conflicts with them merely because it matches one positive preference.
 - If the question depends on private, visual, physical, or personal information that is not in the conversation, an attachment, device data, or a supported tool, say "I don't have enough information to know that." Briefly say what the user could share to make it answerable. Never call an unanswerable question a service outage.
 - Resolve "it", "that", "there", names, dates, and elliptical follow-ups from RECENT CONVERSATION FOCUS and the conversation history. If more than one interpretation remains plausible, ask one precise question instead of choosing.
+- When the current message corrects the previous interpretation (for example, "No, I meant Meta glasses"), answer the original request with the corrected subject. Do not stop at "you meant ..." or another acknowledgment.
 - Never say Taki cannot perform a listed shipping capability. Explain the exact permission, account, supported-device, or confirmation requirement when one applies. Never claim an unlisted capability.
 - Plain text only — NO markdown: no **bold**/*asterisks*, no #headers, no JSON. Plain numbered steps ("1. ...") are fine only if a list was requested. Never say "as an AI".
 - Match the personality AND its INTENSITY above — at low intensity stay plain/neutral; at high intensity make the character loud and obvious.
