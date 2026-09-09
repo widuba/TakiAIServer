@@ -767,7 +767,7 @@ function providerTimeoutMs(state: ConversationState, kind: "direct" | "research"
   // and Sophos answers into user-facing timeout fallbacks. Voice keeps its
   // shorter interaction budget.
   if (kind === "research") return state.voiceMode ? 13_000 : 34_000;
-  return state.voiceMode ? 9_000 : 22_000;
+  return state.voiceMode ? 9_000 : 28_000;
 }
 
 function maxOutputTokens(state: ConversationState): number {
@@ -816,7 +816,7 @@ export async function runTaki3Plan(
       maxOutputTokens: maxOutputTokens(state),
       openAIReasoningEffort: selected.effort,
       thinkingConfig: { thinkingLevel: selected.effort === "medium" ? "LOW" : "MINIMAL" },
-      providerAttemptTimeoutMs: state.voiceMode ? 6_500 : kind === "research" ? 24_000 : 15_000,
+      providerAttemptTimeoutMs: state.voiceMode ? 6_500 : kind === "research" ? 24_000 : 20_000,
       ...((kind === "research" || (!state.voiceMode && answerRoutingFor(classification.normalizedQuery || classification.query, false).policy === "offered"))
         ? {
             tools: [{ googleSearch: {} }],
