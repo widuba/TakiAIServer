@@ -165,7 +165,11 @@ async function providerCorpus(): Promise<ProviderSummary> {
     { message: "What is the latest official iPhone price?", kind: "research" },
     { message: "Who is the current president of the United States?", kind: "research" },
     { message: "What are today's major news headlines?", kind: "research" },
-    { message: "Look up the current weather in Atlanta", kind: "research" },
+    // Weather is a deterministic compatibility route in the production
+    // planner (NWS/Open-Meteo/WeatherKit), so it is covered by the action
+    // matrix rather than this answer-only provider gate. Keep this corpus
+    // focused on Taki 3.0's provider-grounded research contract.
+    { message: "What is the current price of gold?", kind: "research" },
     { message: "What is the current USD to EUR exchange rate?", kind: "research" },
     { message: "What are the current CDC flu recommendations?", kind: "research" }
   ] as const;
