@@ -110,7 +110,7 @@ export function buildConversationState(
   // explicit correction directly from the current utterance and recent turns.
   // This gives the answer stage the original question and the corrected target
   // in one bounded record instead of allowing a model to only acknowledge it.
-  const correctionCue = /^\s*(?:no\b|actually\b|that['’]s not\b|that is not\b|i meant\b|you misunderstood\b|not what i meant\b|correction\b)/i;
+  const correctionCue = /^\s*(?:(?:no|actually)\b[\s,;:-]*(?:i\s+)?(?:mean|meant|was\s+asking|was\s+talking\s+about)\b|i\s+meant\b|you\s+misunderstood\b|not\s+what\s+i\s+meant\b|correction\b|that['’]s\s+not\b|that\s+is\s+not\b)/i;
   const currentCorrection = correctionCue.test(String(message || "").trim())
     ? String(message || "").trim().slice(0, 800)
     : "";

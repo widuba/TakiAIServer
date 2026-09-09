@@ -78,6 +78,19 @@ test("an inline correction carries the original question into the answer context
   assert.match(current.correctionsText, /User correction: No, I meant Meta glasses\./);
 });
 
+test("a bare no is not mistaken for a subject correction", () => {
+  const current = state(
+    "No",
+    [
+      { role: "user", text: "Should I send that message?" },
+      { role: "assistant", text: "Would you like me to send it?" }
+    ],
+    [],
+    true
+  );
+  assert.equal(current.correctionsText, "");
+});
+
 test("Taki 3.0 research turns stay one-call and require grounding", async () => {
   const current = state("What is the current price of Apple stock? Verify it and cite the source.");
   assert.equal(classifyTaki3Request(current).kind, "research");
