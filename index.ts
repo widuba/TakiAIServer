@@ -13,7 +13,7 @@ import { finalizeResponse } from "./src/validators.js";
 import { styleInCharacter, getWeatherSnapshot, inferEventDestination, matchEventToQuery, getTravelTime, answerAboutImage, answerAboutAttachments, fitVoiceResponse } from "./src/tools.js";
 import type { TakiAttachment } from "./src/tools.js";
 // getTravelTime (above) also powers the background commute push loop.
-import { briefForVoice, withTimeout } from "./src/util.js";
+import { briefForVoice, sanitizeSpokenText, withTimeout } from "./src/util.js";
 import { parseIncomingStyleProfiles } from "./src/messageStyle.js";
 import { parseUserPersona } from "./src/persona.js";
 import {
@@ -1160,7 +1160,9 @@ app.post("/api/vision", async (req, res) => {
       () => withTimeout(answerAboutImage(image, mime, question, userProfile, timeZone, voiceMode), 45000, "Vision")
     )));
     throwIfRequestCancelled(requestAbort.signal);
-    const spokenText = measured.value;
+    const spokenText = voiceMode
+      ? await fitVoiceResponse(measured.value, userProfile)
+      : measured.value;
     const speechUsd = voiceMode ? ttsCostUsd(speechCharacterCount(spokenText || "")) : 0;
     const ownerCostUsd = totalUsageUsd(measured.usage) + speechUsd;
     const fresh = await creditSummary(deviceId);
@@ -1237,7 +1239,10 @@ app.post("/api/attachments", async (req, res) => {
     )));
     throwIfRequestCancelled(requestAbort.signal);
     const answer = measured.value;
-    const speechUsd = voiceMode ? ttsCostUsd(speechCharacterCount(answer.text)) : 0;
+    const spokenText = voiceMode
+      ? await fitVoiceResponse(answer.text, userProfile)
+      : answer.text;
+    const speechUsd = voiceMode ? ttsCostUsd(speechCharacterCount(spokenText)) : 0;
     const ownerCostUsd = totalUsageUsd(measured.usage) + speechUsd;
     const fresh = await creditSummary(deviceId);
     const charge = decideAssistantCharge({
@@ -1263,7 +1268,7 @@ app.post("/api/attachments", async (req, res) => {
       credits: spent.spent,
       costUsd: ownerCostUsd
     });
-    res.json({ spokenText: answer.text, sources: answer.sources, credits: { ...spent, cost: spent.spent } });
+    res.json({ spokenText, sources: answer.sources, credits: { ...spent, cost: spent.spent } });
   } catch (error) {
     if (isRequestCancelled(error, requestAbort.signal) || error instanceof CreditChargeCancelledError) {
       if (!res.writableEnded && !res.destroyed) res.status(499).json({ error: "request cancelled", code: "request_cancelled" });
@@ -3691,7 +3696,10 @@ async function runAssistant(
     if (block) return usageBlockedPayload(block);
   }
   const measured = await measureUsage(async () => {
-    const plan = await withRequestAbort(requestSignal, () => withTimeout(planAssistantResponse(state, onStableVoiceText), 45000, "Assistant plan"));
+    const stableVoiceText = voiceMode && onStableVoiceText
+      ? (text: string) => onStableVoiceText(sanitizeSpokenText(text))
+      : onStableVoiceText;
+    const plan = await withRequestAbort(requestSignal, () => withTimeout(planAssistantResponse(state, stableVoiceText), 45000, "Assistant plan"));
     const response = finalizeResponse(plan, state);
     // Action confirmations and clarification prompts already come from the
     // capability-aware planner. Keep them model-independent so calls, texts,
@@ -4039,7 +4047,7 @@ app.post("/api/voice", async (req, res) => {
     let progressiveSpeechStarted = false;
     let progressiveAudioQueue: Promise<void> = Promise.resolve();
     const queueProgressiveText = (rawText: string) => {
-      const text = rawText.replace(/\s+/g, " ").trim();
+      const text = sanitizeSpokenText(rawText).replace(/\s+/g, " ").trim();
       if (!progressiveVoice || !text) return;
       progressiveText = `${progressiveText}${progressiveText ? " " : ""}${text}`.trim();
       if (prefersDeviceSpeech) {

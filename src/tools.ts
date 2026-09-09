@@ -16,7 +16,7 @@ import { capabilityPromptBlock } from "./capabilities.js";
 import { productKnowledgePromptBlock } from "./productKnowledge.js";
 import type { UserPersona } from "./persona.js";
 import type { TakiModelKey } from "./ai.js";
-import { isoFromYmdTime, addMinutesToIsoLocal, addDaysToYmd, ymdInTimeZone, briefForVoice, progressiveVoiceBundles } from "./util.js";
+import { isoFromYmdTime, addMinutesToIsoLocal, addDaysToYmd, ymdInTimeZone, briefForVoice, progressiveVoiceBundles, sanitizeSpokenText } from "./util.js";
 import { extractFlightCode, hasExplicitFinanceCue, hasProductPriceCue } from "./entityClassifier.js";
 import { getCurrentMovieRecommendationEvidence } from "./currentRecommendations.js";
 import { validatePublicHttpUrl } from "./urlSafety.js";
@@ -3725,7 +3725,7 @@ ${memoryText}
   // complete response under the TTS limit without another sequential model call.
   const cap = (t: string): string => {
     return state.voiceMode && t
-      ? briefForVoice(t, responseStyle.voiceMaxChars, responseStyle.voiceMaxSentences)
+      ? briefForVoice(sanitizeSpokenText(t), responseStyle.voiceMaxChars, responseStyle.voiceMaxSentences)
       : t;
   };
 
@@ -3797,7 +3797,7 @@ ${memoryText}
           continue;
         }
         const progress = progressiveVoiceBundles(
-          stripMarkdown(generatedText),
+          sanitizeSpokenText(stripMarkdown(generatedText)),
           emittedVoiceText,
           responseStyle.voiceMaxChars,
           responseStyle.voiceMaxSentences
@@ -3960,7 +3960,7 @@ ${tz ? `The user's local time is ${nowInTimeZone(tz)}.\n` : ""}Question: "${q}"
 }
 
 export async function fitVoiceResponse(text: string, _persona?: UserPersona): Promise<string> {
-  const original = stripMarkdown(String(text || "").trim());
+  const original = sanitizeSpokenText(stripMarkdown(String(text || "").trim()));
   const style = responseStyleForTakiModel(activeTakiModelInfo().key);
   return briefForVoice(original, style.voiceMaxChars, style.voiceMaxSentences);
 }

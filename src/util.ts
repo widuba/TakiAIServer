@@ -507,6 +507,56 @@ export function extractReminderTitle(message: string) {
   return titleCaseTask(title);
 }
 
+/**
+ * Remove provider citation markup from text that is going to be spoken aloud.
+ *
+ * Search providers occasionally return malformed nested Markdown such as
+ * `(ray-ban.com ([https://www.ray-ban](https://www.ray-ban).com/...))`. The
+ * source links still travel separately in the response's `sources` field, but
+ * URLs and citation wrappers must never reach TTS or the device speech queue.
+ */
+export function sanitizeSpokenText(value: string): string {
+  let text = String(value || "").replace(/\r\n?/g, "\n").trim();
+  if (!text) return "";
+
+  // Remove the outermost balanced parenthetical that contains a URL, source
+  // domain, or tracking parameter. Choosing the outermost candidate handles
+  // nested provider markup in one pass and preserves the answer before it.
+  const pairs: { start: number; end: number }[] = [];
+  const stack: number[] = [];
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === "(") stack.push(index);
+    else if (text[index] === ")" && stack.length) {
+      pairs.push({ start: stack.pop()!, end: index });
+    }
+  }
+  const citationPattern = /https?:\/\/|www\.|utm_[a-z0-9_-]+|\b(?:[a-z0-9-]+\.)+(?:com|org|net|edu|gov|co|io|ai|app|ly|me|dev|tv)\b/i;
+  const citationPairs = pairs.filter((pair) => citationPattern.test(text.slice(pair.start + 1, pair.end)));
+  const outerCitationPairs = citationPairs.filter((pair) => !citationPairs.some(
+    (candidate) => candidate !== pair && candidate.start < pair.start && candidate.end >= pair.end
+  ));
+  for (const pair of [...outerCitationPairs].sort((a, b) => b.start - a.start)) {
+    text = `${text.slice(0, pair.start)}${text.slice(pair.end + 1)}`;
+  }
+
+  // Cover bare links and domains that were not wrapped in parentheses. Keep a
+  // normal link label when it is useful, then remove the href itself.
+  text = text
+    .replace(/(?:https?:\/\/|www\.)[^\s<>"'()\]]+/giu, "")
+    .replace(/\b(?:[a-z0-9-]+\.)+(?:com|org|net|edu|gov|co|io|ai|app|ly|me|dev|tv)(?:\/[^\s<>"'()\]]*)?/giu, "")
+    .replace(/\butm_[a-z0-9_-]+=[^\s<>"'()\]]+/giu, "")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]/g, "$1")
+    .replace(/\(\s*\)/g, "")
+    .replace(/\[\s*\]/g, "")
+    .replace(/\s+([,.;!?])/g, "$1")
+    .replace(/\s+([)\]])/g, "$1")
+    .replace(/([([{])\s+/g, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return text;
+}
+
 // Hard-clamp a spoken reply for voice mode. Voice replies are read aloud, so
 // length = TTS cost + latency. Applied at the single choke point
 // (runAssistant) so it catches EVERY answer path (general, live/web, lottery,
@@ -523,7 +573,7 @@ export function briefForVoice(
 ): string {
   const characterLimit = Math.max(40, Math.floor(maxChars));
   const sentenceLimit = Math.max(1, Math.floor(maxSentences));
-  const t = String(text || "").trim().replace(/[.…]+$/g, "").trim();
+  const t = sanitizeSpokenText(String(text || "")).replace(/[.…]+$/g, "").trim();
   if (!t) return t;
   // Keep the entire prefix when a sentence contains internal punctuation
   // (decimals, initials, domains) instead of restarting after that punctuation.
@@ -576,7 +626,7 @@ export function progressiveVoiceBundles(
   maxChars = VOICE_MAX_CHARS,
   maxSentences = 3
 ): { bundles: string[]; emittedText: string } {
-  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  const normalized = sanitizeSpokenText(String(text || "")).replace(/\s+/g, " ").trim();
   // Use the complete prefix through the last stable sentence boundary. An
   // anchored prefix is important: an internal period must never cause speech
   // before it to disappear from a later stream snapshot.

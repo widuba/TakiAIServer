@@ -7,7 +7,7 @@ import { calendarDirectionsQuery, directCorePhoneAction, emergencyGuidanceFor, e
 import type { PlannerModelOutput } from "../src/types.js";
 import { blankAction } from "../src/types.js";
 import { cleanAssistantText, finalizeResponse, resolveCalendarUpdateDates, sanitizeSources, validateAction } from "../src/validators.js";
-import { briefForVoice, extractCalendarTitle, progressiveVoiceBundles, resolveRelativeYmd, VOICE_MAX_CHARS } from "../src/util.js";
+import { briefForVoice, extractCalendarTitle, progressiveVoiceBundles, resolveRelativeYmd, sanitizeSpokenText, VOICE_MAX_CHARS } from "../src/util.js";
 import { isExplicitAllAlertCancellation, parseAlertCancel, parseLocationAutomation, parsePriceAlert, parseScheduledMessage, eventQueryFromCalendarMessage, formatMathNumber, looksLikeAddLookupEventToCalendar, looksLikeCurrentRecommendationQuestion, looksLikeExplicitWebSearchRequest, looksLikeFreshFactQuestion, looksLikeLiveInfoQuestion, looksLikeSubjectiveRecommendationQuestion, parseMusicCommand, parsePackageTracking, repairExplicitFormat, responseSatisfiesExplicitFormat, responseStyleForTakiModel, youtubeVideoInputURL } from "../src/tools.js";
 import { usageLimitsFor } from "../src/credits.js";
 import { subscriptionMergeDecision } from "../src/iap.js";
@@ -1508,6 +1508,15 @@ test("voice fallback always fits without an ellipsis", () => {
   const fourSentences = "One is concise. Two adds context. Three explains tradeoffs. Four gives an example.";
   assert.equal(briefForVoice(fourSentences, 40, 1), "One is concise.");
   assert.equal(briefForVoice(fourSentences, 200, 4), fourSentences);
+});
+
+test("spoken voice text removes malformed provider citation links", () => {
+  const raw = "Meta glasses can be worth it for hands-free photos, navigation, and calls, with a charging case for extra power. (ray-ban.com ([https://www.ray-ban](https://www.ray-ban).com/usa/discover...&utm_source=openai))";
+  const clean = sanitizeSpokenText(raw);
+  assert.equal(clean, "Meta glasses can be worth it for hands-free photos, navigation, and calls, with a charging case for extra power.");
+  assert.doesNotMatch(clean, /https?:\/\/|www\.|utm_source|\[[^\]]+\]/i);
+  assert.equal(sanitizeSpokenText("See [Ray-Ban](https://ray-ban.com) for details."), "See Ray-Ban for details.");
+  assert.equal(sanitizeSpokenText("Visit https://ray-ban.com/usa/discover for details."), "Visit for details.");
 });
 
 test("all common YouTube links route through video input", () => {
