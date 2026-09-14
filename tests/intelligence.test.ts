@@ -1196,6 +1196,17 @@ test("plain-text clients never receive raw model markdown", () => {
   assert.equal(response.memory?.lastAnswer, response.spokenText);
 });
 
+test("grounded answer cleanup keeps citation labels without provider tracking URLs", () => {
+  assert.equal(
+    cleanAssistantText("Read the [official report](https://example.com/report?id=7&utm_source=openai) for details."),
+    "Read the official report for details."
+  );
+  assert.equal(
+    cleanAssistantText("A grounded answer. (example.com (https://example.com/report?id=7&utm_source=openai))"),
+    "A grounded answer."
+  );
+});
+
 test("source cleanup rejects unsafe URLs and deduplicates linkable evidence", () => {
   assert.deepEqual(sanitizeSources([
     { title: "**Example**", url: "https://example.com/current#section" },
@@ -1205,6 +1216,17 @@ test("source cleanup rejects unsafe URLs and deduplicates linkable evidence", ()
   ]), [
     { title: "Example", url: "https://example.com/current" },
     { title: "apple.com", url: "https://www.apple.com/" }
+  ]);
+});
+
+test("source cleanup never uses a tracked URL as its visible title", () => {
+  assert.deepEqual(sanitizeSources([
+    {
+      title: "https://www.example.com/report?id=7&utm_source=openai",
+      url: "https://www.example.com/report?id=7&utm_source=openai"
+    }
+  ]), [
+    { title: "example.com", url: "https://www.example.com/report?id=7" }
   ]);
 });
 

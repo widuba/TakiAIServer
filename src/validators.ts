@@ -434,8 +434,28 @@ function stripFalsePromises(spokenText: string): string {
  * renderer. Normalize model formatting centrally so every surface receives
  * clean text while preserving useful paragraphs, lists, and code contents.
  */
+function stripTrackedCitationParentheticals(value: string): string {
+  const pairs: { start: number; end: number }[] = [];
+  const stack: number[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] === "(") stack.push(index);
+    else if (value[index] === ")" && stack.length) pairs.push({ start: stack.pop()!, end: index });
+  }
+  const tracked = pairs.filter(({ start, end }) => /\butm_[a-z0-9_-]+\s*=/i.test(value.slice(start + 1, end)));
+  const outer = tracked.filter((pair) => !tracked.some(
+    (candidate) => candidate !== pair && candidate.start < pair.start && candidate.end >= pair.end
+  ));
+  let result = value;
+  for (const pair of [...outer].sort((a, b) => b.start - a.start)) {
+    result = `${result.slice(0, pair.start)}${result.slice(pair.end + 1)}`;
+  }
+  return result;
+}
+
 export function cleanAssistantText(value: string): string {
-  return String(value || "")
+  const withoutMarkdownLinks = String(value || "")
+    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, "$1");
+  return stripTrackedCitationParentheticals(withoutMarkdownLinks)
     .replace(/\r\n?/g, "\n")
     .replace(/```[a-z0-9_+-]*\s*\n?/gi, "")
     .replace(/```/g, "")
@@ -446,8 +466,14 @@ export function cleanAssistantText(value: string): string {
     .replace(/__([^_\n]+)__/g, "$1")
     .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "$1")
     .replace(/`([^`\n]+)`/g, "$1")
-    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, "$1 ($2)")
+    // Grounding links travel separately in `sources`; leave their readable
+    // label in the answer instead of exposing a long provider/tracking URL.
+    .replace(/(?:https?:\/\/|www\.)[^\s<>"']*[?&]utm_[a-z0-9_-]+=[^\s<>"']*/giu, "")
+    .replace(/\butm_[a-z0-9_-]+=[^\s<>"'()\]]+/giu, "")
     .replace(/【\s*\d+(?:\s*[-–,]\s*\d+)*\s*】/g, "")
+    .replace(/\(\s*\)/g, "")
+    .replace(/[ \t]+([,.;!?])/g, "$1")
+    .replace(/[ \t]{2,}/g, " ")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -482,10 +508,10 @@ export function sanitizeSources(values?: AssistantSource[]): AssistantSource[] {
     if (seen.has(key)) continue;
     seen.add(key);
     const fallbackTitle = url.hostname.replace(/^www\./i, "") || "Web source";
-    const title = cleanAssistantText(String(value?.title || fallbackTitle))
+    const cleanedTitle = cleanAssistantText(String(value?.title || fallbackTitle))
       .replace(/\s+/g, " ")
-      .slice(0, 140)
-      || fallbackTitle;
+      .slice(0, 140);
+    const title = /^(?:https?:\/\/|www\.)/i.test(cleanedTitle) ? fallbackTitle : cleanedTitle || fallbackTitle;
     sources.push({ title, url: key });
     if (sources.length >= 8) break;
   }
