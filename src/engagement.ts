@@ -13,6 +13,7 @@ export interface EngagementCampaign {
   identity: string;
   channel: EngagementChannel;
   category: EngagementCategory;
+  templateKey?: string;
   title: string;
   body: string;
   sentAt: number;
@@ -109,6 +110,76 @@ const CONTENT: Record<EngagementCategory, { title: string; body: string; emailSu
   }
 };
 
+// Each category has several short, human-written variants. The default copy
+// above remains the stable fallback for older records, while these variants
+// give the automatic sender and the admin dashboard enough rotation that a
+// person does not receive the same notification every day.
+export type EngagementTemplate = {
+  key: string;
+  category: EngagementCategory;
+  title: string;
+  body: string;
+  emailSubject: string;
+  emailBody: string;
+};
+
+const TEMPLATE_VARIANTS: EngagementTemplate[] = [
+  ["planning", "Start with one thing", "Pick one priority and let Taki turn it into a simple next step.", "A simple place to start", "Pick one priority and open Taki for a clear next step."],
+  ["planning", "Clear the mental list", "Tell Taki what is on your mind and sort it into a plan you can actually use.", "Clear the mental list", "Tell Taki what is on your mind and turn it into a practical plan."],
+  ["communication", "Make the message easier", "Bring Taki the rough version and leave with a message that sounds like you.", "Make the message easier", "Bring Taki the rough version and leave with a message that sounds like you."],
+  ["communication", "Reply without overthinking", "Taki can help you find the right words for the message waiting on you.", "Reply without overthinking", "Open Taki when a reply is waiting and find the right words faster."],
+  ["health", "Notice the pattern", "Ask Taki to make the health information you choose to share easier to understand.", "Notice the pattern", "Ask Taki to make the health information you share easier to understand."],
+  ["health", "A small check-in", "Use Taki for a quick, practical check-in on the habits you are tracking.", "A small check-in", "Use Taki for a quick, practical check-in on the habits you are tracking."],
+  ["nearby", "What is close by?", "Find a place, service, or stop nearby without digging through several apps.", "What is close by?", "Find a place, service, or stop nearby without digging through several apps."],
+  ["nearby", "Get there with less friction", "Ask Taki for a destination and the next best route from where you are.", "Get there with less friction", "Ask Taki for a destination and the next best route from where you are."],
+  ["home", "Make home feel lighter", "Set a reminder or run a supported routine while it is still on your mind.", "Make home feel lighter", "Set a reminder or run a supported routine while it is still on your mind."],
+  ["home", "One less thing to remember", "Let Taki handle the small home task you keep carrying around.", "One less thing to remember", "Let Taki handle the small home task you keep carrying around."],
+  ["research", "Look it up once", "Ask Taki for a current answer and keep the sources attached to it.", "Look it up once", "Ask Taki for a current answer and keep the sources attached to it."],
+  ["research", "Bring the question", "Start with the question, even if it is messy. Taki can help make it precise.", "Bring the question", "Start with the question, even if it is messy. Taki can help make it precise."],
+  ["reminders", "Save the next step", "Tell Taki what you need to remember and put it somewhere reliable.", "Save the next step", "Tell Taki what you need to remember and put it somewhere reliable."],
+  ["reminders", "Keep it from slipping", "A quick reminder now can make the rest of the day easier.", "Keep it from slipping", "A quick reminder now can make the rest of the day easier."],
+  ["sports", "Your teams, at a glance", "Ask Taki for the latest score, schedule, or standings for the teams you follow.", "Your teams, at a glance", "Ask Taki for the latest score, schedule, or standings for the teams you follow."],
+  ["sports", "Catch the next game", "Taki can check when your next game starts and what changed since the last one.", "Catch the next game", "Taki can check when your next game starts and what changed since the last one."],
+  ["travel", "Start with the route", "Compare the practical options for your next trip and keep the plan in one place.", "Start with the route", "Compare the practical options for your next trip and keep the plan in one place."],
+  ["travel", "Make the trip smoother", "Ask Taki to turn the loose pieces of a trip into an itinerary you can follow.", "Make the trip smoother", "Ask Taki to turn the loose pieces of a trip into an itinerary you can follow."],
+  ["creativity", "Give the idea a shape", "Bring Taki the half-formed idea and see what it could become.", "Give the idea a shape", "Bring Taki the half-formed idea and see what it could become."],
+  ["creativity", "Start with the rough draft", "A rough first line is enough. Taki can help you find the next one.", "Start with the rough draft", "A rough first line is enough. Taki can help you find the next one."],
+  ["learning", "Make it click", "Ask Taki to explain a difficult idea in plain language, then follow the question.", "Make it click", "Ask Taki to explain a difficult idea in plain language, then follow the question."],
+  ["learning", "One useful thing", "Pick a topic and let Taki teach one idea you can use today.", "One useful thing", "Pick a topic and let Taki teach one idea you can use today."],
+  ["entertainment", "Find your next thing", "Tell Taki your mood and find something worth watching, hearing, or doing.", "Find your next thing", "Tell Taki your mood and find something worth watching, hearing, or doing."],
+  ["entertainment", "Match the mood", "Ask Taki for a current recommendation that fits the kind of evening you want.", "Match the mood", "Ask Taki for a current recommendation that fits the kind of evening you want."]
+].map(([category, title, body, emailSubject, emailBody], index) => ({
+  key: `${category}:variant-${index + 1}`,
+  category: category as EngagementCategory,
+  title,
+  body,
+  emailSubject,
+  emailBody
+}));
+
+function defaultTemplate(category: EngagementCategory): EngagementTemplate {
+  const copy = CONTENT[category];
+  return { key: category, category, ...copy };
+}
+
+function allTemplates(): EngagementTemplate[] {
+  return CATEGORIES.flatMap((category) => [defaultTemplate(category), ...TEMPLATE_VARIANTS.filter((item) => item.category === category)]);
+}
+
+function templateForKey(templateKey: string | undefined, category?: EngagementCategory): EngagementTemplate {
+  const selected = allTemplates().find((item) => item.key === templateKey);
+  return selected || defaultTemplate(category || "planning");
+}
+
+export function availableEngagementTemplates(channel: EngagementChannel): Array<{ key: string; category: EngagementCategory; title: string; body: string }> {
+  return allTemplates().map((template) => ({
+    key: template.key,
+    category: template.category,
+    title: channel === "email" ? template.emailSubject : template.title,
+    body: channel === "email" ? template.emailBody : template.body
+  }));
+}
+
 function safeIdentity(identity: string): string {
   return identity.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
@@ -177,6 +248,7 @@ function categoryForFeature(feature: string): EngagementCategory | null {
 
 export async function recommendedEngagement(user: UserRecord, channel: EngagementChannel): Promise<{
   category: EngagementCategory;
+  templateKey: string;
   title: string;
   body: string;
   reason: string;
@@ -201,8 +273,26 @@ export async function recommendedEngagement(user: UserRecord, channel: Engagemen
   if (recent && Date.now() - recent.sentAt < 14 * 86400_000) {
     scores.set(recent.category, (scores.get(recent.category) || 0) - 3);
   }
-  const category = [...scores.entries()].sort((a, b) => b[1] - a[1] || CATEGORIES.indexOf(a[0]) - CATEGORIES.indexOf(b[0]))[0]?.[0] || "planning";
-  const copy = CONTENT[category];
+  const categoryOrder = [...scores.entries()]
+    .sort((a, b) => b[1] - a[1] || CATEGORIES.indexOf(a[0]) - CATEGORIES.indexOf(b[0]))
+    .map(([category]) => category);
+  const recentTemplateKeys = new Set(
+    state.campaigns
+      .filter((campaign) => campaign.channel === channel && campaign.status === "sent" && Date.now() - campaign.sentAt < 21 * 86400_000)
+      .map((campaign) => campaign.templateKey || campaign.category)
+  );
+  const preferredCategory = categoryOrder[0] || "planning";
+  const preferredCandidates = [defaultTemplate(preferredCategory), ...TEMPLATE_VARIANTS.filter((item) => item.category === preferredCategory)];
+  // Prefer the highest-scoring category, but fall back to another category
+  // when its small set of variants has already been used. This keeps the
+  // automatic daily sequence genuinely different instead of repeating the
+  // first category's default after only three days.
+  const copy = preferredCandidates.find((item) => !recentTemplateKeys.has(item.key))
+    || allTemplates()
+      .filter((item) => !recentTemplateKeys.has(item.key))
+      .sort((a, b) => (scores.get(b.category) || 0) - (scores.get(a.category) || 0) || a.key.localeCompare(b.key))[0]
+    || preferredCandidates[0];
+  const category = copy.category;
   const reason = user.engagement.interests.includes(category)
     ? "Selected during onboarding"
     : Object.entries(user.analytics.featureUsage).some(([feature]) => categoryForFeature(feature) === category)
@@ -210,6 +300,7 @@ export async function recommendedEngagement(user: UserRecord, channel: Engagemen
       : "Exploration candidate";
   return {
     category,
+    templateKey: copy.key,
     title: channel === "email" ? copy.emailSubject : copy.title,
     body: channel === "email" ? copy.emailBody : copy.body,
     reason
@@ -277,16 +368,19 @@ export async function sendPersonalizedEngagement(
   user: UserRecord,
   channel: EngagementChannel,
   deviceIds: string[],
-  source: "automatic" | "admin" = "admin"
+  source: "automatic" | "admin" = "admin",
+  templateKey?: string
 ): Promise<{ ok: boolean; campaign: EngagementCampaign; reason?: string }> {
   const recommendation = await recommendedEngagement(user, channel);
+  const selected = templateKey ? templateForKey(templateKey, recommendation.category) : templateForKey(recommendation.templateKey, recommendation.category);
   const campaign: EngagementCampaign = {
     id: randomUUID(),
     identity: user.identity,
     channel,
-    category: recommendation.category,
-    title: recommendation.title,
-    body: recommendation.body,
+    category: selected.category,
+    templateKey: selected.key,
+    title: channel === "email" ? selected.emailSubject : selected.title,
+    body: channel === "email" ? selected.emailBody : selected.body,
     sentAt: Date.now(),
     status: "failed",
     source
@@ -402,7 +496,8 @@ export async function recordEngagementSession(
     if (!stored || (identity && stored.identity !== identity) || stored.identity !== owner || stored.status !== "sent") {
       return { first: stored, second: raw, result: false };
     }
-    const campaign = { ...stored, sessionSeconds: (stored.sessionSeconds || 0) + duration };
+    const wasOpened = Boolean(stored.openedAt);
+    const campaign = { ...stored, openedAt: stored.openedAt || Date.now(), sessionSeconds: (stored.sessionSeconds || 0) + duration };
     const state = raw && typeof raw === "object" ? raw : { campaigns: [], performance: {} };
     if (!Array.isArray(state.campaigns)) state.campaigns = [];
     if (!state.performance || typeof state.performance !== "object") state.performance = {};
@@ -410,7 +505,11 @@ export async function recordEngagementSession(
     if (index >= 0) state.campaigns[index] = campaign;
     const category = state.performance[campaign.category] || {};
     const performance = category[campaign.channel] || { sent: 0, opened: 0 };
-    category[campaign.channel] = { ...performance, sessionSeconds: (performance.sessionSeconds || 0) + duration };
+    category[campaign.channel] = {
+      ...performance,
+      opened: performance.opened + (wasOpened ? 0 : 1),
+      sessionSeconds: (performance.sessionSeconds || 0) + duration
+    };
     state.performance[campaign.category] = category;
     return { first: campaign, second: state, result: true };
     }
@@ -423,13 +522,21 @@ export async function engagementSummary(user: UserRecord): Promise<{
   recentCampaigns: EngagementCampaign[];
   recommendedPush: Awaited<ReturnType<typeof recommendedEngagement>>;
   recommendedEmail: Awaited<ReturnType<typeof recommendedEngagement>>;
+  availableTemplates: {
+    push: ReturnType<typeof availableEngagementTemplates>;
+    email: ReturnType<typeof availableEngagementTemplates>;
+  };
 }> {
   const state = await loadState(user.identity);
   return {
     performance: state.performance,
     recentCampaigns: [...state.campaigns].reverse().slice(0, 25),
     recommendedPush: await recommendedEngagement(user, "push"),
-    recommendedEmail: await recommendedEngagement(user, "email")
+    recommendedEmail: await recommendedEngagement(user, "email"),
+    availableTemplates: {
+      push: availableEngagementTemplates("push"),
+      email: availableEngagementTemplates("email")
+    }
   };
 }
 
@@ -440,6 +547,9 @@ export async function shouldSendAutomatic(user: UserRecord, channel: EngagementC
   if (inactiveFor < (channel === "push" ? 20 : 48) * 3600_000) return false;
   const state = await loadState(user.identity);
   const latest = [...state.campaigns].reverse().find((campaign) => campaign.channel === channel && campaign.status === "sent");
-  const minimumGap = channel === "push" ? 3 * 86400_000 : 7 * 86400_000;
+  // Personalized notifications are intentionally capped at one per day. The
+  // template rotation above makes each day distinct without requiring admin
+  // intervention or repeating a category's copy.
+  const minimumGap = 24 * 3600_000;
   return !latest || now - latest.sentAt >= minimumGap;
 }

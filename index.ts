@@ -56,7 +56,38 @@ import { clientIpForRequest, locationForRequest, mergeIpLocations } from "./src/
 // Health/version evidence for the staged Taki 3.0 build. Keep this distinct
 // from the rollout flag so a deployed artifact can be identified even while
 // all customer traffic remains on the compatibility path.
-const SERVER_VERSION = "2026-09-08-taki-3.0-staged-v26";
+const SERVER_VERSION = "2026-09-17-taki-3.0-staged-v27";
+
+// Home starter cards are shared product copy rather than per-device state. Keep
+// the UI limits in one place so an admin cannot save a label that the native
+// card would truncate with an ellipsis. Each limit is one character below the
+// measured truncation point for the current two-column card layout.
+const HOME_OPTION_TITLE_MAX = 31;
+const HOME_OPTION_SUBTITLE_MAX = 61;
+const HOME_OPTION_PROMPT_MAX = 700;
+type HomeOption = { id: string; title: string; subtitle: string; symbol: string; prompt: string };
+const DEFAULT_HOME_OPTIONS: HomeOption[] = [
+  { id: "news", title: "Today's news", subtitle: "5 stories that matter", symbol: "newspaper.fill", prompt: "Give me the five biggest news stories today. Verify that each is current, explain each in two short sentences, and include sources." },
+  { id: "plan", title: "Plan my day", subtitle: "A simple plan from now", symbol: "checklist", prompt: "Make a simple plan for the rest of today based on the current time. Include one priority, one useful task, and one real break. Do not ask me follow-up questions." },
+  { id: "tip", title: "Quick tip", subtitle: "Something useful now", symbol: "lightbulb.fill", prompt: "Give me one useful, practical tip I can use right now, then explain why it works in one short paragraph." },
+  { id: "learn", title: "Teach me", subtitle: "One clear idea", symbol: "graduationcap.fill", prompt: "Teach me one surprising and useful idea in plain language. Keep it short and include one example." }
+];
+function normalizeHomeOptions(value: unknown): HomeOption[] {
+  const input = Array.isArray(value) ? value : [];
+  const normalized = input.map((item, index) => {
+    const raw = item && typeof item === "object" ? item as Record<string, unknown> : {};
+    const id = String(raw.id || `home-${index + 1}`).trim().replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 60);
+    const title = String(raw.title || "Try Taki").trim().slice(0, HOME_OPTION_TITLE_MAX);
+    const subtitle = String(raw.subtitle || "Ask for help").trim().slice(0, HOME_OPTION_SUBTITLE_MAX);
+    const symbol = String(raw.symbol || "sparkles").trim().replace(/[^a-zA-Z0-9.-]/g, "").slice(0, 40) || "sparkles";
+    const prompt = String(raw.prompt || "What can you help me with?").trim().slice(0, HOME_OPTION_PROMPT_MAX);
+    return { id: id || `home-${index + 1}`, title, subtitle, symbol, prompt };
+  }).filter((item) => item.title && item.prompt);
+  return (normalized.length ? normalized : DEFAULT_HOME_OPTIONS).slice(0, 8);
+}
+async function loadHomeOptions(): Promise<HomeOption[]> {
+  return normalizeHomeOptions(await storeGet<unknown>("system:home-options", DEFAULT_HOME_OPTIONS));
+}
 
 // Admin secret guarding the dev credits-reset endpoint. Set ADMIN_SECRET on
 // Render. (The purchase-simulating grant endpoint was removed when real
@@ -1463,6 +1494,11 @@ app.post("/api/device/info", async (req, res) => {
   res.json({ ok: true });
 });
 
+app.get("/api/home-options", async (_req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.json({ options: await loadHomeOptions() });
+});
+
 const PROFILE_INTERESTS = new Set(["planning", "communication", "health", "nearby", "home", "research", "reminders"]);
 app.post("/api/analytics/profile", async (req, res) => {
   const identity = typeof req.body?.identity === "string" ? req.body.identity.trim() : "";
@@ -1525,6 +1561,10 @@ app.post("/api/analytics/session", async (req, res) => {
     // match one of this installation's verified identities. This prevents a
     // caller from inflating another account's engagement metrics with a UUID.
     for (const candidate of [...new Set(candidates)]) {
+      // A session is a stronger response signal than merely opening a push.
+      // Record the open here as well so a notification tapped while the app is
+      // already foregrounded cannot remain stuck at “not responded”.
+      await recordEngagementOpen(campaign, candidate);
       if (await recordEngagementSession(campaign, candidate, durationSeconds)) break;
     }
   }
@@ -3444,6 +3484,17 @@ app.post("/api/admin/engagement-preview", async (req, res) => {
   res.json({ preview: await recommendedEngagement(account.user, channel), enabled: channel === "push" ? account.user.engagement.pushEnabled : account.user.engagement.emailEnabled });
 });
 
+app.post("/api/admin/home-options", async (req, res) => {
+  if (!requireAdminSecret(req.body?.secret, res)) return;
+  if (req.body?.mode === "save") {
+    const options = normalizeHomeOptions(req.body?.options);
+    await storeSet("system:home-options", options);
+    res.json({ ok: true, options });
+    return;
+  }
+  res.json({ options: await loadHomeOptions(), titleMax: HOME_OPTION_TITLE_MAX, subtitleMax: HOME_OPTION_SUBTITLE_MAX, promptMax: HOME_OPTION_PROMPT_MAX });
+});
+
 function engagementDeliveryFailure(channel: EngagementChannel, reason: string): { status: number; error: string } {
   const normalized = reason.trim();
   if (/no registered push token/i.test(normalized)) {
@@ -3502,7 +3553,8 @@ app.post("/api/admin/engagement-send", async (req, res) => {
     const account = await buildAdminAccount(identity);
     const enabled = channel === "push" ? account.user.engagement.pushEnabled : account.user.engagement.emailEnabled;
     if (!enabled) { res.status(409).json({ error: `The user has not enabled personalized ${channel}.` }); return; }
-    const result = await sendPersonalizedEngagement(account.user, channel, account.deviceIds, "admin");
+    const templateKey = typeof req.body?.templateKey === "string" ? req.body.templateKey.trim().slice(0, 100) : undefined;
+    const result = await sendPersonalizedEngagement(account.user, channel, account.deviceIds, "admin", templateKey);
     if (result.ok) { res.json(result); return; }
     const failure = engagementDeliveryFailure(channel, result.reason || result.campaign.error || "");
     res.status(failure.status).json({ ...result, error: failure.error });
