@@ -164,6 +164,10 @@ export interface CreditAccount {
   usageLedger?: CreditUsageTransaction[];
   adminAdjustments?: AdminCreditAdjustment[];
   starterGiven?: boolean;
+  // A freshly-created post-logout device account deliberately starts empty. This
+  // flag prevents the normal free-cycle reconciliation from granting the starter
+  // balance the next time the app refreshes Membership or sends a message.
+  freeCreditsDisabled?: boolean;
   // UTC month ("YYYY-MM") of the free tier's last recurring allotment, so the
   // 500 free credits + free-voice count refresh once per month, not every load.
   freeCycleKey?: string;
@@ -357,6 +361,7 @@ function normalizeAccount(acct: CreditAccount, deviceId: string): CreditAccount 
   acct.updatedAt = Number.isFinite(Number(acct.updatedAt)) ? Math.max(0, Number(acct.updatedAt)) : 0;
   acct.schemaVersion = Number.isFinite(Number(acct.schemaVersion)) ? Math.max(0, Math.floor(Number(acct.schemaVersion))) : 0;
   acct.starterGiven = acct.starterGiven === true;
+  acct.freeCreditsDisabled = acct.freeCreditsDisabled === true;
   acct.freeCycleGrantVersion = Number.isFinite(Number(acct.freeCycleGrantVersion))
     ? Math.max(0, Math.floor(Number(acct.freeCycleGrantVersion)))
     : undefined;
@@ -638,6 +643,7 @@ export function compareGrantSpendOrder(a: CreditGrant, b: CreditGrant): number {
 }
 
 function ensureStarter(acct: CreditAccount): boolean {
+  if (acct.freeCreditsDisabled) return false;
   if (acct.starterGiven) return false;
   if (FREE_STARTER_CREDITS > 0) addGrant(acct, "free_starter", FREE_STARTER_CREDITS);
   acct.starterGiven = true;
@@ -650,6 +656,7 @@ function ensureStarter(acct: CreditAccount): boolean {
 // other grants are left untouched. Non-free accounts fall back to the one-time
 // starter. Returns true if the account changed (so the caller persists it).
 function ensureFreeCycle(acct: CreditAccount, now = Date.now()): boolean {
+  if (acct.freeCreditsDisabled) return false;
   if (acct.tier !== "free") return ensureStarter(acct);
   const month = utcMonthKey(now);
   if (acct.starterGiven && acct.freeCycleKey === month) {
@@ -969,6 +976,45 @@ export async function summary(deviceId: string): Promise<CreditSummary> {
   });
 }
 
+// Provision the empty account used after an Apple-linked installation signs out.
+// It is intentionally different from `reset`: reset is an admin operation that
+// may be followed by a normal first-touch grant, while this account must remain
+// at zero until the user purchases a plan or signs back into Apple.
+export async function createNoCreditAccount(identity: string): Promise<CreditSummary> {
+  return updateAccount(identity, (acct) => {
+    Object.assign(acct, {
+      schemaVersion: 2,
+      tier: "free",
+      grants: [],
+      voiceCredits: 0,
+      subscriptionStatus: "none",
+      billingPeriodStart: null,
+      billingPeriodEnd: null,
+      subscriptionId: undefined,
+      productId: undefined,
+      grantLedger: [],
+      usageLedger: [],
+      adminAdjustments: [],
+      starterGiven: true,
+      freeCreditsDisabled: true,
+      freeCycleKey: utcMonthKey(Date.now()),
+      freeCycleGrantVersion: FREE_CREDITS_POLICY_VERSION,
+      processedTx: [],
+      processedConsumableTx: [],
+      processedWebTopups: [],
+      hasPurchasedCredits: false,
+      voiceCount: 0,
+      voiceCycleCount: 0,
+      topupAllowances: [],
+      retiredSubscriptionIds: [],
+      usageRemainderMicros: 0,
+      dailyUsage: undefined,
+      monthlyUsage: undefined
+    });
+    return summarize(acct);
+  });
+}
+
 // Grant a tier's credits (simulates a purchase/renewal until IAP). New grant
 // expires in 90 days; sets the account's tier.
 export async function grantTier(deviceId: string, tier: Tier): Promise<CreditSummary> {
@@ -1250,6 +1296,7 @@ export async function mergeCredits(
           tier: "free",
           grants: [],
           starterGiven: true,
+          freeCreditsDisabled: true,
           processedTx: [],
           processedConsumableTx: [],
           processedWebTopups: [],
@@ -1317,7 +1364,7 @@ export async function clearRetiredSubscription(identity: string, originalTransac
 export async function reset(deviceId: string): Promise<void> {
   await updateAccount(deviceId, (acct) => {
     // Keep the account shape normalized while clearing all credit-bearing state.
-    Object.assign(acct, { tier: "free", grants: [], voiceCredits: 0, subscriptionStatus: "none", starterGiven: false, freeCycleKey: undefined, freeCycleGrantVersion: undefined, processedTx: [], processedConsumableTx: [], processedWebTopups: [], topupAllowances: [], voiceCount: 0, usageRemainderMicros: 0, hasPurchasedCredits: false, retiredSubscriptionIds: [] });
+    Object.assign(acct, { tier: "free", grants: [], voiceCredits: 0, subscriptionStatus: "none", starterGiven: false, freeCreditsDisabled: false, freeCycleKey: undefined, freeCycleGrantVersion: undefined, processedTx: [], processedConsumableTx: [], processedWebTopups: [], topupAllowances: [], voiceCount: 0, usageRemainderMicros: 0, hasPurchasedCredits: false, retiredSubscriptionIds: [] });
   });
 }
 

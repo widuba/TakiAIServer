@@ -60,12 +60,17 @@ function normalizeState(value: unknown): SignupState {
 /**
  * Atomically reserve one signup slot for an IP. Returns an opaque reservation
  * token, or null when ten existing/reserved accounts already occupy the cap.
+ * A small exclusion list is used when an existing anonymous installation is
+ * being replaced in the same account-boundary operation; that row is removed
+ * before the operation completes and should not make its own replacement fail
+ * at the cap.
  */
-export async function reserveSignupSlot(ip: string): Promise<string | null> {
+export async function reserveSignupSlot(ip: string, excludedIdentities: string[] = []): Promise<string | null> {
+  const excluded = new Set(excludedIdentities.filter(validIdentity));
   const observed = new Set(
     (await Promise.all(ipVariants(ip).map((variant) => identitiesForIp(variant))))
       .flat()
-      .filter(validIdentity)
+      .filter((identity) => validIdentity(identity) && !excluded.has(identity))
   );
   const token = randomUUID();
   const key = stateKey(ip);

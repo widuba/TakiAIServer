@@ -21,3 +21,7 @@ test("billing callbacks, web checkout, and admin remain available after reset", 
   assert.equal(bypassResetGeneration("/api/web/auth/google"), true);
   assert.equal(bypassResetGeneration("/api/iap/verify"), false);
 });
+
+test("Apple device preparation remains reachable after reset for a fresh install", () => {
+  assert.equal(bypassResetGeneration("/api/account/apple/prepare-device"), true);
+});

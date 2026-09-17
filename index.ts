@@ -25,14 +25,14 @@ import { extractFlightCode, normalizeTrackerKind } from "./src/entityClassifier.
 import { clearPushToken, getPushToken, setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, clearAlertsForReset, type Alert } from "./src/alerts.js";
 import { isDurable, storeDelete, storeDeleteCategory, storeGet, storeSet, storeUpdate } from "./src/store.js";
-import { summary as creditSummary, chargeUsageUsd, InsufficientCreditsError, CreditChargeCancelledError, reset as resetCredits, tierCatalog, grantForTransaction, activateSubscriptionTier, updateSubscriptionStatus, grantForConsumableTransaction, grantWebTopup, grantAdminCredits, adminCreditAdjustments, MAX_ADMIN_CREDIT_GRANT, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, CREDIT_USD, type Tier } from "./src/credits.js";
+import { summary as creditSummary, createNoCreditAccount, chargeUsageUsd, InsufficientCreditsError, CreditChargeCancelledError, reset as resetCredits, tierCatalog, grantForTransaction, activateSubscriptionTier, updateSubscriptionStatus, grantForConsumableTransaction, grantWebTopup, grantAdminCredits, adminCreditAdjustments, MAX_ADMIN_CREDIT_GRANT, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, CREDIT_USD, type Tier } from "./src/credits.js";
 import { measureUsage, sttCostUsd, totalUsageUsd, ttsCostUsd } from "./src/metering.js";
 import { decideAssistantCharge, planCorrectionSynthesis, usageBlockFor, usageBlockedPayload, voiceTurnEstimateCredits } from "./src/usage.js";
 import { resolvePurchaseDisplayName } from "./src/purchaseIdentity.js";
 import { verifyTransaction, verifyCreditTransaction, claimCreditTransaction, transferCreditTransaction, rebindCreditTransactions, linkTransactionIdentity, transferSubscriptionIdentity, claimSubscriptionPeriod, releaseSubscriptionPeriod, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
 import { revokeAppleAuthorizationCode, verifyAppleIdentityToken } from "./src/appleauth.js";
-import { isPrivacyDeletedDevice, purgeAppleAccount, purgeDeviceAccount, purgeStandaloneAccount } from "./src/accountDeletion.js";
-import { recordAssoc, associationsFor, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, reinstate, terminateAndBan, unban, warnUser, suspendAccount, acknowledgeNotice, safetyDetailFor, allSafetyAccounts, retireBannedIps, retiredBannedIps, reviewQueue, linkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG } from "./src/safety.js";
+import { isPrivacyDeletedDevice, purgeAppleAccount, purgeDeviceAccount, purgeStandaloneAccount, removeAnonymousDeviceAccount } from "./src/accountDeletion.js";
+import { recordAssoc, associationsFor, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, reinstate, terminateAndBan, unban, warnUser, suspendAccount, acknowledgeNotice, safetyDetailFor, allSafetyAccounts, retireBannedIps, retiredBannedIps, reviewQueue, linkApple, unlinkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG } from "./src/safety.js";
 import { queueContextualSafetyReview } from "./src/safetyReview.js";
 import { noteUser, noteUserStrict, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, noteInteraction, noteChannelCost, noteSession, noteEngagementPreferences, noteBillingEvent, userForIdentity, identitiesForIp, allUsers, deleteUser, type UserRecord } from "./src/users.js";
 import { TIERS } from "./src/credits.js";
@@ -487,6 +487,30 @@ app.use(async (req, res, next) => {
   if (!req.path.startsWith("/api/") || bypassDeviceAuth(req.path)) {
     next();
     return;
+  }
+  // Apple sign-out rotates the installation credential as part of the same
+  // account-boundary transaction. If the first response is lost, the retry has
+  // the new credential and an idempotency claim, not the old credential that was
+  // deliberately erased. Allow only that exact, server-issued recovery claim;
+  // every other endpoint still follows the normal credential path below.
+  if (req.path === "/api/account/apple/disconnect") {
+    const registrationKey = typeof req.body?.registrationKey === "string" ? req.body.registrationKey.trim() : "";
+    const headerId = typeof req.headers["x-taki-device-id"] === "string" ? req.headers["x-taki-device-id"].trim() : "";
+    if (DEVICE_REGISTRATION_KEY_RE.test(registrationKey) && /^\d{8}$/.test(headerId)) {
+      try {
+        const claim = await storeGet<any | null>(`devreg:${registrationKey}`, null);
+        if (claim?.mode === "apple-disconnect"
+          && claim.previousDeviceId === headerId
+          && /^\d{8}$/.test(String(claim.deviceId || ""))
+          && typeof claim.credential === "string"
+          && await verifyDeviceCredential(String(claim.deviceId), claim.credential)) {
+          next();
+          return;
+        }
+      } catch (error) {
+        console.error("Apple disconnect recovery claim check failed:", error);
+      }
+    }
   }
   const identities = requestPhysicalIdentities(req);
   const providerIdentities = requestProviderIdentities(req);
@@ -1341,7 +1365,14 @@ async function assignDeviceNumber(region: string): Promise<string> {
 
 const DEVICE_REGISTRATION_KEY_RE = /^[A-Za-z0-9_-]{32,128}$/;
 const registrationClaimKey = (key: string) => `devreg:${key}`;
-type RegistrationClaim = { deviceId: string; credential: string };
+const registrationDeviceKey = (deviceId: string) => `devreg-device:${deviceId}`;
+type RegistrationClaim = {
+  deviceId: string;
+  credential: string;
+  previousDeviceId?: string;
+  appleSub?: string;
+  mode?: "apple-disconnect" | "apple-link";
+};
 
 app.post("/api/register-device", async (req, res) => {
   const ip = clientIp(req);
@@ -1362,7 +1393,10 @@ app.post("/api/register-device", async (req, res) => {
           res.json({ deviceId: claim.deviceId, credential: claim.credential, credits });
           return;
         }
-        await storeDelete(registrationClaimKey(registrationKey));
+        await Promise.all([
+          storeDelete(registrationClaimKey(registrationKey)),
+          storeDelete(registrationDeviceKey(claim.deviceId))
+        ]);
       }
     } catch (error) {
       console.error("registration claim lookup failed:", error);
@@ -1403,6 +1437,7 @@ app.post("/api/register-device", async (req, res) => {
     const credential = await issueDeviceCredential(deviceId);
     if (registrationKey) {
       await storeSet(registrationClaimKey(registrationKey), { deviceId, credential } satisfies RegistrationClaim);
+      await storeSet(registrationDeviceKey(deviceId), registrationKey);
     }
     if (!(await commitSignupSlot(ip, reservation))) {
       throw new Error("signup reservation expired before account commit");
@@ -1419,7 +1454,10 @@ app.post("/api/register-device", async (req, res) => {
         storeDelete(`credits:${deviceId}`),
         storeDelete(`devicecredential:${deviceId}`),
         storeDelete(`devnum:used:${deviceId}`),
-        ...(registrationKey ? [storeDelete(registrationClaimKey(registrationKey))] : [])
+        ...(registrationKey ? [
+          storeDelete(registrationClaimKey(registrationKey)),
+          storeDelete(registrationDeviceKey(deviceId))
+        ] : [])
       ]);
     }
     console.error("register-device error:", e);
@@ -1513,16 +1551,38 @@ app.post("/api/device/info", async (req, res) => {
     res.status(404).json({ error: "unknown device" });
     return;
   }
-  // Repair accounts created by older builds that issued an ID without adding a
-  // complete dashboard record. Validation runs whenever the app launches.
+  // Once Apple is linked, the Apple identity is the account record shown in the
+  // dashboard. Do not recreate the old anonymous physical row every time the
+  // installation reports its metadata.
   const ip = clientIp(req);
-  await noteUser(deviceId, ip, String(req.headers?.["user-agent"] || ""), clientLocation(req, ip));
-  await noteDevice(deviceId, {
+  const appleSub = await appleForDevice(deviceId);
+  const identity = appleSub ? `apple:${appleSub}` : deviceId;
+  await noteUser(identity, ip, String(req.headers?.["user-agent"] || ""), clientLocation(req, ip));
+  await noteDevice(identity, {
     name: typeof b.name === "string" ? b.name : "",
     model: typeof b.model === "string" ? b.model : "",
     identifier: typeof b.identifier === "string" ? b.identifier : "",
     takiName: typeof b.takiName === "string" ? b.takiName : ""
   });
+  if (appleSub) {
+    try {
+      const priorRegistrationKey = await storeGet<string>(registrationDeviceKey(deviceId), "");
+      await removeAnonymousDeviceAccount(deviceId, { preserveCredential: true, preserveIdentities: [identity] });
+      // A completed Apple link must not leave the old anonymous registration
+      // claim around. Otherwise a delayed first-launch retry could recover the
+      // retired device id and recreate its dashboard row.
+      if (DEVICE_REGISTRATION_KEY_RE.test(priorRegistrationKey)) {
+        await Promise.all([
+          storeDelete(registrationClaimKey(priorRegistrationKey)),
+          storeDelete(registrationDeviceKey(deviceId))
+        ]);
+      }
+    } catch (error) {
+      // Metadata/authentication should remain available while a transient store
+      // failure retries the anonymous-row cleanup on the next foreground.
+      console.error("linked device account cleanup:", error);
+    }
+  }
   res.json({ ok: true });
 });
 
@@ -1653,7 +1713,8 @@ async function captureRequestDeviceInfo(req: any, takiName: string): Promise<voi
   if (authenticatedDevice !== deviceId) return;
   if (!(await storeGet<boolean>(`devnum:used:${deviceId}`, false)) && !(await hasCreditsAccount(deviceId))) return;
   const info = req.body?.deviceInfo || {};
-  await noteDevice(deviceId, {
+  const appleSub = await appleForDevice(deviceId);
+  await noteDevice(appleSub ? `apple:${appleSub}` : deviceId, {
     name: typeof info.name === "string" ? info.name : "",
     model: typeof info.model === "string" ? info.model : "",
     identifier: typeof info.identifier === "string" ? info.identifier : "",
@@ -1674,7 +1735,11 @@ app.get("/api/credits", async (req, res) => {
     const ip = clientIp(req);
     // Only 8-digit physical-device ids participate in device association;
     // apple:/google: account identities have no hardware id.
-    const dev = /^\d{8}$/.test(deviceId) ? deviceId : undefined;
+    const requestedPhysical = typeof req.body?.physicalDeviceId === "string" ? req.body.physicalDeviceId.trim() : "";
+    const headerPhysical = typeof req.headers?.["x-taki-device-id"] === "string" ? req.headers["x-taki-device-id"].trim() : "";
+    const dev = /^\d{8}$/.test(deviceId)
+      ? deviceId
+      : /^\d{8}$/.test(requestedPhysical) ? requestedPhysical : /^\d{8}$/.test(headerPhysical) ? headerPhysical : undefined;
     await recordAssoc(deviceId, dev, ip, clientLocation(req, ip));
     const acct = await getSafetyAccount(deviceId);
     if (acct.status === "terminated" || (await isBanned(deviceId, dev, ip)) || (await isTestRestricted(deviceId))) { access = "banned"; accessMessage = BANNED_MSG; }
@@ -2490,6 +2555,125 @@ app.post("/api/iap/verify", async (req, res) => {
   res.json({ ...(await creditSummary(identity)), granted: anyGranted, consumableGranted });
 });
 
+// A fresh install normally receives an anonymous device account before the
+// Apple sheet is opened. That anonymous path is intentionally capped per IP,
+// but it must not strand a returning Apple customer when the cap has already
+// been reached (shared Wi-Fi, QA devices, and family networks are common).
+// This endpoint is deliberately Apple-token-gated and only provisions the
+// physical credential; the existing /api/account/apple route still performs
+// the canonical Apple link and account merge immediately afterward.
+app.post("/api/account/apple/prepare-device", async (req, res) => {
+  const b = req.body || {};
+  const idToken = typeof b.identityToken === "string" ? b.identityToken : "";
+  const rawRegistrationKey = typeof b.registrationKey === "string" ? b.registrationKey.trim() : "";
+  const registrationKey = DEVICE_REGISTRATION_KEY_RE.test(rawRegistrationKey) ? rawRegistrationKey : "";
+  const identdata = await verifyAppleIdentityToken(idToken);
+  if (!identdata) { res.status(401).json({ error: "invalid Apple identity token" }); return; }
+  if (!registrationKey) { res.status(400).json({ error: "fresh registration key required" }); return; }
+
+  const appleSub = identdata.sub;
+  const ledgerIdentity = `apple:${appleSub}`;
+  let returningAppleAccount = false;
+  try {
+    // A linked native Apple account or a verified web Apple session identifies
+    // a returning account. The Apple token itself is the authentication for
+    // this route; unlike anonymous registration, verified provider sign-in is
+    // never blocked by the anonymous per-IP signup cap.
+    returningAppleAccount = await isKnownIdentity(ledgerIdentity);
+  } catch (error) {
+    console.error("Apple device preparation identity check failed:", error);
+    res.status(503).json({ error: "Taki could not verify this Apple account yet. Please try again shortly." });
+    return;
+  }
+
+  try {
+    const existingClaim = await storeGet<RegistrationClaim | null>(registrationClaimKey(registrationKey), null);
+    if (existingClaim
+      && (!existingClaim.mode || existingClaim.mode === "apple-link")
+      && (!existingClaim.mode || existingClaim.appleSub === appleSub)
+      && /^\d{8}$/.test(existingClaim.deviceId)
+      && typeof existingClaim.credential === "string"
+      && await verifyDeviceCredential(existingClaim.deviceId, existingClaim.credential)) {
+      // If an earlier anonymous registration completed just before Apple was
+      // tapped, do not carry a second starter grant into a returning Apple
+      // ledger. A genuinely new Apple account keeps the normal starter flow.
+      if (returningAppleAccount && existingClaim.mode !== "apple-link") {
+        await createNoCreditAccount(existingClaim.deviceId);
+      }
+      const credits = await creditSummary(existingClaim.deviceId);
+      res.set("Cache-Control", "no-store").json({
+        deviceId: existingClaim.deviceId,
+        credential: existingClaim.credential,
+        credits,
+        ledgerIdentity
+      });
+      return;
+    }
+  } catch (error) {
+    console.error("Apple device preparation claim lookup failed:", error);
+    res.status(503).json({ error: "Taki could not prepare this device yet. Please try again shortly." });
+    return;
+  }
+
+  const ip = clientIp(req);
+  const location = clientLocation(req, ip);
+  // Do not call reserveSignupSlot here. A valid Apple identity is an
+  // authenticated account path, not an anonymous signup; the normal
+  // /api/register-device endpoint continues to enforce the IP cap.
+
+  let deviceId = "";
+  let credential = "";
+  let registrationCompleted = false;
+  try {
+    deviceId = await assignDeviceNumber(typeof b.region === "string" ? b.region : "");
+    await noteUserStrict(deviceId, ip, String(req.headers?.["user-agent"] || ""), location);
+    if (returningAppleAccount) await createNoCreditAccount(deviceId);
+    else await creditSummary(deviceId);
+
+    const info = b.deviceInfo && typeof b.deviceInfo === "object" && !Array.isArray(b.deviceInfo)
+      ? b.deviceInfo as Record<string, unknown>
+      : {};
+    await noteDevice(deviceId, {
+      name: typeof info.name === "string" ? info.name : "",
+      model: typeof info.model === "string" ? info.model : "",
+      identifier: typeof info.identifier === "string" ? info.identifier : "",
+      takiName: typeof b.takiName === "string" ? b.takiName : ""
+    });
+    credential = await issueDeviceCredential(deviceId);
+    await storeSet(registrationClaimKey(registrationKey), {
+      deviceId,
+      credential,
+      appleSub,
+      mode: "apple-link"
+    } satisfies RegistrationClaim);
+    await storeSet(registrationDeviceKey(deviceId), registrationKey);
+    registrationCompleted = true;
+    res.set("Cache-Control", "no-store").json({
+      deviceId,
+      credential,
+      credits: await creditSummary(deviceId),
+      ledgerIdentity
+    });
+  } catch (error) {
+    console.error("Apple device preparation failed:", error);
+    if (!registrationCompleted) {
+      if (deviceId) {
+        await Promise.allSettled([
+          deleteUser(deviceId),
+          storeDelete(`credits:${deviceId}`),
+          storeDelete(`devicecredential:${deviceId}`),
+          storeDelete(`devnum:used:${deviceId}`),
+          storeDelete(registrationClaimKey(registrationKey)),
+          storeDelete(registrationDeviceKey(deviceId))
+        ]);
+      }
+    }
+    res.status(503).json({ error: registrationCompleted
+      ? "Taki is still finishing Apple sign-in. Please try again shortly."
+      : "Taki could not prepare this device for Apple sign-in yet. Please try again shortly." });
+  }
+});
+
 /* ---- Sign in with Apple (optional account) ------------------------------ */
 // Verify the identity token, derive the stable Apple account id, and merge the
 // device's existing credits into that account so they follow the user across
@@ -2515,12 +2699,12 @@ app.post("/api/account/apple", async (req, res) => {
   try {
     await linkApple(identdata.sub, deviceId);
     const priorDeviceUser = await userForIdentity(deviceId);
+    const priorRegistrationKey = await storeGet<string>(registrationDeviceKey(deviceId), "");
     const appleProfile = {
       sub: identdata.sub,
       email: identdata.email || priorDeviceUser.apple?.email,
       name: fullName || priorDeviceUser.apple?.name || undefined
     };
-    await noteApple(deviceId, appleProfile);
     await noteApple(ledgerIdentity, appleProfile);
     await enrollApplePromotionalSubscriber({
       email: appleProfile.email,
@@ -2533,7 +2717,6 @@ app.post("/api/account/apple", async (req, res) => {
     }
     const ip = clientIp(req);
     const location = clientLocation(req, ip);
-    await noteUser(deviceId, ip, String(req.headers?.["user-agent"] || ""), location);
     await noteUser(ledgerIdentity, ip, String(req.headers?.["user-agent"] || ""), location);
     const activeTransactionIds: string[] = [];
     for (const jws of entitlementJWS) {
@@ -2581,6 +2764,24 @@ app.post("/api/account/apple", async (req, res) => {
       const role = transactionId === primary ? "primary" : "secondary";
       await setTransactionRole(transactionId, ledgerIdentity, role);
     }
+    // The anonymous pre-sign-in account has now been merged into the Apple
+    // ledger. Remove its dashboard row and account-owned records so it cannot
+    // reappear as a second user, while retaining the physical credential and
+    // device association needed for this installation.
+    try {
+      await removeAnonymousDeviceAccount(deviceId, { preserveCredential: true, preserveIdentities: [ledgerIdentity] });
+      if (DEVICE_REGISTRATION_KEY_RE.test(priorRegistrationKey)) {
+        await Promise.all([
+          storeDelete(registrationClaimKey(priorRegistrationKey)),
+          storeDelete(registrationDeviceKey(deviceId))
+        ]);
+      }
+    } catch (error) {
+      // The Apple link and credit merge are already durable. A later device-info
+      // pass retries this cleanup rather than turning a successful sign-in into
+      // a misleading reconnect error.
+      console.error("anonymous Apple-link cleanup:", error);
+    }
   } catch (e) {
     console.error("apple link:", e);
     res.status(502).json({ error: "Taki couldn't finish connecting this Apple account. Please try again." });
@@ -2589,6 +2790,170 @@ app.post("/api/account/apple", async (req, res) => {
   const linkedDevices = (await devicesForApple(identdata.sub)).filter((d) => d !== deviceId);
   const accountUser = await userForIdentity(ledgerIdentity);
   res.json({ ledgerIdentity, deviceId, email: identdata.email || accountUser.apple?.email, linkedDevices, duplicateSubscriptionNeedsCancellation, engagement: accountUser.engagement, ...(await creditSummary(ledgerIdentity)), tiers: tierCatalog() });
+});
+
+// Sign out of Apple by rotating this installation into a brand-new anonymous
+// account. The Apple ledger is retained for a future sign-in, but the old
+// physical account row, credit ledger, chats, and credential are removed. The
+// registration claim makes the whole operation retry-safe if the response is
+// lost after the new account is committed.
+app.post("/api/account/apple/disconnect", async (req, res) => {
+  const b = req.body || {};
+  const deviceId = typeof b.physicalDeviceId === "string"
+    ? normalizeTopupIdentity(b.physicalDeviceId)
+    : typeof b.deviceId === "string" ? normalizeTopupIdentity(b.deviceId) : "";
+  const expectedLedgerIdentity = typeof b.expectedLedgerIdentity === "string" ? b.expectedLedgerIdentity.trim() : "";
+  const registrationKey = typeof b.registrationKey === "string" && DEVICE_REGISTRATION_KEY_RE.test(b.registrationKey)
+    ? b.registrationKey
+    : "";
+  const appleSub = expectedLedgerIdentity.startsWith("apple:")
+    ? expectedLedgerIdentity.slice("apple:".length)
+    : "";
+  if (!/^\d{8}$/.test(deviceId) || !appleSub || !registrationKey) {
+    res.status(400).json({ error: "device, Apple account, and fresh registration key are required" });
+    return;
+  }
+
+  let claim: RegistrationClaim | null = null;
+  try { claim = await storeGet<RegistrationClaim | null>(registrationClaimKey(registrationKey), null); }
+  catch (error) {
+    console.error("Apple disconnect claim lookup failed:", error);
+    res.status(503).json({ error: "Taki could not verify the account rotation yet. Please try again shortly." });
+    return;
+  }
+  const recovery = claim?.mode === "apple-disconnect"
+    && claim.previousDeviceId === deviceId
+    && claim.appleSub === appleSub
+    && /^\d{8}$/.test(claim.deviceId)
+    && typeof claim.credential === "string"
+    && await verifyDeviceCredential(claim.deviceId, claim.credential);
+
+  if (recovery && claim) {
+    // The first request may have completed all or only part of cleanup. Every
+    // operation here is idempotent, so a retry can safely finish the boundary.
+    try {
+      if (await appleForDevice(deviceId) === appleSub) await unlinkApple(appleSub, deviceId);
+      await removeAnonymousDeviceAccount(deviceId, { preserveCredential: false, removeDeviceSideEffects: true });
+      const credits = await creditSummary(claim.deviceId);
+      const linkedDevices = (await devicesForApple(appleSub)).filter((id) => id !== deviceId);
+      res.set("Cache-Control", "no-store").json({
+        ok: true,
+        appleDisconnected: true,
+        deviceId: claim.deviceId,
+        credential: claim.credential,
+        credits,
+        linkedDevices,
+        tiers: tierCatalog()
+      });
+    } catch (error) {
+      console.error("Apple disconnect recovery failed:", error);
+      res.status(503).json({ error: "Taki is still finishing this account change. Please try again shortly." });
+    }
+    return;
+  }
+
+  if (await verifiedPhysicalDevice(req) !== deviceId) {
+    res.status(401).json({ error: "This Taki installation needs to reconnect securely." });
+    return;
+  }
+  if (await appleForDevice(deviceId) !== appleSub) {
+    res.status(403).json({ error: "This device is not linked to that Apple account." });
+    return;
+  }
+  const previousRegistrationKey = await storeGet<string>(registrationDeviceKey(deviceId), "");
+  if (previousRegistrationKey === registrationKey) {
+    res.status(409).json({ error: "A fresh registration key is required for account rotation." });
+    return;
+  }
+
+  const ip = clientIp(req);
+  const location = clientLocation(req, ip);
+  let reservation = "";
+  try {
+    // Replacing the old anonymous installation should not consume an extra
+    // signup slot if that row still exists in the IP index. The Apple ledger is
+    // deliberately not excluded: it remains a real account for future sign-in.
+    reservation = await reserveSignupSlot(ip, [deviceId]) || "";
+  } catch (error) {
+    console.error("Apple disconnect signup limit check failed:", error);
+    res.status(503).json({ error: "Taki could not create the new device account yet. Please try again shortly." });
+    return;
+  }
+  if (!reservation) {
+    res.status(429).json({
+      error: `This network has reached the limit of ${MAX_ACCOUNTS_PER_IP} Taki accounts. Try again later or sign back into Apple.`,
+      code: "signup_ip_limit",
+      limit: MAX_ACCOUNTS_PER_IP
+    });
+    return;
+  }
+
+  let newDeviceId = "";
+  let newCredential = "";
+  let registrationCompleted = false;
+  try {
+    newDeviceId = await assignDeviceNumber(typeof b.region === "string" ? b.region : "");
+    await createNoCreditAccount(newDeviceId);
+    await noteUserStrict(newDeviceId, ip, String(req.headers?.["user-agent"] || ""), location);
+    const info = b.deviceInfo && typeof b.deviceInfo === "object" ? b.deviceInfo : {};
+    await noteDevice(newDeviceId, {
+      name: typeof info.name === "string" ? info.name : "",
+      model: typeof info.model === "string" ? info.model : "",
+      identifier: typeof info.identifier === "string" ? info.identifier : "",
+      takiName: typeof b.takiName === "string" ? b.takiName : ""
+    });
+    newCredential = await issueDeviceCredential(newDeviceId);
+    await storeSet(registrationClaimKey(registrationKey), {
+      deviceId: newDeviceId,
+      credential: newCredential,
+      previousDeviceId: deviceId,
+      appleSub,
+      mode: "apple-disconnect"
+    } satisfies RegistrationClaim);
+    await storeSet(registrationDeviceKey(newDeviceId), registrationKey);
+    if (!(await commitSignupSlot(ip, reservation))) throw new Error("signup reservation expired before account commit");
+    registrationCompleted = true;
+
+    // From this point the new account and its recovery claim are durable. If an
+    // old-account cleanup step fails, the recovery branch above completes it on
+    // the next attempt without deleting the new account.
+    await unlinkApple(appleSub, deviceId);
+    await removeAnonymousDeviceAccount(deviceId, { preserveCredential: false, removeDeviceSideEffects: true });
+    if (DEVICE_REGISTRATION_KEY_RE.test(previousRegistrationKey)) {
+      await Promise.all([
+        storeDelete(registrationClaimKey(previousRegistrationKey)),
+        storeDelete(registrationDeviceKey(deviceId))
+      ]);
+    }
+    const credits = await creditSummary(newDeviceId);
+    res.set("Cache-Control", "no-store").json({
+      ok: true,
+      appleDisconnected: true,
+      deviceId: newDeviceId,
+      credential: newCredential,
+      credits,
+      linkedDevices: await devicesForApple(appleSub),
+      tiers: tierCatalog()
+    });
+  } catch (error) {
+    console.error("Apple disconnect failed:", error);
+    if (!registrationCompleted) {
+      await releaseSignupSlot(ip, reservation).catch((releaseError) => console.error("release Apple disconnect reservation:", releaseError));
+      if (newDeviceId) {
+        await Promise.allSettled([
+          deleteUser(newDeviceId),
+          storeDelete(`credits:${newDeviceId}`),
+          storeDelete(`devicecredential:${newDeviceId}`),
+          storeDelete(`devnum:used:${newDeviceId}`),
+          storeDelete(registrationClaimKey(registrationKey)),
+          storeDelete(registrationDeviceKey(newDeviceId))
+        ]);
+      }
+    }
+    res.status(503).json({ error: registrationCompleted
+      ? "Taki is still finishing this account change. Please try again shortly."
+      : "Taki could not create the new device account yet. Please try again shortly." });
+  }
 });
 
 app.post("/api/account/delete", async (req, res) => {
@@ -3696,7 +4061,11 @@ async function safetyGate(identity: string, message: string, req: any, _voiceMod
   if (!identity) return null;
   const ip = clientIp(req);
   const location = clientLocation(req, ip);
-  const dev = identity.startsWith("apple:") ? undefined : identity;
+  const requestedPhysical = typeof req.body?.physicalDeviceId === "string" ? req.body.physicalDeviceId.trim() : "";
+  const headerPhysical = typeof req.headers?.["x-taki-device-id"] === "string" ? req.headers["x-taki-device-id"].trim() : "";
+  const dev = identity.startsWith("apple:")
+    ? (/^\d{8}$/.test(requestedPhysical) ? requestedPhysical : /^\d{8}$/.test(headerPhysical) ? headerPhysical : undefined)
+    : identity;
   try {
     await Promise.all([
       recordAssoc(identity, dev, ip, location),

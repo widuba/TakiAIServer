@@ -404,6 +404,21 @@ export async function linkApple(sub: string, deviceId: string): Promise<void> {
     return { value: { devices: devices.slice(-100) }, result: undefined };
   });
 }
+
+// Remove one physical installation from an Apple account without deleting the
+// Apple ledger itself. This is the account-boundary operation used by sign-out:
+// the old device can be retired and replaced while the user's Apple credits,
+// chats, and subscription history remain available if they sign in again.
+export async function unlinkApple(sub: string, deviceId: string): Promise<void> {
+  if (!sub || !deviceId) return;
+  const current = await storeGet<{ sub?: string }>(devAppleKey(deviceId), { sub: "" });
+  if (current.sub === sub) await storeSet(devAppleKey(deviceId), { sub: "" });
+  await storeUpdate<{ devices: string[] }, void>(appleKey(sub), { devices: [] }, (stored) => ({
+    value: { devices: (Array.isArray(stored.devices) ? stored.devices : []).filter((id) => id !== deviceId) },
+    result: undefined
+  }));
+}
+
 export async function devicesForApple(sub: string): Promise<string[]> {
   if (!sub) return [];
   const devices = (await storeGet<{ devices: string[] }>(appleKey(sub), { devices: [] })).devices;

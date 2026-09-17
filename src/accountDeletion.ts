@@ -129,6 +129,66 @@ async function clearIdentityRecords(identity: string): Promise<void> {
   ]);
 }
 
+/**
+ * Remove the anonymous account record that existed before Apple sign-in (or
+ * before an Apple-linked installation is rotated on sign-out). This is kept
+ * separate from a privacy deletion: the device number may remain valid while
+ * it is being linked, and a new account needs a fresh credential/ledger rather
+ * than a privacy-deleted marker that would immediately force onboarding again.
+ */
+export async function removeAnonymousDeviceAccount(
+  deviceId: string,
+  options: {
+    preserveCredential?: boolean;
+    preserveIdentities?: string[];
+    removeDeviceSideEffects?: boolean;
+  } = {}
+): Promise<void> {
+  if (!isLinkedDeviceId(deviceId)) return;
+  const preserve = new Set((options.preserveIdentities || []).filter(Boolean));
+  const identities = new Set([deviceId]);
+  const ips = await accountIps(identities);
+  await clearSharedAccountIndexes(identities, ips);
+
+  const plain = safePlain(deviceId);
+  const safety = safetySafe(deviceId);
+  await clearTransactionMappings(deviceId);
+  await Promise.all([
+    storeDelete(`user:${safeColon(deviceId)}`),
+    storeDelete(`credits:${plain}`),
+    ...(options.preserveCredential === false ? [storeDelete(`devicecredential:${plain}`)] : []),
+    storeDelete(`email:conn:${plain}`),
+    storeDelete(`email:conn:${deviceId}`),
+    storeDelete(`routines:${deviceId}`),
+    storeDelete(`chatsync:${safety}`),
+    storeDelete(`safety:acct:${safety}`),
+    storeDelete(`safety:assoc:${safety}`),
+    storeDelete(`safety:test-restriction:${safety}`),
+    storeDelete(`iapidentity:${plain}`),
+    storeDelete(`iapprimary:${plain}`),
+    storeDelete(`stripe:identity-subs:${safety}`),
+    storeSet(`webauth:${deviceId}`, false)
+  ]);
+
+  // Keep the Apple identity (and any other unrelated identity) associated with
+  // the hardware when sign-in is still active, but remove the old anonymous
+  // identity from the device history used by Admin and safety enforcement.
+  await storeUpdate<{ ids?: unknown }, void>(`safety:dev:${safety}`, { ids: [] }, (stored) => {
+    const ids = Array.isArray(stored?.ids) ? stored.ids.filter((id): id is string => typeof id === "string") : [];
+    const filtered = options.removeDeviceSideEffects
+      ? ids.filter((id) => id !== deviceId)
+      : ids.filter((id) => id !== deviceId || preserve.has(id));
+    return { value: { ids: [...new Set(filtered)] }, result: undefined };
+  });
+
+  if (options.removeDeviceSideEffects) {
+    await clearPushToken(deviceId);
+    await clearLiveActivitiesForDevice(deviceId);
+    await cancelAlerts(deviceId);
+    await storeDelete(`safety:devapple:${safety}`);
+  }
+}
+
 async function clearPhysicalSideEffects(device: string, identities: Set<string>): Promise<void> {
   // clearPushToken also removes the device from the durable token index. A raw
   // row delete would leave a stale entry that later broadcasts still inspect.

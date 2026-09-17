@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID } from "node:crypto";
-import { isPrivacyDeletedDevice, privacyDeletedDeviceKey, purgeAppleAccount, purgeDeviceAccount } from "../src/accountDeletion.js";
+import { isPrivacyDeletedDevice, privacyDeletedDeviceKey, purgeAppleAccount, purgeDeviceAccount, removeAnonymousDeviceAccount } from "../src/accountDeletion.js";
 import { storeDelete, storeGet, storeSet } from "../src/store.js";
 
 const safeColon = (value: string) => value.replace(/[^a-zA-Z0-9_:.-]/g, "_");
@@ -123,6 +123,52 @@ test("device privacy deletion logs out the installation without creating a ban",
     assert.equal(starter.tier, "free");
     assert.equal(starter.starterGiven, true);
     assert.deepEqual(starter.grants, []);
+  } finally {
+    for (const key of keys) {
+      await storeDelete(key);
+      const value = original.get(key);
+      if (value !== null && value !== undefined) await storeSet(key, value);
+    }
+  }
+});
+
+test("Apple linking removes the anonymous Admin row but preserves the linked account and credential", async () => {
+  const suffix = randomUUID().replaceAll("-", "");
+  const device = `1${String(parseInt(suffix.slice(0, 7), 16) % 10_000_000).padStart(7, "0")}`;
+  const appleIdentity = `apple:testsub${suffix}`;
+  const ip = `192.0.2.${(parseInt(suffix.slice(7, 9), 16) % 200) + 1}`;
+  const userKey = `user:${safeColon(device)}`;
+  const appleUserKey = `user:${safeColon(appleIdentity)}`;
+  const creditKey = `credits:${safePlain(device)}`;
+  const credentialKey = `devicecredential:${safePlain(device)}`;
+  const userIpKey = `userip:${safeColon(ip)}`;
+  const safetyDeviceKey = `safety:dev:${safetySafe(device)}`;
+  const safetyAppleKey = `safety:devapple:${safetySafe(device)}`;
+  const keys = ["users:index", userKey, appleUserKey, creditKey, credentialKey, userIpKey, safetyDeviceKey, safetyAppleKey];
+  const original = new Map<string, unknown | null>();
+  for (const key of keys) original.set(key, await storeGet<unknown | null>(key, null));
+
+  try {
+    await storeSet("users:index", { ids: [...((original.get("users:index") as { ids?: string[] } | null)?.ids || []), device, appleIdentity] });
+    await storeSet(userKey, { identity: device, ips: [ip], name: "Anonymous install" });
+    await storeSet(appleUserKey, { identity: appleIdentity, apple: { sub: suffix }, name: "Apple account" });
+    await storeSet(creditKey, { deviceId: device, balance: 500, starterGiven: true });
+    await storeSet(credentialKey, "active-credential-hash");
+    await storeSet(userIpKey, { ids: [device, appleIdentity] });
+    await storeSet(safetyDeviceKey, { ids: [device, appleIdentity] });
+    await storeSet(safetyAppleKey, { sub: suffix });
+
+    await removeAnonymousDeviceAccount(device, { preserveCredential: true, preserveIdentities: [appleIdentity] });
+
+    assert.equal(await storeGet(userKey, null), null);
+    assert.equal(await storeGet(creditKey, null), null);
+    assert.equal(await storeGet(credentialKey, null), "active-credential-hash");
+    assert.notEqual(await storeGet(appleUserKey, null), null);
+    const users = await storeGet<{ ids: string[] }>("users:index", { ids: [] });
+    assert.equal(users.ids.includes(device), false);
+    assert.equal(users.ids.includes(appleIdentity), true);
+    assert.deepEqual(await storeGet(safetyDeviceKey, { ids: [] }), { ids: [appleIdentity] });
+    assert.deepEqual(await storeGet(safetyAppleKey, null), { sub: suffix });
   } finally {
     for (const key of keys) {
       await storeDelete(key);

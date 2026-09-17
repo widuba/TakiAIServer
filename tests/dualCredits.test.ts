@@ -7,6 +7,7 @@ import {
   VOICE_SURCHARGE_CREDITS,
   chargeRequestCredits,
   chargeUsageUsd,
+  createNoCreditAccount,
   downgradeToFree,
   grantForTransaction,
   quoteCreditCharge,
@@ -268,6 +269,25 @@ test("16. legacy Plus Voice accounts migrate to Premium without losing AI Credit
   assert.equal(migrated.balance, 1_250);
   assert.equal(migrated.voiceCredits, 293);
   assert.equal(migrated.subscriptionStatus, "active");
+});
+
+test("post-Apple-sign-out device accounts stay empty when refreshed", async () => {
+  const id = identity("post-apple-signout");
+  const createdAccount = await createNoCreditAccount(id);
+
+  assert.equal(createdAccount.tier, "free");
+  assert.equal(createdAccount.balance, 0);
+  assert.equal(createdAccount.aiCredits, 0);
+  assert.equal(createdAccount.voiceCredits, 0);
+
+  // Membership refreshes and the first message both call summary(). The
+  // account-boundary flag must prevent either path from restoring the normal
+  // free starter grant.
+  const refreshed = await summary(id);
+  assert.equal(refreshed.balance, 0);
+  assert.equal(refreshed.aiCredits, 0);
+  assert.equal(refreshed.voiceCredits, 0);
+  assert.equal(refreshed.hasPurchasedCredits, false);
 });
 
 test("17. stale out-of-order lifecycle notifications cannot overwrite a newer period", async () => {

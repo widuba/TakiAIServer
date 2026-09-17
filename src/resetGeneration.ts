@@ -8,6 +8,7 @@ const EXTERNAL_PATHS = new Set([
   // generation header.
   "/api/register-device",
   "/api/device/info",
+  "/api/account/apple/prepare-device",
   "/api/web/auth/config",
   "/api/web/auth/google",
   "/api/web/auth/apple",

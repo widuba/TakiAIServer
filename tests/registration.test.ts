@@ -41,3 +41,17 @@ test("eleven simultaneous signup reservations cannot pass the ten-account cap", 
     await storeDelete(signupStateKeyForIp(ip));
   }
 });
+
+test("account replacement can exclude the installation being retired", async () => {
+  const ip = `192.0.2.${Math.floor(Math.random() * 200) + 1}`;
+  const retiringDevice = "19999998";
+  const otherIds = Array.from({ length: MAX_ACCOUNTS_PER_IP - 1 }, (_, index) => `2${String(index).padStart(7, "0")}`);
+  try {
+    await storeSet(ipKey(ip), { ids: [...otherIds, retiringDevice] });
+    const reservation = await reserveSignupSlot(ip, [retiringDevice]);
+    assert.ok(reservation);
+    await releaseSignupSlot(ip, reservation);
+  } finally {
+    await Promise.all([storeDelete(ipKey(ip)), storeDelete(signupStateKeyForIp(ip))]);
+  }
+});
