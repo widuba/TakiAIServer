@@ -1339,9 +1339,37 @@ async function assignDeviceNumber(region: string): Promise<string> {
   throw new Error("device id space is temporarily unavailable");
 }
 
+const DEVICE_REGISTRATION_KEY_RE = /^[A-Za-z0-9_-]{32,128}$/;
+const registrationClaimKey = (key: string) => `devreg:${key}`;
+type RegistrationClaim = { deviceId: string; credential: string };
+
 app.post("/api/register-device", async (req, res) => {
   const ip = clientIp(req);
   const location = clientLocation(req, ip);
+  const rawRegistrationKey = typeof req.body?.registrationKey === "string" ? req.body.registrationKey : "";
+  const registrationKey = DEVICE_REGISTRATION_KEY_RE.test(rawRegistrationKey) ? rawRegistrationKey : "";
+
+  // A response can be lost after the account is committed (especially while a
+  // sleeping service wakes). Return that same account on a retry instead of
+  // minting a second anonymous installation. The claim contains the opaque
+  // installation credential, but the key itself is never accepted for API auth.
+  if (registrationKey) {
+    try {
+      const claim = await storeGet<RegistrationClaim | null>(registrationClaimKey(registrationKey), null);
+      if (claim && /^\d{8}$/.test(claim.deviceId) && typeof claim.credential === "string" && claim.credential.length >= 32) {
+        if (await verifyDeviceCredential(claim.deviceId, claim.credential)) {
+          const credits = await creditSummary(claim.deviceId);
+          res.json({ deviceId: claim.deviceId, credential: claim.credential, credits });
+          return;
+        }
+        await storeDelete(registrationClaimKey(registrationKey));
+      }
+    } catch (error) {
+      console.error("registration claim lookup failed:", error);
+      res.status(503).json({ error: "Signup is temporarily unavailable. Please try again shortly." });
+      return;
+    }
+  }
   let reservation = "";
   try {
     reservation = await reserveSignupSlot(ip) || "";
@@ -1373,6 +1401,9 @@ app.post("/api/register-device", async (req, res) => {
     await noteUserStrict(deviceId, ip, String(req.headers?.["user-agent"] || ""), location);
     const credits = await creditSummary(deviceId);
     const credential = await issueDeviceCredential(deviceId);
+    if (registrationKey) {
+      await storeSet(registrationClaimKey(registrationKey), { deviceId, credential } satisfies RegistrationClaim);
+    }
     if (!(await commitSignupSlot(ip, reservation))) {
       throw new Error("signup reservation expired before account commit");
     }
@@ -1387,7 +1418,8 @@ app.post("/api/register-device", async (req, res) => {
         deleteUser(deviceId),
         storeDelete(`credits:${deviceId}`),
         storeDelete(`devicecredential:${deviceId}`),
-        storeDelete(`devnum:used:${deviceId}`)
+        storeDelete(`devnum:used:${deviceId}`),
+        ...(registrationKey ? [storeDelete(registrationClaimKey(registrationKey))] : [])
       ]);
     }
     console.error("register-device error:", e);
