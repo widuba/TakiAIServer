@@ -1235,6 +1235,10 @@ test("default relationship prompt is warm without dependency or canned intimacy"
   assert.match(prompt, /Facts outrank personality/);
   assert.match(prompt, /Do not guilt the user into continuing/);
   assert.match(prompt, /never manufacture excitement/);
+  assert.match(prompt, /standard, natural conversational English/i);
+  assert.match(prompt, /FRIENDLY VOICE BOUNDARY/);
+  assert.match(prompt, /what's good/);
+  assert.match(prompt, /flirty\/edgy emojis/i);
   assert.doesNotMatch(prompt, /beaming best friend/i);
 });
 
