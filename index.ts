@@ -39,7 +39,7 @@ import { TIERS } from "./src/credits.js";
 import { billableAudioDurationMs, transcribe, synthesize, splitTextForProgressiveSpeech, listVoices, isVoiceConfigured, PIRATE_MARSHAL_VOICE_ID, speechCharacterCount, shouldAskForVoiceRepeat, shouldUseDeviceTranscript, VOICE_REPEAT_PROMPT, normalizeSpeechKeyterms } from "./src/voice.js";
 import { extractDurableMemories } from "./src/userMemory.js";
 import { createChatTitle } from "./src/chatTitle.js";
-import { engagementSummary, isEngagementEmailConfigured, recordEngagementOpen, recordEngagementSession, recommendedEngagement, sendPersonalizedEngagement, shouldSendAutomatic, type EngagementChannel } from "./src/engagement.js";
+import { creditNotificationMessage, engagementSummary, isEngagementEmailConfigured, normalizeEngagementMessage, recordEngagementOpen, recordEngagementSession, recommendedEngagement, sendCustomEngagement, sendPersonalizedEngagement, shouldSendAutomatic, type EngagementChannel } from "./src/engagement.js";
 import { backfillApplePromotionalSubscribers, enrollApplePromotionalSubscriber, promotionalSummary, sendPromotionalCampaign, unsubscribePromotionalEmail } from "./src/promotional.js";
 import { performFullReset, previewFullReset, type FullResetPreview } from "./src/fullReset.js";
 import { bypassResetGeneration, hasCurrentResetGeneration, RESET_EPOCH_HEADER } from "./src/resetGeneration.js";
@@ -3856,6 +3856,34 @@ app.post("/api/admin/credits/grant", async (req, res) => {
     }
     const reason = typeof req.body?.reason === "string" ? req.body.reason : "Administrative credit grant";
     const result = await grantAdminCredits(identity, amountValue, reason);
+    const notify = req.body?.notify !== false;
+    let notification: { requested: boolean; sent: boolean; campaignId?: string; reason?: string } = {
+      requested: notify,
+      sent: false
+    };
+    if (notify) {
+      try {
+        const account = await buildAdminAccount(identity);
+        const message = normalizeEngagementMessage({
+          title: req.body?.notificationTitle,
+          body: req.body?.notificationBody
+        }, creditNotificationMessage(amountValue));
+        const delivery = await sendCustomEngagement(account.user, "push", account.deviceIds, message, "admin", "credits");
+        notification = {
+          requested: true,
+          sent: delivery.ok,
+          campaignId: delivery.campaign.id,
+          ...(delivery.ok ? {} : { reason: delivery.reason || delivery.campaign.error || "Notification could not be delivered." })
+        };
+      } catch (error) {
+        console.error("Admin credit notification failed after grant:", error);
+        notification = {
+          requested: true,
+          sent: false,
+          reason: error instanceof Error ? error.message : "Notification could not be delivered."
+        };
+      }
+    }
     res.set("Cache-Control", "no-store");
     res.status(201).json({
       ok: true,
@@ -3864,7 +3892,8 @@ app.post("/api/admin/credits/grant", async (req, res) => {
       reason: result.reason,
       expiresAt: result.expiresAt,
       balance: result.summary.balance,
-      credits: result.summary
+      credits: result.summary,
+      notification
     });
   } catch (error) {
     console.error("Admin credit grant failed:", error);
@@ -3958,6 +3987,38 @@ app.post("/api/admin/engagement-send", async (req, res) => {
   } catch (error) {
     console.error("Admin engagement send failed:", error);
     res.status(503).json({ error: "The notification could not be sent. Try again shortly." });
+  }
+});
+
+// Send a one-off account message from the dashboard. Push messages are
+// transactional/admin messages and only require a registered token; the
+// personalized-suggestion toggle does not block an operator from reaching a
+// customer about their account. Email still follows its explicit email opt-in.
+app.post("/api/admin/notification-send", async (req, res) => {
+  if (!requireAdminSecret(req.body?.secret, res)) return;
+  const identity = readAdminIdentity(req, res);
+  const channel: EngagementChannel = req.body?.channel === "email" ? "email" : "push";
+  if (!identity) return;
+  let message;
+  try {
+    message = normalizeEngagementMessage({ title: req.body?.title, body: req.body?.body });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "A notification title and body are required." });
+    return;
+  }
+  try {
+    const account = await buildAdminAccount(identity);
+    if (channel === "email" && !account.user.engagement.emailEnabled) {
+      res.status(409).json({ error: "The user has not enabled personalized email." });
+      return;
+    }
+    const result = await sendCustomEngagement(account.user, channel, account.deviceIds, message, "admin", "custom");
+    if (result.ok) { res.json(result); return; }
+    const failure = engagementDeliveryFailure(channel, result.reason || result.campaign.error || "");
+    res.status(failure.status).json({ ...result, error: failure.error });
+  } catch (error) {
+    console.error("Admin custom notification failed:", error);
+    res.status(503).json({ error: "The custom notification could not be sent. Try again shortly." });
   }
 });
 

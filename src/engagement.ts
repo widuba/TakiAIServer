@@ -6,7 +6,7 @@ import { fetchWithTimeout } from "./util.js";
 import type { UserRecord } from "./users.js";
 
 export type EngagementChannel = "push" | "email";
-export type EngagementCategory = "planning" | "communication" | "health" | "nearby" | "home" | "research" | "reminders" | "sports" | "travel" | "creativity" | "learning" | "entertainment";
+export type EngagementCategory = "planning" | "communication" | "health" | "nearby" | "home" | "research" | "reminders" | "sports" | "travel" | "creativity" | "learning" | "entertainment" | "custom" | "credits";
 
 export interface EngagementCampaign {
   id: string;
@@ -35,7 +35,7 @@ const EMAIL_API_KEY = (process.env.RESEND_API_KEY || "").trim();
 const EMAIL_FROM = (process.env.ENGAGEMENT_FROM_EMAIL || "").trim();
 const SERVER_BASE_URL = (process.env.SERVER_BASE_URL || "https://takiaiserver.onrender.com").replace(/\/$/, "");
 
-const CONTENT: Record<EngagementCategory, { title: string; body: string; emailSubject: string; emailBody: string }> = {
+const CONTENT: Record<Exclude<EngagementCategory, "custom" | "credits">, { title: string; body: string; emailSubject: string; emailBody: string }> = {
   planning: {
     title: "Make today easier",
     body: "Turn the things on your mind into a clear plan with Taki.",
@@ -123,6 +123,35 @@ export type EngagementTemplate = {
   emailBody: string;
 };
 
+export type EngagementMessage = {
+  title: string;
+  body: string;
+};
+
+export const CREDIT_NOTIFICATION_TITLE = "Your Taki credits are here";
+const NOTIFICATION_TITLE_MAX = 120;
+const NOTIFICATION_BODY_MAX = 2_000;
+
+export function creditNotificationMessage(amount: number): EngagementMessage {
+  const credits = Math.max(0, Math.floor(Number(amount) || 0)).toLocaleString("en-US");
+  return {
+    title: CREDIT_NOTIFICATION_TITLE,
+    body: `We added ${credits} AI Credits to your Taki account. They expire in 90 days.`
+  };
+}
+
+function normalizeMessagePart(value: unknown, maxLength: number): string {
+  return String(value ?? "").replace(/\u0000/g, "").trim().slice(0, maxLength);
+}
+
+export function normalizeEngagementMessage(value: Partial<EngagementMessage>, fallback?: EngagementMessage): EngagementMessage {
+  const title = normalizeMessagePart(value?.title || fallback?.title, NOTIFICATION_TITLE_MAX).replace(/\s+/g, " ");
+  const body = normalizeMessagePart(value?.body || fallback?.body, NOTIFICATION_BODY_MAX);
+  if (!title) throw new Error("Notification title is required.");
+  if (!body) throw new Error("Notification body is required.");
+  return { title, body };
+}
+
 const TEMPLATE_VARIANTS: EngagementTemplate[] = [
   ["planning", "Start with one thing", "Pick one priority and let Taki turn it into a simple next step.", "A simple place to start", "Pick one priority and open Taki for a clear next step."],
   ["planning", "Clear the mental list", "Tell Taki what is on your mind and sort it into a plan you can actually use.", "Clear the mental list", "Tell Taki what is on your mind and turn it into a practical plan."],
@@ -199,6 +228,48 @@ async function loadState(identity: string): Promise<EngagementState> {
   return state;
 }
 
+function openedCampaignCount(state: EngagementState, campaign: EngagementCampaign): number {
+  return state.campaigns.filter((item) =>
+    item
+    && item.status === "sent"
+    && item.category === campaign.category
+    && item.channel === campaign.channel
+    && Boolean(item.openedAt)
+  ).length;
+}
+
+function reconcilePerformance(state: EngagementState): EngagementState["performance"] {
+  const performance: EngagementState["performance"] = {};
+  for (const [category, channels] of Object.entries(state.performance || {})) {
+    performance[category as EngagementCategory] = {};
+    for (const [channel, value] of Object.entries(channels || {})) {
+      if (channel !== "push" && channel !== "email") continue;
+      performance[category as EngagementCategory]![channel] = { ...value };
+    }
+  }
+  // The campaign records are the source of truth for an individual tap. The
+  // aggregate can lag after an interrupted write or an older server version,
+  // so never render fewer opens than the campaign history proves.
+  for (const campaign of state.campaigns) {
+    if (campaign.status !== "sent" || !campaign.openedAt) continue;
+    const category = performance[campaign.category] || {};
+    const value = category[campaign.channel] || { sent: 0, opened: 0 };
+    category[campaign.channel] = {
+      ...value,
+      opened: Math.max(Number(value.opened) || 0, openedCampaignCount(state, campaign))
+    };
+    performance[campaign.category] = category;
+  }
+  return performance;
+}
+
+function upsertCampaign(state: EngagementState, campaign: EngagementCampaign): void {
+  const index = state.campaigns.findIndex((item) => item.id === campaign.id);
+  if (index >= 0) state.campaigns[index] = campaign;
+  else state.campaigns.push(campaign);
+  state.campaigns = state.campaigns.slice(-100);
+}
+
 async function saveCampaign(campaign: EngagementCampaign, countAsSent: boolean): Promise<void> {
   // Keep the campaign record and the identity's aggregate state in one
   // transaction. Persisting them separately let a click/open land between the
@@ -211,18 +282,25 @@ async function saveCampaign(campaign: EngagementCampaign, countAsSent: boolean):
     const state = raw && typeof raw === "object" ? raw : { campaigns: [], performance: {} };
     if (!Array.isArray(state.campaigns)) state.campaigns = [];
     if (!state.performance || typeof state.performance !== "object") state.performance = {};
-    const existingIndex = state.campaigns.findIndex((item) => item.id === campaign.id);
     const mergedCampaign = storedCampaign
       ? { ...campaign, openedAt: storedCampaign.openedAt ?? campaign.openedAt, sessionSeconds: storedCampaign.sessionSeconds ?? campaign.sessionSeconds }
       : campaign;
-    if (existingIndex >= 0) state.campaigns[existingIndex] = mergedCampaign;
-    else state.campaigns.push(mergedCampaign);
-    state.campaigns = state.campaigns.slice(-100);
+    const existingIndex = state.campaigns.findIndex((item) => item.id === campaign.id);
+    upsertCampaign(state, mergedCampaign);
     if (countAsSent && existingIndex < 0) {
       const category = state.performance[campaign.category] || {};
       const prior = category[campaign.channel] || { sent: 0, opened: 0 };
       category[campaign.channel] = { ...prior, sent: prior.sent + 1, lastSentAt: campaign.sentAt };
       state.performance[campaign.category] = category;
+    }
+    if (mergedCampaign.openedAt) {
+      const category = state.performance[mergedCampaign.category] || {};
+      const prior = category[mergedCampaign.channel] || { sent: 0, opened: 0 };
+      category[mergedCampaign.channel] = {
+        ...prior,
+        opened: Math.max(Number(prior.opened) || 0, openedCampaignCount(state, mergedCampaign))
+      };
+      state.performance[mergedCampaign.category] = category;
     }
     return { first: state, second: mergedCampaign, result: undefined };
     }
@@ -364,23 +442,24 @@ export async function sendEmail(opts: { to: string; subject: string; text: strin
   }
 }
 
-export async function sendPersonalizedEngagement(
+async function sendEngagementMessage(
   user: UserRecord,
   channel: EngagementChannel,
   deviceIds: string[],
-  source: "automatic" | "admin" = "admin",
+  message: EngagementMessage,
+  source: "automatic" | "admin",
+  category: EngagementCategory,
   templateKey?: string
 ): Promise<{ ok: boolean; campaign: EngagementCampaign; reason?: string }> {
-  const recommendation = await recommendedEngagement(user, channel);
-  const selected = templateKey ? templateForKey(templateKey, recommendation.category) : templateForKey(recommendation.templateKey, recommendation.category);
+  const selected = normalizeEngagementMessage(message);
   const campaign: EngagementCampaign = {
     id: randomUUID(),
     identity: user.identity,
     channel,
-    category: selected.category,
-    templateKey: selected.key,
-    title: channel === "email" ? selected.emailSubject : selected.title,
-    body: channel === "email" ? selected.emailBody : selected.body,
+    category,
+    ...(templateKey ? { templateKey } : {}),
+    title: selected.title,
+    body: selected.body,
     sentAt: Date.now(),
     status: "failed",
     source
@@ -442,6 +521,36 @@ export async function sendPersonalizedEngagement(
   return { ok: campaign.status === "sent", campaign, reason: campaign.error };
 }
 
+export async function sendPersonalizedEngagement(
+  user: UserRecord,
+  channel: EngagementChannel,
+  deviceIds: string[],
+  source: "automatic" | "admin" = "admin",
+  templateKey?: string
+): Promise<{ ok: boolean; campaign: EngagementCampaign; reason?: string }> {
+  const recommendation = await recommendedEngagement(user, channel);
+  const selected = templateKey ? templateForKey(templateKey, recommendation.category) : templateForKey(recommendation.templateKey, recommendation.category);
+  return sendEngagementMessage(user, channel, deviceIds, {
+    title: channel === "email" ? selected.emailSubject : selected.title,
+    body: channel === "email" ? selected.emailBody : selected.body
+  }, source, selected.category, selected.key);
+}
+
+// Custom/admin messages are treated as transactional dashboard sends. They
+// still get a campaign ID for open/session attribution, but the caller decides
+// whether a user preference gate is appropriate (credit notices, for example,
+// are account messages rather than personalized suggestions).
+export async function sendCustomEngagement(
+  user: UserRecord,
+  channel: EngagementChannel,
+  deviceIds: string[],
+  message: Partial<EngagementMessage>,
+  source: "automatic" | "admin" = "admin",
+  category: "custom" | "credits" = "custom"
+): Promise<{ ok: boolean; campaign: EngagementCampaign; reason?: string }> {
+  return sendEngagementMessage(user, channel, deviceIds, normalizeEngagementMessage(message), source, category);
+}
+
 export async function recordEngagementOpen(campaignId: string, identity?: string): Promise<boolean> {
   // Email links do not carry an identity. Read just enough to discover the
   // campaign owner, then re-check it inside the pair transaction before
@@ -460,18 +569,20 @@ export async function recordEngagementOpen(campaignId: string, identity?: string
     if (!stored || stored.status !== "sent" || (identity && stored.identity !== identity) || stored.identity !== owner) {
       return { first: stored, second: raw, result: { accepted: false, newlyOpened: false } };
     }
-    if (stored.openedAt) return { first: stored, second: raw, result: { accepted: true, newlyOpened: false } };
-    const campaign = { ...stored, openedAt: Date.now() };
+    const campaign = { ...stored, openedAt: stored.openedAt || Date.now() };
     const state = raw && typeof raw === "object" ? raw : { campaigns: [], performance: {} };
     if (!Array.isArray(state.campaigns)) state.campaigns = [];
     if (!state.performance || typeof state.performance !== "object") state.performance = {};
-    const index = state.campaigns.findIndex((item) => item.id === campaign.id);
-    if (index >= 0) state.campaigns[index] = campaign;
+    const newlyOpened = !stored.openedAt;
+    upsertCampaign(state, campaign);
     const category = state.performance[campaign.category] || {};
     const performance = category[campaign.channel] || { sent: 0, opened: 0 };
-    category[campaign.channel] = { ...performance, opened: performance.opened + 1 };
+    category[campaign.channel] = {
+      ...performance,
+      opened: Math.max(Number(performance.opened) || 0, openedCampaignCount(state, campaign))
+    };
     state.performance[campaign.category] = category;
-    return { first: campaign, second: state, result: { accepted: true, newlyOpened: true } };
+    return { first: campaign, second: state, result: { accepted: true, newlyOpened } };
     }
   );
   return result.accepted;
@@ -496,18 +607,16 @@ export async function recordEngagementSession(
     if (!stored || (identity && stored.identity !== identity) || stored.identity !== owner || stored.status !== "sent") {
       return { first: stored, second: raw, result: false };
     }
-    const wasOpened = Boolean(stored.openedAt);
     const campaign = { ...stored, openedAt: stored.openedAt || Date.now(), sessionSeconds: (stored.sessionSeconds || 0) + duration };
     const state = raw && typeof raw === "object" ? raw : { campaigns: [], performance: {} };
     if (!Array.isArray(state.campaigns)) state.campaigns = [];
     if (!state.performance || typeof state.performance !== "object") state.performance = {};
-    const index = state.campaigns.findIndex((item) => item.id === campaign.id);
-    if (index >= 0) state.campaigns[index] = campaign;
+    upsertCampaign(state, campaign);
     const category = state.performance[campaign.category] || {};
     const performance = category[campaign.channel] || { sent: 0, opened: 0 };
     category[campaign.channel] = {
       ...performance,
-      opened: performance.opened + (wasOpened ? 0 : 1),
+      opened: Math.max(Number(performance.opened) || 0, openedCampaignCount(state, campaign)),
       sessionSeconds: (performance.sessionSeconds || 0) + duration
     };
     state.performance[campaign.category] = category;
@@ -529,7 +638,7 @@ export async function engagementSummary(user: UserRecord): Promise<{
 }> {
   const state = await loadState(user.identity);
   return {
-    performance: state.performance,
+    performance: reconcilePerformance(state),
     recentCampaigns: [...state.campaigns].reverse().slice(0, 25),
     recommendedPush: await recommendedEngagement(user, "push"),
     recommendedEmail: await recommendedEngagement(user, "email"),
