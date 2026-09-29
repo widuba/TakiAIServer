@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isKnownIdentity, issueDeviceCredential, verifyDeviceCredential, issueWebSession, revokeWebAuthentication, verifyWebSession } from "../src/identity.js";
-import { bypassDeviceAuth } from "../src/deviceAuth.js";
+import { bypassDeviceAuth, bypassSafetyAccess } from "../src/deviceAuth.js";
 import { linkApple } from "../src/safety.js";
 import { storeDelete, storeSet } from "../src/store.js";
 
@@ -62,6 +62,11 @@ test("browser checkout and public account lookup do not require a device credent
   }
   assert.equal(bypassDeviceAuth("/api/assistant"), false);
   assert.equal(bypassDeviceAuth("/api/admin/full-reset"), true);
+  assert.equal(bypassSafetyAccess("/api/credits"), true);
+  assert.equal(bypassSafetyAccess("/api/account/delete", "POST"), true);
+  assert.equal(bypassSafetyAccess("/api/alerts", "GET"), true);
+  assert.equal(bypassSafetyAccess("/api/alerts", "POST"), false);
+  assert.equal(bypassSafetyAccess("/api/assistant"), false);
 });
 
 test("web sessions are signed, expire, and revoke with the web-auth marker", async () => {

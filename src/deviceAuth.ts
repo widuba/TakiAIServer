@@ -23,6 +23,36 @@ export const DEVICE_AUTH_EXEMPT_PATHS = new Set([
   "/api/iap/notifications"
 ]);
 
+// These routes exist to report access, acknowledge a server-issued notice,
+// manage account data, stop an existing operation, or restore verified
+// purchases. They must remain reachable while a user is restricted; all other
+// authenticated API operations are checked against server-owned safety state.
+const SAFETY_ACCESS_EXEMPT_PATHS = new Set([
+  "/api/credits",
+  "/api/credits/preflight",
+  "/api/account/acknowledge-notice",
+  "/api/assistant/cancel",
+  "/api/chats",
+  "/api/chats/sync",
+  "/api/feedback",
+  "/api/account/delete",
+  "/api/account/delete-google",
+  "/api/account/apple/disconnect",
+  "/api/web/auth/logout",
+  "/api/iap/credit-packs",
+  "/api/iap/verify",
+  "/api/register-push",
+  "/api/unregister-push",
+  "/api/unregister-la"
+]);
+
 export function bypassDeviceAuth(path: string): boolean {
   return DEVICE_AUTH_EXEMPT_PATHS.has(path) || path.startsWith("/api/admin/");
+}
+
+export function bypassSafetyAccess(path: string, method = "GET"): boolean {
+  if (SAFETY_ACCESS_EXEMPT_PATHS.has(path) || path.startsWith("/api/admin/")) return true;
+  // Suspended users can still inspect and cancel their own server-side alerts.
+  return (path === "/api/alerts" && method.toUpperCase() === "GET")
+    || path === "/api/alerts/cancel";
 }

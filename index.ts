@@ -32,7 +32,7 @@ import { resolvePurchaseDisplayName } from "./src/purchaseIdentity.js";
 import { verifyTransaction, verifyCreditTransaction, claimCreditTransaction, transferCreditTransaction, rebindCreditTransactions, linkTransactionIdentity, transferSubscriptionIdentity, claimSubscriptionPeriod, releaseSubscriptionPeriod, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
 import { revokeAppleAuthorizationCode, verifyAppleIdentityToken } from "./src/appleauth.js";
 import { isPrivacyDeletedDevice, purgeAppleAccount, purgeDeviceAccount, purgeStandaloneAccount, removeAnonymousDeviceAccount } from "./src/accountDeletion.js";
-import { recordAssoc, associationsFor, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, reinstate, terminateAndBan, unban, warnUser, suspendAccount, acknowledgeNotice, safetyDetailFor, allSafetyAccounts, retireBannedIps, retiredBannedIps, reviewQueue, linkApple, unlinkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, CREDIT_OVERDRAFT_MSG, BANNED_MSG } from "./src/safety.js";
+import { recordAssoc, associationsFor, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, safetyAccessFor, safetyIdentitiesFor, trustedSafetyDeviceId, reinstate, terminateAndBan, unban, warnUser, suspendAccount, acknowledgeNotice, safetyDetailFor, allSafetyAccounts, retireBannedIps, retiredBannedIps, reviewQueue, linkApple, unlinkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, CREDIT_OVERDRAFT_MSG, BANNED_MSG } from "./src/safety.js";
 import { suspendOnUnfundedUsageCharge } from "./src/creditEnforcement.js";
 import { queueContextualSafetyReview } from "./src/safetyReview.js";
 import { noteUser, noteUserStrict, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, noteInteraction, noteChannelCost, noteSession, noteEngagementPreferences, noteBillingEvent, userForIdentity, identitiesForIp, allUsers, deleteUser, type UserRecord } from "./src/users.js";
@@ -46,7 +46,7 @@ import { performFullReset, previewFullReset, type FullResetPreview } from "./src
 import { bypassResetGeneration, hasCurrentResetGeneration, RESET_EPOCH_HEADER } from "./src/resetGeneration.js";
 import { isKnownIdentity, markWebAuthenticated, issueDeviceCredential, verifyDeviceCredential, issueWebSession, verifyWebSession, revokeWebAuthentication } from "./src/identity.js";
 import { adminAccountIdFor } from "./src/adminIdentity.js";
-import { bypassDeviceAuth } from "./src/deviceAuth.js";
+import { bypassDeviceAuth, bypassSafetyAccess } from "./src/deviceAuth.js";
 import { googleWebClientId, isGoogleWebAuthConfigured, verifyGoogleIdToken } from "./src/webauth.js";
 import { isProductKnowledgeQuestion, productAnswerFor } from "./src/productKnowledge.js";
 import { readSyncedChats, syncChats } from "./src/chatSync.js";
@@ -265,7 +265,37 @@ async function chargeMeasuredUsage(
   return charged.spent;
 }
 
+class AccountSafetyBlockedError extends Error {
+  readonly access: "suspended" | "banned";
+
+  constructor(access: "suspended" | "banned", message: string) {
+    super(message);
+    this.name = "AccountSafetyBlockedError";
+    this.access = access;
+  }
+}
+
+async function assertAccountIsActive(identity: string): Promise<void> {
+  const access = await safetyAccessFor(identity);
+  if (access.access !== "active") throw new AccountSafetyBlockedError(access.access, access.accessMessage);
+}
+
+function respondIfSafetyBlocked(res: express.Response, error: unknown): boolean {
+  if (!(error instanceof AccountSafetyBlockedError)) return false;
+  res.set("Cache-Control", "no-store").status(403).json({
+    error: error.message,
+    blocked: true,
+    access: error.access,
+    accessMessage: error.message
+  });
+  return true;
+}
+
 async function chargeUsageWithEnforcement(...args: Parameters<typeof chargeUsageUsd>): ReturnType<typeof chargeUsageUsd> {
+  // Re-read the server safety state immediately before committing a charge.
+  // An operator can suspend an account while its provider request is in flight;
+  // do not commit the usage or return its generated result after that change.
+  await assertAccountIsActive(args[0]);
   try {
     return await chargeUsageUsd(...args);
   } catch (error) {
@@ -485,6 +515,14 @@ async function verifiedPhysicalDevice(req: express.Request): Promise<string | nu
   return deviceId;
 }
 
+async function trustedSafetyDeviceForRequest(identity: string, req: express.Request): Promise<string | undefined> {
+  const verifiedDeviceId = await verifiedPhysicalDevice(req);
+  const linkedAppleDevices = identity.startsWith("apple:")
+    ? await devicesForApple(identity.slice("apple:".length))
+    : [];
+  return trustedSafetyDeviceId(identity, verifiedDeviceId, linkedAppleDevices);
+}
+
 function respondAccountDeleted(res: express.Response): void {
   res
     .set("Cache-Control", "no-store")
@@ -576,6 +614,29 @@ app.use(async (req, res, next) => {
         res.status(401).json({ error: "This Taki account session has expired. Please sign in again." });
         return;
       }
+    }
+  }
+  if (!bypassSafetyAccess(req.path, req.method)) {
+    try {
+      for (const identity of [...new Set([...identities, ...providerIdentities])]) {
+        const access = await safetyAccessFor(identity);
+        if (access.access !== "active") {
+          res.set("Cache-Control", "no-store").status(403).json({
+            error: access.accessMessage,
+            blocked: true,
+            access: access.access,
+            accessMessage: access.accessMessage
+          });
+          return;
+        }
+      }
+    } catch (error) {
+      console.error("request safety authorization failed:", error);
+      res.set("Cache-Control", "no-store").status(503).json({
+        error: "Taki is temporarily unavailable while it verifies account safety.",
+        code: "safety_unavailable"
+      });
+      return;
     }
   }
   next();
@@ -822,6 +883,7 @@ app.post("/api/style", async (req, res) => {
     ));
     res.json({ text: (styled || text).trim() });
   } catch (error) {
+    if (respondIfSafetyBlocked(res, error)) return;
     console.error("Style error:", error);
     res.status(503).json({ error: "style unavailable", text });
   }
@@ -1144,6 +1206,7 @@ app.post("/api/resolve-destination", async (req, res) => {
     }
     res.json(dest);
   } catch (error) {
+    if (respondIfSafetyBlocked(res, error)) return;
     console.error("Resolve destination error:", error);
     res.status(502).json({ error: "destination unavailable" });
   }
@@ -1176,6 +1239,7 @@ app.post("/api/match-event", async (req, res) => {
     ));
     res.json({ index });
   } catch (error) {
+    if (respondIfSafetyBlocked(res, error)) return;
     console.error("Match event error:", error);
     res.status(502).json({ error: "event matching unavailable" });
   }
@@ -1257,6 +1321,7 @@ app.post("/api/vision", async (req, res) => {
     });
     res.json({ spokenText, credits: { ...s, cost: s.spent } });
   } catch (error) {
+    if (respondIfSafetyBlocked(res, error)) return;
     if (isRequestCancelled(error, requestAbort.signal) || error instanceof CreditChargeCancelledError) {
       if (!res.writableEnded && !res.destroyed) res.status(499).json({ error: "request cancelled", code: "request_cancelled" });
       return;
@@ -1335,6 +1400,7 @@ app.post("/api/attachments", async (req, res) => {
     });
     res.json({ spokenText, sources: answer.sources, credits: { ...spent, cost: spent.spent } });
   } catch (error) {
+    if (respondIfSafetyBlocked(res, error)) return;
     if (isRequestCancelled(error, requestAbort.signal) || error instanceof CreditChargeCancelledError) {
       if (!res.writableEnded && !res.destroyed) res.status(499).json({ error: "request cancelled", code: "request_cancelled" });
       return;
@@ -1737,32 +1803,26 @@ app.get("/api/credits", async (req, res) => {
   if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
   if (!(await requireCreditIdentity(deviceId, res, req))) return;
   res.set("Cache-Control", "no-store, max-age=0");
-  // Report access status so the app can hard-block a banned/suspended account on
-  // launch (full-screen), not just when the user asks something.
-  let access: "active" | "suspended" | "banned" = "active";
-  let accessMessage = "";
-  let notice: unknown = null;
   try {
     const ip = clientIp(req);
-    // Only 8-digit physical-device ids participate in device association;
-    // apple:/google: account identities have no hardware id.
-    const requestedPhysical = typeof req.body?.physicalDeviceId === "string" ? req.body.physicalDeviceId.trim() : "";
-    const headerPhysical = typeof req.headers?.["x-taki-device-id"] === "string" ? req.headers["x-taki-device-id"].trim() : "";
-    const dev = /^\d{8}$/.test(deviceId)
-      ? deviceId
-      : /^\d{8}$/.test(requestedPhysical) ? requestedPhysical : /^\d{8}$/.test(headerPhysical) ? headerPhysical : undefined;
+    // Never associate a user-selected body value with another installation.
+    // The header credential and server-owned Apple link are the only proof.
+    const dev = await trustedSafetyDeviceForRequest(deviceId, req);
     await recordAssoc(deviceId, dev, ip, clientLocation(req, ip));
-    const acct = await getSafetyAccount(deviceId);
-    if (acct.status === "terminated" || (await isBanned(deviceId, dev, ip)) || (await isTestRestricted(deviceId))) { access = "banned"; accessMessage = BANNED_MSG; }
-    else if (acct.status === "suspended") {
-      access = "suspended";
-      accessMessage = acct.suspensionKind === "credit_integrity" ? CREDIT_OVERDRAFT_MSG : SUSPENDED_MSG;
-    }
-    // An active account may still owe an acknowledgment: the overview shown after
-    // being reinstated, or a warning. The app must present it before continuing.
-    else if (acct.pendingNotice) { notice = acct.pendingNotice; }
-  } catch (e) { console.error("credits access check:", e); }
-  res.json({ ...(await creditSummary(deviceId)), tiers: tierCatalog(), access, accessMessage, ...(notice ? { notice } : {}) });
+    const safety = await safetyAccessFor(deviceId);
+    res.json({
+      ...(await creditSummary(deviceId)),
+      tiers: tierCatalog(),
+      access: safety.access,
+      accessMessage: safety.accessMessage,
+      ...(safety.notice ? { notice: safety.notice } : {})
+    });
+  } catch (error) {
+    console.error("credits access check:", error);
+    // A store outage is not evidence that an account is active. Do not return a
+    // usable balance or an active status unless server safety state was read.
+    res.status(503).json({ error: "Taki is temporarily unavailable while it verifies account safety.", code: "safety_unavailable" });
+  }
 });
 
 // The user has seen and acknowledged their reinstatement/warning overview.
@@ -1771,7 +1831,7 @@ app.post("/api/account/acknowledge-notice", async (req, res) => {
   const identity = typeof b.identity === "string" ? b.identity.trim() : (typeof b.deviceId === "string" ? b.deviceId.trim() : "");
   if (!identity) { res.status(400).json({ error: "identity required" }); return; }
   if (!(await requireCreditIdentity(identity, res, req))) return;
-  await acknowledgeNotice(identity);
+  await Promise.all((await safetyIdentitiesFor(identity)).map(acknowledgeNotice));
   res.json({ ok: true });
 });
 
@@ -1803,6 +1863,23 @@ app.post("/api/credits/preflight", async (req, res) => {
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim() : "";
   if (!deviceId) { res.status(400).json({ error: "deviceId is required" }); return; }
   if (!(await requireCreditIdentity(deviceId, res, req))) return;
+  try {
+    const safety = await safetyAccessFor(deviceId);
+    if (safety.access !== "active") {
+      res.status(403).json({
+        allowed: false,
+        blocked: true,
+        access: safety.access,
+        accessMessage: safety.accessMessage,
+        error: safety.accessMessage
+      });
+      return;
+    }
+  } catch (error) {
+    console.error("credit preflight safety check:", error);
+    res.status(503).json({ error: "Taki is temporarily unavailable while it verifies account safety.", code: "safety_unavailable" });
+    return;
+  }
   const kind = req.body?.kind === "voice" ? "voice" : req.body?.kind === "attachment" ? "attachment" : "text";
   const attachments = Array.isArray(req.body?.attachments) ? req.body.attachments.slice(0, 6) : [];
   const summary = await creditSummary(deviceId);
@@ -4175,23 +4252,16 @@ async function safetyGate(identity: string, message: string, req: any, _voiceMod
   if (!identity) return null;
   const ip = clientIp(req);
   const location = clientLocation(req, ip);
-  const requestedPhysical = typeof req.body?.physicalDeviceId === "string" ? req.body.physicalDeviceId.trim() : "";
-  const headerPhysical = typeof req.headers?.["x-taki-device-id"] === "string" ? req.headers["x-taki-device-id"].trim() : "";
-  const dev = identity.startsWith("apple:")
-    ? (/^\d{8}$/.test(requestedPhysical) ? requestedPhysical : /^\d{8}$/.test(headerPhysical) ? headerPhysical : undefined)
-    : identity;
+  const dev = /^\d{8}$/.test(identity)
+    ? identity
+    : await trustedSafetyDeviceForRequest(identity, req);
   try {
     await Promise.all([
       recordAssoc(identity, dev, ip, location),
       noteUser(identity, ip, String(req.headers?.["user-agent"] || ""), location)
     ]);
-    const [banned, testRestricted, acct] = await Promise.all([
-      isBanned(identity, dev, ip),
-      isTestRestricted(identity),
-      getSafetyAccount(identity)
-    ]);
-    if (banned || testRestricted) return { message: BANNED_MSG, block: "banned" };
-    if (acct.status !== "active") return { message: SUSPENDED_MSG, block: "suspended" };
+    const access = await safetyAccessFor(identity);
+    if (access.access !== "active") return { message: access.accessMessage, block: access.access };
     queueContextualSafetyReview(identity, message, { ip, deviceId: dev });
   } catch (e) {
     console.error("safetyGate error:", e);
@@ -4311,6 +4381,16 @@ async function runAssistant(
         { shouldCancel: () => requestSignal?.aborted === true }
       );
     } catch (error) {
+      if (error instanceof AccountSafetyBlockedError) {
+        return {
+          spokenText: error.message,
+          action: null,
+          actions: null,
+          blocked: true,
+          access: error.access,
+          accessMessage: error.message
+        };
+      }
       if (error instanceof InsufficientCreditsError) {
         const fresh = await creditSummary(deviceId);
         await noteBillingEvent(deviceId, "insufficient_credits_blocked", { mode: voiceMode ? "voice" : "text", requiredAiCredits: error.required, availableAiCredits: error.available });
@@ -4736,13 +4816,18 @@ app.post("/api/memory/extract", async (req, res) => {
   }
   const currentFacts = Array.isArray(req.body?.currentFacts) ? req.body.currentFacts : [];
   const measured = await measureUsage(() => extractDurableMemories(message, currentFacts, req.body?.teen === true));
-  await chargeMeasuredUsage(deviceId, measured.usage, turnMeteringRequestId(
-    req.body?.requestId,
-    "memory-extract",
-    message,
-    JSON.stringify(currentFacts),
-    req.body?.teen === true ? "teen" : "adult"
-  ));
+  try {
+    await chargeMeasuredUsage(deviceId, measured.usage, turnMeteringRequestId(
+      req.body?.requestId,
+      "memory-extract",
+      message,
+      JSON.stringify(currentFacts),
+      req.body?.teen === true ? "teen" : "adult"
+    ));
+  } catch (error) {
+    if (respondIfSafetyBlocked(res, error)) return;
+    throw error;
+  }
   res.json(measured.value);
 });
 
@@ -4778,6 +4863,7 @@ app.post("/api/chat/title", async (req, res) => {
     throwIfRequestCancelled(requestAbort.signal);
     res.json({ title: measured.value });
   } catch (error) {
+    if (respondIfSafetyBlocked(res, error)) return;
     if (isRequestCancelled(error, requestAbort.signal) || error instanceof CreditChargeCancelledError) {
       if (!res.writableEnded && !res.destroyed) res.status(499).json({ error: "request cancelled", code: "request_cancelled" });
       return;
@@ -4844,6 +4930,9 @@ app.post("/api/voice/synthesize", async (req, res) => {
     }
     const audio = await synthesize(text, voiceId, variability);
     if (!audio) throw new Error("Voice synthesis returned no audio");
+    // Included Voice Credits skip the AI ledger charge, so re-check access
+    // before returning any provider-generated audio as well.
+    await assertAccountIsActive(deviceId);
     if (pending && deferredToken) consumeVoiceSynthesisToken(deferredToken, deviceId);
     const speechUsd = ttsCostUsd(speechCharacterCount(text));
     await noteChannelCost(deviceId, "voice", speechUsd);
@@ -4854,6 +4943,7 @@ app.post("/api/voice/synthesize", async (req, res) => {
     res.json({ audioBase64: audio, mime: "audio/mpeg", spokenText: text });
   } catch (error) {
     if (deferredToken) releaseVoiceSynthesisToken(deferredToken, deviceId);
+    if (respondIfSafetyBlocked(res, error)) return;
     console.error("Voice correction synthesis error:", error);
     res.status(502).json({ error: "voice unavailable" });
   }

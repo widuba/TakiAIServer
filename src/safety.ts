@@ -40,6 +40,12 @@ export type AcctStatus = "active" | "suspended" | "terminated";
 export type SuspensionKind = "policy" | "admin" | "credit_integrity";
 export type NoticeKind = "reinstatement" | "warning";
 export interface Violation { text: string; category: string; at: number; ip?: string; deviceId?: string; }
+export interface SafetyAccessSnapshot {
+  access: "active" | "suspended" | "banned";
+  accessMessage: string;
+  notice: PendingNotice | null;
+  linkedIdentities: string[];
+}
 
 // Shown to the user the next time they open the app after being let back in (or
 // warned). They must acknowledge it before returning to Taki.
@@ -436,6 +442,71 @@ export async function devicesForApple(sub: string): Promise<string[]> {
 export async function appleForDevice(deviceId: string): Promise<string> {
   const sub = (await storeGet<{ sub: string }>(devAppleKey(deviceId), { sub: "" })).sub;
   return typeof sub === "string" ? sub.slice(0, 256) : "";
+}
+
+// A physical-device ID is trustworthy only after its installation credential
+// has been verified. For Apple identities, even a verified installation is
+// associated only when the server's Apple link confirms it belongs to that
+// account; request-body `physicalDeviceId` values are never evidence.
+export function trustedSafetyDeviceId(
+  identity: string,
+  verifiedDeviceId: string | null,
+  linkedAppleDevices: readonly string[] = []
+): string | undefined {
+  if (!verifiedDeviceId || !/^\d{8}$/.test(verifiedDeviceId)) return undefined;
+  if (/^\d{8}$/.test(identity)) return identity === verifiedDeviceId ? verifiedDeviceId : undefined;
+  if (identity.startsWith("apple:") && linkedAppleDevices.includes(verifiedDeviceId)) return verifiedDeviceId;
+  return undefined;
+}
+
+// Safety enforcement uses the same linked-account boundary as the admin
+// dashboard: an Apple account and every device linked to it share warnings,
+// suspensions, test restrictions, and bans. This prevents switching between a
+// device ID and its Apple identity from bypassing server enforcement.
+export async function safetyIdentitiesFor(identity: string): Promise<string[]> {
+  if (!identity) return [];
+  let appleSub = identity.startsWith("apple:") ? identity.slice("apple:".length) : "";
+  if (!appleSub && /^\d{8}$/.test(identity)) appleSub = await appleForDevice(identity);
+  if (!appleSub) return [identity];
+  const devices = await devicesForApple(appleSub);
+  return [...new Set([identity, `apple:${appleSub}`, ...devices])];
+}
+
+// One server-owned access decision is shared by account refresh and every
+// metered AI endpoint. A failed safety-store read rejects the request at the
+// caller rather than silently treating the account as active.
+export async function safetyAccessFor(identity: string): Promise<SafetyAccessSnapshot> {
+  const linkedIdentities = await safetyIdentitiesFor(identity);
+  const [accounts, restricted, banned] = await Promise.all([
+    Promise.all(linkedIdentities.map(getSafetyAccount)),
+    Promise.all(linkedIdentities.map(isTestRestricted)),
+    Promise.all(linkedIdentities.map((member) => isBanned(
+      member,
+      /^\d{8}$/.test(member) ? member : undefined
+    )))
+  ]);
+  const isBannedAccount = accounts.some((account) => account.status === "terminated")
+    || restricted.some(Boolean)
+    || banned.some(Boolean);
+  if (isBannedAccount) {
+    return { access: "banned", accessMessage: BANNED_MSG, notice: null, linkedIdentities };
+  }
+  const suspended = accounts.filter((account) => account.status === "suspended");
+  if (suspended.length) {
+    return {
+      access: "suspended",
+      accessMessage: suspended.some((account) => account.suspensionKind === "credit_integrity")
+        ? CREDIT_OVERDRAFT_MSG
+        : SUSPENDED_MSG,
+      notice: null,
+      linkedIdentities
+    };
+  }
+  const notice = accounts
+    .map((account) => account.pendingNotice)
+    .filter((value): value is PendingNotice => !!value)
+    .sort((a, b) => b.at - a.at)[0] || null;
+  return { access: "active", accessMessage: "", notice, linkedIdentities };
 }
 
 // IP addresses are recorded for context (associationsFor) but never used to

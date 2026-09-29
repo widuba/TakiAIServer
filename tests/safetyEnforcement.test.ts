@@ -16,11 +16,14 @@ import {
   retireBannedIps,
   retiredBannedIps,
   getSafetyAccount,
+  safetyAccessFor,
+  trustedSafetyDeviceId,
+  linkApple,
   noteMessageAfterSafetyThreshold,
   safetyDetailFor,
   strikeThreshold
 } from "../src/safety.js";
-import { storeSet } from "../src/store.js";
+import { storeDelete, storeSet } from "../src/store.js";
 
 const newId = () => `sfdev${randomUUID().replaceAll("-", "").slice(0, 12)}`;
 const flag = (identity: string) =>
@@ -136,6 +139,49 @@ test("manual suspend counts toward escalation like an auto-suspend", async () =>
   const acct = await suspendAccount(id, "manual review");
   assert.equal(acct.status, "suspended");
   assert.equal(acct.suspensionCount, 1);
+});
+
+test("linked Apple and device identities share server-enforced access and warnings", async () => {
+  const deviceId = String(10_000_000 + Math.floor(Math.random() * 89_999_999));
+  const appleSub = `safety-link-${randomUUID()}`;
+  const appleIdentity = `apple:${appleSub}`;
+  try {
+    await linkApple(appleSub, deviceId);
+    await storeSet(`safety:acct:${deviceId}`, {
+      identity: deviceId,
+      status: "active",
+      pendingNotice: {
+        kind: "warning", reason: "Server-issued warning", categories: [], messages: [],
+        suspensionNumber: 0, nextThreshold: 3, at: Date.now()
+      }
+    });
+    assert.equal((await safetyAccessFor(appleIdentity)).notice?.reason, "Server-issued warning");
+
+    await storeSet(`safety:acct:${deviceId}`, {
+      identity: deviceId,
+      status: "suspended",
+      suspensionKind: "admin",
+      pendingNotice: null
+    });
+    assert.equal((await safetyAccessFor(appleIdentity)).access, "suspended");
+    assert.equal((await safetyAccessFor(deviceId)).access, "suspended");
+  } finally {
+    await Promise.all([
+      storeDelete(`safety:acct:${deviceId}`),
+      storeDelete(`safety:acct:${appleIdentity}`),
+      storeDelete(`safety:applelink:${appleSub}`),
+      storeDelete(`safety:devapple:${deviceId}`)
+    ]);
+  }
+});
+
+test("safety device association only accepts a verified, server-linked installation", () => {
+  const deviceId = "12345678";
+  assert.equal(trustedSafetyDeviceId(deviceId, deviceId), deviceId);
+  assert.equal(trustedSafetyDeviceId(deviceId, "87654321"), undefined);
+  assert.equal(trustedSafetyDeviceId("apple:customer", deviceId), undefined);
+  assert.equal(trustedSafetyDeviceId("apple:customer", deviceId, [deviceId]), deviceId);
+  assert.equal(trustedSafetyDeviceId("google:customer", deviceId, [deviceId]), undefined);
 });
 
 test("terminating never adds an IP to the ban list, and IPs never block", async () => {
