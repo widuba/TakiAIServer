@@ -139,6 +139,7 @@ export interface CreditUsageTransaction {
 // on transient server logs or a second, eventually-consistent store.
 export interface AdminCreditAdjustment {
   id: string;
+  kind: "grant" | "remove";
   amount: number;
   reason: string;
   grantedAt: number;
@@ -230,10 +231,10 @@ export interface CreditSummary {
   voiceAllowanceUsed: number;
   voiceAllowanceLimit: number;
   additionalCredits: number;
-  daily: UsageWindow;
+  todayUsed: number;
   monthly: UsageWindow;
   limitReached: boolean;
-  limitReason: "daily" | "monthly" | null;
+  limitReason: "monthly" | null;
   duplicateSubscriptionNeedsCancellation: boolean;
 }
 
@@ -312,8 +313,9 @@ function normalizeAccount(acct: CreditAccount, deviceId: string): CreditAccount 
   if (!Array.isArray(acct.adminAdjustments)) acct.adminAdjustments = [];
   acct.adminAdjustments = acct.adminAdjustments
     .filter((adjustment) => adjustment && typeof adjustment === "object" && !Array.isArray(adjustment))
-    .map((adjustment: any) => ({
+    .map((adjustment: any): AdminCreditAdjustment => ({
       id: String(adjustment.id || "").slice(0, 128),
+      kind: adjustment.kind === "remove" ? "remove" : "grant",
       amount: Math.min(100_000_000, Math.max(0, Math.floor(Number(adjustment.amount) || 0))),
       reason: String(adjustment.reason || "Administrative credit grant").slice(0, 240),
       grantedAt: Number.isFinite(Number(adjustment.grantedAt)) ? Math.max(0, Number(adjustment.grantedAt)) : 0,
@@ -466,6 +468,13 @@ export class InsufficientCreditsError extends Error {
   }
 }
 
+export class CreditLedgerOverdraftError extends Error {
+  constructor(public readonly uncoveredCredits: number) {
+    super("credit ledger attempted to deduct more than the remaining granted balance");
+    this.name = "CreditLedgerOverdraftError";
+  }
+}
+
 export class CreditChargeCancelledError extends Error {
   constructor() {
     super("credit charge cancelled");
@@ -485,9 +494,10 @@ export function quoteCreditCharge(normalAiCredits: number, mode: "text" | "voice
   };
 }
 
-function deductAiCredits(acct: CreditAccount, amount: number): void {
+function deductAiCredits(acct: CreditAccount, amount: number): Array<{ id: string; source: string; amount: number }> {
   let remaining = Math.max(0, Math.floor(amount));
   const now = Date.now();
+  const deductions: Array<{ id: string; source: string; amount: number }> = [];
   const ordered = acct.grants
     .filter((grant) => grant.expiresAt > now && grant.remaining > 0)
     .sort(compareGrantSpendOrder);
@@ -496,9 +506,11 @@ function deductAiCredits(acct: CreditAccount, amount: number): void {
     const take = Math.min(grant.remaining, remaining);
     grant.remaining -= take;
     remaining -= take;
+    deductions.push({ id: grant.id, source: grant.source, amount: take });
   }
-  if (remaining > 0) throw new Error("credit invariant violated");
+  if (remaining > 0) throw new CreditLedgerOverdraftError(remaining);
   acct.grants = acct.grants.filter((grant) => grant.expiresAt > now && grant.remaining > 0);
+  return deductions;
 }
 
 export async function chargeRequestCredits(args: {
@@ -692,11 +704,6 @@ function utcMonthKey(now: number): string {
   return new Date(now).toISOString().slice(0, 7);
 }
 
-function nextUTCDay(now: number): number {
-  const d = new Date(now);
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
-}
-
 function nextUTCMonth(now: number): number {
   const d = new Date(now);
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
@@ -711,19 +718,10 @@ function rollUsageWindows(acct: CreditAccount, now = Date.now()): void {
   acct.monthlyUsage = acct.monthlyUsage?.key === month ? { key: month, used: monthUsed } : { key: month, used: 0 };
 }
 
-export function usageLimitsFor(tier: Tier, additionalCredits: number): { daily: number; monthly: number } {
+export function usageLimitsFor(tier: Tier, additionalCredits: number): { monthly: number } {
   const base = tier === "free" ? FREE_STARTER_CREDITS : TIERS[tier].creditsPerCycle;
   const additional = Math.max(0, Math.floor(additionalCredits));
-  if (tier === "free") {
-    // Free credits are a finite balance, not a monthly subscription allowance.
-    // Keep both guardrails equal to the full available grant so a free account
-    // is never restricted by the paid-plan 5% daily formula.
-    return { daily: base + additional, monthly: base + additional };
-  }
-  return {
-    daily: Math.ceil(base * 0.05) + additional,
-    monthly: base + additional
-  };
+  return { monthly: base + additional };
 }
 
 function usageWindow(used: number, limit: number, resetsAt: number): UsageWindow {
@@ -747,11 +745,10 @@ function summarize(acct: CreditAccount): CreditSummary {
     .filter((item) => item.expiresAt > now)
     .reduce((sum, item) => sum + item.amount, 0);
   const limits = usageLimitsFor(acct.tier, additionalCredits);
-  const daily = usageWindow(acct.dailyUsage?.used || 0, limits.daily, nextUTCDay(now));
   const monthly = usageWindow(acct.monthlyUsage?.used || 0, limits.monthly, nextUTCMonth(now));
   const voiceAllowanceLimit = TIERS[acct.tier].voiceCreditsPerCycle;
   const voiceAllowanceUsed = Math.max(0, voiceAllowanceLimit - Math.max(0, acct.voiceCredits || 0));
-  const limitReason = daily.used >= daily.limit ? "daily" : monthly.used >= monthly.limit ? "monthly" : null;
+  const limitReason = monthly.used >= monthly.limit ? "monthly" : null;
   return {
     tier: acct.tier,
     balance: balanceOf(acct),
@@ -771,7 +768,7 @@ function summarize(acct: CreditAccount): CreditSummary {
     voiceAllowanceUsed,
     voiceAllowanceLimit,
     additionalCredits,
-    daily,
+    todayUsed: Math.max(0, Math.floor(acct.dailyUsage?.used || 0)),
     monthly,
     limitReached: limitReason !== null,
     limitReason,
@@ -840,6 +837,7 @@ export async function grantAdminCredits(
     acct.hasPurchasedCredits = true;
     acct.adminAdjustments = [...(acct.adminAdjustments || []), {
       id: grant.id,
+      kind: "grant" as const,
       amount: grant.amount,
       reason: normalizedReason,
       grantedAt: grant.grantedAt,
@@ -852,6 +850,72 @@ export async function grantAdminCredits(
       amount: grant.amount,
       reason: normalizedReason,
       expiresAt: grant.expiresAt,
+      summary: summarize(acct)
+    };
+  });
+}
+
+export interface AdminCreditRemovalResult {
+  removed: true;
+  identity: string;
+  amount: number;
+  reason: string;
+  balanceAfter: number;
+  summary: CreditSummary;
+}
+
+// Remove credits from currently available grants without changing membership.
+// Spend order matches normal usage; gifted/purchased monthly allowances are
+// reduced along with the exact top-up grants touched by the adjustment.
+export async function removeAdminCredits(
+  identity: string,
+  amount: number,
+  reason = "Administrative credit removal"
+): Promise<AdminCreditRemovalResult> {
+  const normalizedAmount = Number(amount);
+  if (!Number.isSafeInteger(normalizedAmount) || normalizedAmount < 1 || normalizedAmount > MAX_ADMIN_CREDIT_GRANT) {
+    throw new Error(`Credits must be a whole number from 1 to ${MAX_ADMIN_CREDIT_GRANT.toLocaleString()}.`);
+  }
+  const normalizedReason = String(reason || "Administrative credit removal")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 240) || "Administrative credit removal";
+  return updateAccount(identity, (acct) => {
+    ensureFreeCycle(acct);
+    const available = balanceOf(acct);
+    if (normalizedAmount > available) {
+      throw new Error(`Cannot remove ${normalizedAmount.toLocaleString()} credits; the current balance is ${available.toLocaleString()}.`);
+    }
+    acct.topupAllowances = acct.topupAllowances || [];
+    for (const grant of acct.grants) {
+      if (grant.expiresAt <= Date.now() || grant.remaining <= 0 || !/topup/i.test(grant.source)) continue;
+      if (!acct.topupAllowances.some((item) => item.id === grant.id)) {
+        acct.topupAllowances.push({ id: grant.id, amount: grant.amount, expiresAt: grant.expiresAt });
+      }
+    }
+    const deductions = deductAiCredits(acct, normalizedAmount);
+    for (const deduction of deductions) {
+      if (!/topup/i.test(deduction.source)) continue;
+      const allowance = (acct.topupAllowances || []).find((item) => item.id === deduction.id);
+      if (allowance) allowance.amount = Math.max(0, allowance.amount - deduction.amount);
+    }
+    acct.topupAllowances = (acct.topupAllowances || []).filter((item) => item.amount > 0 && item.expiresAt > Date.now());
+    const balanceAfter = balanceOf(acct);
+    acct.adminAdjustments = [...(acct.adminAdjustments || []), {
+      id: `r_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      kind: "remove" as const,
+      amount: normalizedAmount,
+      reason: normalizedReason,
+      grantedAt: Date.now(),
+      expiresAt: 0,
+      balanceAfter
+    }].slice(-200);
+    return {
+      removed: true,
+      identity,
+      amount: normalizedAmount,
+      reason: normalizedReason,
+      balanceAfter,
       summary: summarize(acct)
     };
   });

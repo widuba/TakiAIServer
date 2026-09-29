@@ -184,8 +184,9 @@ export function productAnswerFor(message: string, context: ProductAnswerContext 
   }
 
   if (/\b(?:daily|monthly) (?:limit|cap|allowance)\b/.test(m)) {
-    if (!account) return "Membership shows the live daily and monthly usage limits and their reset times.";
-    return `Your current limits are ${count(account.daily.limit)} AI Credits per day and ${count(account.monthly.limit)} per month, including eligible additional-credit allowances. Membership shows the live usage and reset times.`;
+    if (/\bdaily\b/.test(m)) return "Taki no longer has a daily AI Credit limit. Requests are governed by your remaining AI Credits and the monthly allowance for your plan.";
+    if (!account) return "Membership shows your remaining AI Credits and, when applicable, the monthly plan allowance and its reset date.";
+    return `Your monthly plan allowance is ${count(account.monthly.limit)} AI Credits, including eligible additional-credit allowances. There is no separate daily cap; your available AI Credit balance is shown in Membership.`;
   }
 
   if (/\b(?:which|best|recommend|right) (?:plan|tier)\b|\bwhich (?:one|subscription)\b/.test(m)) {

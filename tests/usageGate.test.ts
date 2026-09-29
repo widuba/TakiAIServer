@@ -5,7 +5,6 @@ import {
   planCorrectionSynthesis,
   usageBlockFor,
   voiceTurnEstimateCredits,
-  DAILY_LIMIT_MSG,
   OUT_OF_CREDITS_MSG
 } from "../src/usage.js";
 import { MIN_REQUEST_CREDITS } from "../src/credits.js";
@@ -25,10 +24,10 @@ function account(overrides: Record<string, any> = {}) {
   };
 }
 
-test("a refused voice request never consumes a Voice Credit", () => {
-  const overDaily = account({ daily: { used: 4999, limit: 5000, resetsAt: 0, percent: 99 } });
-  const refused = decideAssistantCharge({
-    summary: overDaily,
+test("daily usage never blocks a request; monthly affordability still does", () => {
+  const pastOldDailyCap = account({ daily: { used: 50_000, limit: 5000, resetsAt: 0, percent: 100 } });
+  const allowed = decideAssistantCharge({
+    summary: pastOldDailyCap,
     tier: "plus_voice",
     voiceMode: true,
     includedVoice: true,
@@ -36,11 +35,11 @@ test("a refused voice request never consumes a Voice Credit", () => {
     voiceInputUsd: sttCostUsd(30_000),
     voiceOutputUsd: ttsCostUsd(280)
   });
-  assert.equal(refused.block?.reason, "daily");
-  assert.equal(refused.consumeIncludedVoice, false);
+  assert.equal(allowed.block, null);
+  assert.equal(allowed.consumeIncludedVoice, false);
 
-  const answered = decideAssistantCharge({
-    summary: account(),
+  const overMonthly = decideAssistantCharge({
+    summary: account({ monthly: { used: 49_999, limit: 50_000, resetsAt: 0, percent: 100 } }),
     tier: "plus_voice",
     voiceMode: true,
     includedVoice: true,
@@ -48,9 +47,8 @@ test("a refused voice request never consumes a Voice Credit", () => {
     voiceInputUsd: sttCostUsd(30_000),
     voiceOutputUsd: ttsCostUsd(280)
   });
-  assert.equal(answered.block, null);
-  assert.equal(answered.consumeIncludedVoice, false);
-  assert.equal(answered.includedVoice, true);
+  assert.equal(overMonthly.block?.reason, "monthly");
+  assert.equal(overMonthly.consumeIncludedVoice, false);
 });
 
 test("voice always uses normal AI usage; no Voice Credit adds exactly 40 AI Credits", () => {
@@ -90,14 +88,14 @@ test("correction synthesis is included only with a valid deferral token", () => 
   assert.equal(brokeAccount.included, false);
   assert.equal(brokeAccount.message, OUT_OF_CREDITS_MSG);
 
-  // An account with plenty of credits can still be over its daily window.
+  // An account with plenty of credits can still be over its monthly allowance.
   const cappedAccount = planCorrectionSynthesis(
     null,
-    account({ daily: { used: 5000, limit: 5000, resetsAt: 0, percent: 100 } }),
+    account({ monthly: { used: 50_000, limit: 50_000, resetsAt: 0, percent: 100 } }),
     chars
   );
   assert.equal(cappedAccount.allowed, false);
-  assert.equal(cappedAccount.message, DAILY_LIMIT_MSG);
+  assert.match(cappedAccount.message, /this month's usage limit/i);
 
   // A token issued for a PAID turn does not grant included speech either.
   const paidToken = planCorrectionSynthesis({ included: false }, account({ balance: 0 }), chars);

@@ -25,14 +25,15 @@ import { extractFlightCode, normalizeTrackerKind } from "./src/entityClassifier.
 import { clearPushToken, getPushToken, setPushToken, syncNudges, tickNudges } from "./src/nudges.js";
 import { addAlert, listAlerts, cancelAlerts, pollAlerts, clearAlertsForReset, type Alert } from "./src/alerts.js";
 import { isDurable, storeDelete, storeDeleteCategory, storeGet, storeSet, storeUpdate } from "./src/store.js";
-import { summary as creditSummary, createNoCreditAccount, chargeUsageUsd, InsufficientCreditsError, CreditChargeCancelledError, reset as resetCredits, tierCatalog, grantForTransaction, activateSubscriptionTier, updateSubscriptionStatus, grantForConsumableTransaction, grantWebTopup, grantAdminCredits, adminCreditAdjustments, MAX_ADMIN_CREDIT_GRANT, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, CREDIT_USD, type Tier } from "./src/credits.js";
+import { summary as creditSummary, createNoCreditAccount, chargeUsageUsd, InsufficientCreditsError, CreditLedgerOverdraftError, CreditChargeCancelledError, reset as resetCredits, tierCatalog, grantForTransaction, activateSubscriptionTier, updateSubscriptionStatus, grantForConsumableTransaction, grantWebTopup, grantAdminCredits, removeAdminCredits, adminCreditAdjustments, MAX_ADMIN_CREDIT_GRANT, downgradeToFree, revokeSubscription, revokeMergedSubscriptionCredits, clearRetiredSubscription, mergeCredits, topupPriceCents, topupCentsPerCredit, inAppCreditsForProduct, IN_APP_CREDIT_PRODUCTS, attachmentBaseCostCredits, ATTACHMENT_BASE_CREDITS, CREDIT_TOPUP_MIN, CREDIT_TOPUP_MAX, MIN_REQUEST_CREDITS, CREDIT_USD, type Tier } from "./src/credits.js";
 import { measureUsage, sttCostUsd, totalUsageUsd, ttsCostUsd } from "./src/metering.js";
 import { decideAssistantCharge, planCorrectionSynthesis, usageBlockFor, usageBlockedPayload, voiceTurnEstimateCredits } from "./src/usage.js";
 import { resolvePurchaseDisplayName } from "./src/purchaseIdentity.js";
 import { verifyTransaction, verifyCreditTransaction, claimCreditTransaction, transferCreditTransaction, rebindCreditTransactions, linkTransactionIdentity, transferSubscriptionIdentity, claimSubscriptionPeriod, releaseSubscriptionPeriod, transactionIdsForIdentity, setTransactionRole, getTransactionBinding, primarySubscriptionForIdentity, claimPrimarySubscription, subscriptionMergeDecision, verifyNotification } from "./src/iap.js";
 import { revokeAppleAuthorizationCode, verifyAppleIdentityToken } from "./src/appleauth.js";
 import { isPrivacyDeletedDevice, purgeAppleAccount, purgeDeviceAccount, purgeStandaloneAccount, removeAnonymousDeviceAccount } from "./src/accountDeletion.js";
-import { recordAssoc, associationsFor, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, reinstate, terminateAndBan, unban, warnUser, suspendAccount, acknowledgeNotice, safetyDetailFor, allSafetyAccounts, retireBannedIps, retiredBannedIps, reviewQueue, linkApple, unlinkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, BANNED_MSG } from "./src/safety.js";
+import { recordAssoc, associationsFor, isBanned, isTestRestricted, setTestRestriction, clearTestRestriction, previewTermination, getSafetyAccount, reinstate, terminateAndBan, unban, warnUser, suspendAccount, acknowledgeNotice, safetyDetailFor, allSafetyAccounts, retireBannedIps, retiredBannedIps, reviewQueue, linkApple, unlinkApple, devicesForApple, appleForDevice, SUSPENDED_MSG, CREDIT_OVERDRAFT_MSG, BANNED_MSG } from "./src/safety.js";
+import { suspendOnUnfundedUsageCharge } from "./src/creditEnforcement.js";
 import { queueContextualSafetyReview } from "./src/safetyReview.js";
 import { noteUser, noteUserStrict, noteSpend, noteTier, noteRevenue, noteApple, noteDevice, noteInteraction, noteChannelCost, noteSession, noteEngagementPreferences, noteBillingEvent, userForIdentity, identitiesForIp, allUsers, deleteUser, type UserRecord } from "./src/users.js";
 import { TIERS } from "./src/credits.js";
@@ -253,7 +254,7 @@ async function chargeMeasuredUsage(
   shouldCancel?: () => boolean
 ): Promise<number> {
   if (!deviceId) throw new Error("Cannot meter usage without an account identity");
-  const charged = await chargeUsageUsd(
+  const charged = await chargeUsageWithEnforcement(
     deviceId,
     usage.geminiUsd + usage.searchUsd,
     "text",
@@ -262,6 +263,15 @@ async function chargeMeasuredUsage(
   );
   await noteSpend(deviceId, charged.spent);
   return charged.spent;
+}
+
+async function chargeUsageWithEnforcement(...args: Parameters<typeof chargeUsageUsd>): ReturnType<typeof chargeUsageUsd> {
+  try {
+    return await chargeUsageUsd(...args);
+  } catch (error) {
+    await suspendOnUnfundedUsageCharge(args[0], error);
+    throw error;
+  }
 }
 
 async function noteCreditCharge(
@@ -1230,7 +1240,7 @@ app.post("/api/vision", async (req, res) => {
       voiceOutputUsd: speechUsd
     });
     if (charge.block) { res.status(402).json(usageBlockedPayload(charge.block)); return; }
-    const s = await chargeUsageUsd(
+    const s = await chargeUsageWithEnforcement(
       deviceId,
       charge.usageUsd,
       voiceMode ? "voice" : "text",
@@ -1309,7 +1319,7 @@ app.post("/api/attachments", async (req, res) => {
       voiceOutputUsd: speechUsd
     });
     if (charge.block) { res.status(402).json(usageBlockedPayload(charge.block)); return; }
-    const spent = await chargeUsageUsd(
+    const spent = await chargeUsageWithEnforcement(
       deviceId,
       charge.usageUsd,
       voiceMode ? "voice" : "text",
@@ -1726,6 +1736,7 @@ app.get("/api/credits", async (req, res) => {
   const deviceId = typeof req.query.deviceId === "string" ? req.query.deviceId.trim() : "";
   if (!deviceId) { res.status(400).json({ error: "deviceId required" }); return; }
   if (!(await requireCreditIdentity(deviceId, res, req))) return;
+  res.set("Cache-Control", "no-store, max-age=0");
   // Report access status so the app can hard-block a banned/suspended account on
   // launch (full-screen), not just when the user asks something.
   let access: "active" | "suspended" | "banned" = "active";
@@ -1743,7 +1754,10 @@ app.get("/api/credits", async (req, res) => {
     await recordAssoc(deviceId, dev, ip, clientLocation(req, ip));
     const acct = await getSafetyAccount(deviceId);
     if (acct.status === "terminated" || (await isBanned(deviceId, dev, ip)) || (await isTestRestricted(deviceId))) { access = "banned"; accessMessage = BANNED_MSG; }
-    else if (acct.status === "suspended") { access = "suspended"; accessMessage = SUSPENDED_MSG; }
+    else if (acct.status === "suspended") {
+      access = "suspended";
+      accessMessage = acct.suspensionKind === "credit_integrity" ? CREDIT_OVERDRAFT_MSG : SUSPENDED_MSG;
+    }
     // An active account may still owe an acknowledgment: the overview shown after
     // being reinstated, or a warning. The app must present it before continuing.
     else if (acct.pendingNotice) { notice = acct.pendingNotice; }
@@ -3831,6 +3845,45 @@ app.post("/api/admin/account", async (req, res) => {
   res.json({ account: (await buildAdminAccount(identity)).detail });
 });
 
+// Remove an exact whole-credit amount from the user's current grant balance.
+// Resolving the canonical account first prevents a linked device from creating
+// or changing a separate ledger.
+app.post("/api/admin/credits/remove", async (req, res) => {
+  if (!requireAdminSecret(req.body?.secret, res)) return;
+  const requestedIdentity = readAdminIdentity(req, res);
+  if (!requestedIdentity) return;
+  const amountValue = typeof req.body?.amount === "number"
+    ? req.body.amount
+    : typeof req.body?.amount === "string" && /^\d+$/.test(req.body.amount.trim())
+      ? Number(req.body.amount.trim())
+      : NaN;
+  if (!Number.isSafeInteger(amountValue) || amountValue < 1 || amountValue > MAX_ADMIN_CREDIT_GRANT) {
+    res.status(400).json({ error: `Credits must be a whole number from 1 to ${MAX_ADMIN_CREDIT_GRANT.toLocaleString()}.` });
+    return;
+  }
+  try {
+    const identity = await canonicalAccountIdentity(requestedIdentity);
+    if (!(await isKnownIdentity(requestedIdentity)) && !(await isKnownIdentity(identity))) {
+      res.status(404).json({ error: "account not found" });
+      return;
+    }
+    const reason = typeof req.body?.reason === "string" ? req.body.reason : "Administrative credit removal";
+    const result = await removeAdminCredits(identity, amountValue, reason);
+    res.set("Cache-Control", "no-store");
+    res.json({
+      ok: true,
+      identity,
+      amount: result.amount,
+      reason: result.reason,
+      balance: result.balanceAfter,
+      credits: result.summary
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Credits could not be removed.";
+    res.status(400).json({ error: message });
+  }
+});
+
 // Add a one-time credit grant from the authenticated admin dashboard. The
 // account identity is canonicalized first so a device selection credits the
 // linked Apple account rather than creating a parallel balance. Requiring a
@@ -4250,7 +4303,7 @@ async function runAssistant(
     const voiceSynthesisIncluded = charge.includedVoice;
     let s: Awaited<ReturnType<typeof chargeUsageUsd>>;
     try {
-      s = await chargeUsageUsd(
+      s = await chargeUsageWithEnforcement(
         deviceId,
         charge.usageUsd,
         voiceMode ? "voice" : "text",
@@ -4795,7 +4848,7 @@ app.post("/api/voice/synthesize", async (req, res) => {
     const speechUsd = ttsCostUsd(speechCharacterCount(text));
     await noteChannelCost(deviceId, "voice", speechUsd);
     if (!plan.included) {
-      const charged = await chargeUsageUsd(deviceId, speechUsd, "text", `voice-correction:${randomUUID()}`);
+      const charged = await chargeUsageWithEnforcement(deviceId, speechUsd, "text", `voice-correction:${randomUUID()}`);
       await noteSpend(deviceId, charged.spent);
     }
     res.json({ audioBase64: audio, mime: "audio/mpeg", spokenText: text });

@@ -6,24 +6,22 @@ import { CREDIT_USD, MIN_REQUEST_CREDITS, VOICE_SURCHARGE_CREDITS, type Tier } f
 import { ttsCostUsd } from "./metering.js";
 
 export const OUT_OF_CREDITS_MSG = "You're out of credits — top up or upgrade in Membership to keep asking.";
-export const DAILY_LIMIT_MSG = "You've reached today's usage limit. You can ask again after the daily reset shown in Membership.";
 export const MONTHLY_LIMIT_MSG = "You've reached this month's usage limit. You can ask again after the monthly reset shown in Membership.";
 
-export type UsageBlockReason = "credits" | "daily" | "monthly" | "voice";
+export type UsageBlockReason = "credits" | "monthly" | "voice";
 export interface UsageBlock {
   reason: UsageBlockReason;
   credits: any;
   requiredCredits: number;
 }
 
-export function usageLimitForCost(summary: any, cost: number): "daily" | "monthly" | null {
-  if (summary?.daily && summary.daily.used + cost > summary.daily.limit) return "daily";
+export function usageLimitForCost(summary: any, cost: number): "monthly" | null {
   if (summary?.monthly && summary.monthly.used + cost > summary.monthly.limit) return "monthly";
   return null;
 }
 
-export function usageMessageForReason(reason: "daily" | "monthly"): string {
-  return reason === "monthly" ? MONTHLY_LIMIT_MSG : DAILY_LIMIT_MSG;
+export function usageMessageForReason(_reason: "monthly"): string {
+  return MONTHLY_LIMIT_MSG;
 }
 
 export function usageBlockFor(
@@ -32,7 +30,7 @@ export function usageBlockFor(
 ): UsageBlock | null {
   const required = Math.max(MIN_REQUEST_CREDITS, Math.ceil(requiredCredits));
   let reason: UsageBlockReason | null = null;
-  if (summary.limitReached && (summary.limitReason === "daily" || summary.limitReason === "monthly")) reason = summary.limitReason;
+  if (summary.limitReached && summary.limitReason === "monthly") reason = "monthly";
   else {
     const windowReason = usageLimitForCost(summary, required);
     if (windowReason) reason = windowReason;
@@ -46,8 +44,8 @@ export function usageBlockFor(
       ...summary,
       cost: 0,
       outOfCredits: reason === "credits",
-      limitReached: reason === "daily" || reason === "monthly",
-      limitReason: reason === "daily" || reason === "monthly" ? reason : summary.limitReason
+      limitReached: reason === "monthly",
+      limitReason: reason === "monthly" ? reason : summary.limitReason
     }
   };
 }

@@ -1555,12 +1555,12 @@ test("all common YouTube links route through video input", () => {
   assert.equal(youtubeVideoInputURL("https://example.com/shorts/dQw4w9WgXcQ"), null);
 });
 
-test("usage limits add purchased credits to both plan windows", () => {
-  assert.deepEqual(usageLimitsFor("plus", 5_000), { daily: 5_200, monthly: 9_000 });
-  assert.deepEqual(usageLimitsFor("plus_voice", 0), { daily: 300, monthly: 6_000 });
-  assert.deepEqual(usageLimitsFor("pro", 0), { daily: 600, monthly: 12_000 });
-  assert.deepEqual(usageLimitsFor("free", 0), { daily: 500, monthly: 500 });
-  assert.deepEqual(usageLimitsFor("free", 500), { daily: 1_000, monthly: 1_000 });
+test("monthly usage limits include paid and gifted credits without a daily cap", () => {
+  assert.deepEqual(usageLimitsFor("plus", 5_000), { monthly: 9_000 });
+  assert.deepEqual(usageLimitsFor("plus_voice", 0), { monthly: 6_000 });
+  assert.deepEqual(usageLimitsFor("pro", 0), { monthly: 12_000 });
+  assert.deepEqual(usageLimitsFor("free", 0), { monthly: 500 });
+  assert.deepEqual(usageLimitsFor("free", 500), { monthly: 1_000 });
 });
 
 test("Apple account merges distinguish restored and genuinely duplicate subscriptions", () => {

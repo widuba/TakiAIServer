@@ -37,6 +37,7 @@ export function strikeThreshold(suspensionCount: number): number {
 }
 
 export type AcctStatus = "active" | "suspended" | "terminated";
+export type SuspensionKind = "policy" | "admin" | "credit_integrity";
 export type NoticeKind = "reinstatement" | "warning";
 export interface Violation { text: string; category: string; at: number; ip?: string; deviceId?: string; }
 
@@ -61,6 +62,7 @@ export interface PendingSuspension {
 export interface SafetyAccount {
   identity: string;
   status: AcctStatus;
+  suspensionKind?: SuspensionKind | null;
   strikes: number;              // flagged messages in the CURRENT cycle
   violations: Violation[];      // current-cycle flagged messages (cleared on reinstate)
   suspensionCount: number;      // lifetime times suspended (drives the escalation)
@@ -83,6 +85,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   self_harm: "self-harm facilitation",
   malware: "malware or intrusion tooling",
   prompt_extraction: "repeated attempts to extract system instructions",
+  credit_overdraft: "a credit-balance discrepancy under review",
   admin: "a manual review by Taki"
 };
 
@@ -110,6 +113,8 @@ function buildReinstatementNotice(account: SafetyAccount, cycleMessages: Violati
 
 export const SUSPENDED_MSG =
   "Your account is temporarily suspended and under review for activity that may violate Taki's Terms of Service. If you believe this is a mistake, contact Taki AI Support.";
+export const CREDIT_OVERDRAFT_MSG =
+  "Your account is temporarily suspended while we review an unexpected credit-balance discrepancy. Contact Taki AI Support if you believe this is an error.";
 export const BANNED_MSG =
   "Your access to Taki has been permanently revoked for violating the Terms of Service.";
 
@@ -133,6 +138,9 @@ function normalizeSafetyAccount(identity: string, stored?: SafetyAccount | null)
     : emptySafetyAccount(identity);
   a.identity = identity;
   if (!(a.status === "active" || a.status === "suspended" || a.status === "terminated")) a.status = "active";
+  a.suspensionKind = a.suspensionKind === "policy" || a.suspensionKind === "admin" || a.suspensionKind === "credit_integrity"
+    ? a.suspensionKind
+    : null;
   if (!Array.isArray(a.violations)) a.violations = [];
   a.violations = a.violations.filter((item) => item && typeof item === "object" && typeof item.text === "string")
     .map((item) => ({
@@ -193,6 +201,7 @@ export async function getSafetyAccount(identity: string): Promise<SafetyAccount>
           && current.pendingSuspension.additionalMessages >= 2
           && current.pendingSuspension.suspendAt <= Date.now()) {
         current.status = "suspended";
+        current.suspensionKind = "policy";
         current.suspensionCount += 1;
         current.pendingSuspension = null;
         current.updatedAt = Date.now();
@@ -473,6 +482,7 @@ export async function reinstate(identity: string): Promise<void> {
     const a = normalizeSafetyAccount(identity, stored);
     const cycleMessages = a.violations.slice();
     a.status = "active"; a.strikes = 0; a.violations = []; a.pendingSuspension = null;
+    a.suspensionKind = null;
     a.pendingNotice = buildReinstatementNotice(a, cycleMessages);
     a.updatedAt = Date.now();
     return { value: a, result: undefined };
@@ -483,7 +493,7 @@ export async function reinstate(identity: string): Promise<void> {
 
 // Manually suspend an account (admin action). Counts as a suspension so the
 // escalation applies, and queues the same review as an automatic suspension.
-export async function suspendAccount(identity: string, reason?: string): Promise<SafetyAccount> {
+export async function suspendAccount(identity: string, reason?: string, kind: SuspensionKind = "admin"): Promise<SafetyAccount> {
   const a = await storeUpdate<SafetyAccount | null, SafetyAccount>(acctKey(identity), null, (stored) => {
     const current = normalizeSafetyAccount(identity, stored);
     if (current.status === "terminated") return { value: current, result: current };
@@ -491,14 +501,25 @@ export async function suspendAccount(identity: string, reason?: string): Promise
       current.status = "suspended";
       current.suspensionCount += 1;
     }
+    if (current.status === "suspended" && (kind === "credit_integrity" || !current.suspensionKind)) {
+      current.suspensionKind = kind;
+    }
     current.pendingSuspension = null;
-    if (reason && reason.trim()) current.violations.push({ text: reason.trim().slice(0, 2_000), category: "admin", at: Date.now() });
+    if (reason && reason.trim()) current.violations.push({ text: reason.trim().slice(0, 2_000), category: kind === "credit_integrity" ? "credit_overdraft" : "admin", at: Date.now() });
     current.updatedAt = Date.now();
     return { value: current, result: current };
   });
   await allIndexAdd(identity);
   await indexAdd(identity);
   return a;
+}
+
+export async function suspendForCreditIntegrity(identity: string): Promise<SafetyAccount> {
+  return suspendAccount(
+    identity,
+    "Credit accounting detected usage exceeding the remaining purchased or gifted grants.",
+    "credit_integrity"
+  );
 }
 
 // Issue a warning the user sees (and must acknowledge) next time they open Taki.
