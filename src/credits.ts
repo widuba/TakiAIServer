@@ -980,7 +980,11 @@ export const IN_APP_CREDIT_PRODUCTS: Record<string, { priceCents: number; label:
   "com.davidwiduba.takiai.credits.999": { priceCents: 999, label: "$9.99 pack" },
   "com.davidwiduba.takiai.credits.2499": { priceCents: 2499, label: "$24.99 pack" },
   "com.davidwiduba.takiai.credits.4999": { priceCents: 4999, label: "$49.99 pack" },
-  "com.davidwiduba.takiai.credits.9999": { priceCents: 9999, label: "$99.99 pack" }
+  "com.davidwiduba.takiai.credits.9999": { priceCents: 9999, label: "$99.99 pack" },
+  "com.davidwiduba.takiai.small_credit_pack": { priceCents: 999, label: "$9.99 pack" },
+  "com.davidwiduba.takiai.medium_credit_pack": { priceCents: 2499, label: "$24.99 pack" },
+  "com.davidwiduba.takiai.large_credit_pack": { priceCents: 4999, label: "$49.99 pack" },
+  "com.davidwiduba.takiai.extra_large_credit_pack": { priceCents: 9999, label: "$99.99 pack" }
 };
 export const IN_APP_RATE_MULTIPLIER = 2;
 

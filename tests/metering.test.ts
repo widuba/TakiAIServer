@@ -195,6 +195,18 @@ test("additional-credit discounts and in-app double-rate packs stay server autho
   assert.equal(inAppCreditsForProduct(productId, "free"), 500);
   assert.equal(inAppCreditsForProduct(productId, "plus_voice"), 650);
   assert.equal(inAppCreditsForProduct(productId, "pro"), 850);
+  for (const [newId, oldId] of [
+    ["small_credit_pack", "credits.999"],
+    ["medium_credit_pack", "credits.2499"],
+    ["large_credit_pack", "credits.4999"],
+    ["extra_large_credit_pack", "credits.9999"]
+  ]) {
+    const newProduct = `com.davidwiduba.takiai.${newId}`;
+    const oldProduct = `com.davidwiduba.takiai.${oldId}`;
+    assert.deepEqual(IN_APP_CREDIT_PRODUCTS[newProduct], IN_APP_CREDIT_PRODUCTS[oldProduct]);
+    assert.equal(inAppCreditsForProduct(newProduct, "free"), inAppCreditsForProduct(oldProduct, "free"));
+    assert.equal(inAppCreditsForProduct(newProduct, "pro"), inAppCreditsForProduct(oldProduct, "pro"));
+  }
 });
 
 test("web account identities are recognized only after a verified sign-in marker", async () => {
